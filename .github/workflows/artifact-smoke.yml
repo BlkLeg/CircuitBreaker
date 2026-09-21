@@ -1,10 +1,40 @@
 name: Artifact Smoke
+
+# The promotion contract for a built candidate: install it, prove the binary
+# contains its application, boot it, migrate, answer an authenticated request,
+# and uninstall cleanly.
+#
+# Callable from two places on purpose. release.yml calls it with the release
+# candidate and both architectures; dev-ci.yml calls it with the dev candidate
+# and amd64 only. That second caller is the point: before it existed, this
+# workflow ran ONLY on a tag, so a defect in it — or in the artifact path it
+# covers — could not be discovered until a release was already underway. That
+# is exactly how v0.4.3's `deb-boot` job shipped a `services:` block whose
+# Postgres password could never resolve (see
+# tests/build/test_service_containers_resolve_at_job_setup.py): the job was
+# correct-looking YAML that nothing had ever executed.
+#
+# tests/build/test_release_paths_run_before_the_tag.py keeps both callers
+# wired.
 on:
   workflow_call:
     inputs:
       version:
         required: true
         type: string
+      # Which uploaded artifact set to install. release.yml's build job uploads
+      # `packages-<arch>`; dev-ci.yml's uploads `dev-packages-<arch>`. Naming it
+      # here is what lets one definition serve both without a copy.
+      artifact_prefix:
+        required: false
+        type: string
+        default: packages
+      # A JSON array of architecture names. The release path passes both; the
+      # integration path passes amd64 only, because dev-ci builds one.
+      arches:
+        required: false
+        type: string
+        default: '["amd64","arm64"]'
 permissions:
   contents: read
 jobs:
@@ -13,17 +43,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-        - os: ubuntu-22.04
-          arch: amd64
-        - os: ubuntu-22.04-arm
-          arch: arm64
-    runs-on: ${{ matrix.os }}
+        arch: ${{ fromJSON(inputs.arches) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
     steps:
     - name: Download candidate packages
       uses: actions/download-artifact@v5
       with:
-        name: packages-${{ matrix.arch }}
+        name: ${{ inputs.artifact_prefix }}-${{ matrix.arch }}
         path: dist/
         github-token: ${{ secrets.GITHUB_TOKEN }}
     - name: Install the candidate .deb on a clean host
@@ -97,17 +123,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            arch: amd64
-          - os: ubuntu-22.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.os }}
+        arch: ${{ fromJSON(inputs.arches) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
     steps:
       - name: Download candidate packages
         uses: actions/download-artifact@v5
         with:
-          name: packages-${{ matrix.arch }}
+          name: ${{ inputs.artifact_prefix }}-${{ matrix.arch }}
           path: dist/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -144,7 +166,9 @@ jobs:
             circuit-breaker \
             deploy/setup.sh \
             share/VERSION \
-            manifest.json; do
+            manifest.json \
+            install.sh \
+            uninstall.sh; do
             [ -e "${BUNDLE}/${path}" ] || {
               echo "::error::bundle is missing ${path}; install.sh reads it"
               exit 1
@@ -173,12 +197,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            arch: amd64
-          - os: ubuntu-22.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.os }}
+        arch: ${{ fromJSON(inputs.arches) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
 
     # ADR 0005's Tier 2 promise is "install and boot". Until this job existed
     # that row read "not in force" with the reason recorded in the ADR itself:
@@ -187,24 +207,15 @@ jobs:
     # starts, migrations apply, or the broker is reachable.
     #
     # A subset of scripts/ci/tier3-artifact.sh's contract, on a hosted runner:
-    # start, wait for /livez, wait for /readyz. The dependencies are service
-    # containers rather than the packaged units, because this gate is about the
+    # start, wait for /livez, wait for /readyz. The dependencies are containers
+    # rather than the packaged units, because this gate is about the
     # application booting, not about the vendored Postgres layout — which the
     # fleet tier already covers.
+    #
+    # Only Redis is a `services:` container. Postgres is started by a step
+    # instead, because it needs the minted password — see that step for why a
+    # service container cannot have it.
     services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: circuitbreaker
-          POSTGRES_DB: circuitbreaker
-          POSTGRES_PASSWORD: ${{ env.CB_DB_PASSWORD }}
-        options: >-
-          --health-cmd "pg_isready -U circuitbreaker"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-        ports:
-          - 5432:5432
       redis:
         image: redis:7
         options: >-
@@ -227,7 +238,17 @@ jobs:
           JWT_SECRET="$(hexgen)"
           NATS_TOKEN="$(hexgen)"
           VAULT_KEY="$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
-          for secret in "${DB_PASSWORD}" "${JWT_SECRET}" "${NATS_TOKEN}" "${VAULT_KEY}"; do
+          # Supplied rather than read back from disk. The generated token lands
+          # in $CB_DATA_DIR/bootstrap-setup-token (auth_service._bootstrap_token
+          # _file_path), and the packaged unit runs under ProtectSystem=strict
+          # with no CB_DATA_DIR of its own, so where that file lands is a
+          # property of the unit rather than of the artifact under test.
+          # CB_SETUP_TOKEN short-circuits the file entirely and keeps this gate
+          # about whether the application authenticates, not about path layout.
+          SETUP_TOKEN="$(hexgen)"
+          ADMIN_PASSWORD="Smoke-$(python3 -c 'import secrets; print(secrets.token_hex(12))')!aA1"
+          for secret in "${DB_PASSWORD}" "${JWT_SECRET}" "${NATS_TOKEN}" "${VAULT_KEY}" \
+                        "${SETUP_TOKEN}" "${ADMIN_PASSWORD}"; do
             echo "::add-mask::${secret}"
           done
           {
@@ -235,12 +256,51 @@ jobs:
             echo "CB_JWT_SECRET=${JWT_SECRET}"
             echo "CB_NATS_TOKEN=${NATS_TOKEN}"
             echo "CB_VAULT_KEY=${VAULT_KEY}"
+            echo "CB_SETUP_TOKEN=${SETUP_TOKEN}"
+            echo "CB_SMOKE_ADMIN_PASSWORD=${ADMIN_PASSWORD}"
           } >> "$GITHUB_ENV"
+
+      # Postgres cannot be a `services:` container in this job. GitHub creates
+      # service containers during job setup, before the first step runs, so
+      # `${{ env.CB_DB_PASSWORD }}` there expands to the empty string and
+      # postgres:15 refuses to initialize without a non-empty POSTGRES_PASSWORD
+      # ("Database is uninitialized and superuser password is not specified").
+      # Nothing a step writes to $GITHUB_ENV can reach its own job's services
+      # block, so the container has to start after the minting step instead.
+      # Same shape as dev-ci.yml's smoke run, which brings its own dependencies
+      # up after minting for exactly this reason.
+      - name: Start Postgres with the minted password
+        run: |
+          set -euo pipefail
+          # -e by name rather than by value: the password is passed through this
+          # process's environment and never appears in its argv, where `ps`
+          # would expose it to anything else on the runner.
+          POSTGRES_PASSWORD="${CB_DB_PASSWORD}" docker run -d \
+            --name cb-boot-postgres \
+            -e POSTGRES_USER=circuitbreaker \
+            -e POSTGRES_DB=circuitbreaker \
+            -e POSTGRES_PASSWORD \
+            -p 5432:5432 \
+            postgres:15
+
+          # The gate the service container's --health-* options used to provide,
+          # on the same budget: 12 attempts, 5s apart. Without it the units
+          # below would start against a Postgres still initializing.
+          for _ in $(seq 1 12); do
+            if docker exec cb-boot-postgres pg_isready -U circuitbreaker >/dev/null 2>&1; then
+              echo "postgres ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::postgres never became ready within 60s"
+          docker logs cb-boot-postgres || true
+          exit 1
 
       - name: Download candidate packages
         uses: actions/download-artifact@v5
         with:
-          name: packages-${{ matrix.arch }}
+          name: ${{ inputs.artifact_prefix }}-${{ matrix.arch }}
           path: dist/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -258,15 +318,107 @@ jobs:
       - name: Point the service at the ephemeral dependencies
         run: |
           set -euo pipefail
-          sudo install -d -m 0750 /etc/circuit-breaker
-          sudo tee /etc/circuit-breaker/circuit-breaker.env >/dev/null <<EOF
+
+          # The directory the PACKAGE made, at the mode the package gave it.
+          #
+          # This step used to run `install -d -m 0750 /etc/circuit-breaker`,
+          # which does not merely create a missing directory — it rewrites the
+          # mode of the existing one. packaging/postinstall.sh deliberately sets
+          # 0755 there, because the service runs as `circuitbreaker` and has to
+          # traverse it; 0750 root:root took that away, and the first thing
+          # start.py does is probe /etc/circuit-breaker/config.yaml. The probe
+          # raised PermissionError, the binary died with a traceback, and the
+          # unit crash-looped:
+          #
+          #   PermissionError: [Errno 13] Permission denied:
+          #     '/etc/circuit-breaker/config.yaml'
+          #
+          # So the gate was failing the artifact for a condition the gate itself
+          # created, which is worse than not running: it would have sent someone
+          # looking for a packaging defect that is not there.
+          #
+          # Asserted rather than created. If the package stops making this
+          # directory, or stops making it traversable, that IS a packaging
+          # defect and this is where it should surface.
+          [ -d /etc/circuit-breaker ] || {
+            echo "::error::the package did not create /etc/circuit-breaker"
+            exit 1
+          }
+          if ! sudo -u circuitbreaker test -x /etc/circuit-breaker; then
+            echo "::error::/etc/circuit-breaker is not traversable by the circuitbreaker service account ($(stat -c '%a %U:%G' /etc/circuit-breaker)); the service cannot read its own configuration"
+            exit 1
+          fi
+
+          # Overlay, never replace.
+          #
+          # This step used to `tee` the whole file, which truncated the env
+          # packaging/postinstall.sh had just generated and threw away every
+          # line it writes — CB_DATA_DIR, UPLOADS_DIR, STATIC_DIR,
+          # CB_ALEMBIC_INI, CB_AGENT_BINARIES_DIR and the egress waiver. With
+          # CB_DATA_DIR gone the service falls back to `Path.cwd()/"data"`; the
+          # unit sets no WorkingDirectory, so systemd runs it from `/`, and
+          # ProtectSystem=strict makes `/` read-only:
+          #
+          #   OSError: [Errno 30] Read-only file system: '/data'
+          #
+          # The unit crash-looped for the whole budget and /livez never
+          # answered. That is the same mistake as the /etc mode above, one step
+          # further down — the gate failing the artifact for a condition the
+          # gate created — except this time it destroyed the configuration the
+          # package exists to install, so the boot check had stopped testing
+          # the package at all.
+          #
+          # Only the values that have to point at THIS runner's ephemeral
+          # dependencies are overridden. Everything the package decided stays.
+          ENV_FILE=/etc/circuit-breaker/circuit-breaker.env
+          [ -f "$ENV_FILE" ] || {
+            echo "::error::the package did not generate $ENV_FILE"
+            exit 1
+          }
+
+          # Secrets reach the file through this process's environment and a
+          # 0600 temp file; they never appear in argv, where `ps` would show
+          # them to every account on the runner.
+          OVERLAY="$(mktemp)"
+          chmod 600 "$OVERLAY"
+          cat > "$OVERLAY" <<EOF
           CB_DB_URL=postgresql://circuitbreaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker
           CB_REDIS_URL=redis://127.0.0.1:6379/0
           CB_JWT_SECRET=${CB_JWT_SECRET}
           CB_VAULT_KEY=${CB_VAULT_KEY}
           NATS_AUTH_TOKEN=${CB_NATS_TOKEN}
+          CB_SETUP_TOKEN=${CB_SETUP_TOKEN}
           EOF
-          sudo chmod 0640 /etc/circuit-breaker/circuit-breaker.env
+
+          # Drop the keys being overridden, keep every other packaged line,
+          # then append the overrides — one line per key, the package's own
+          # lines otherwise untouched and in order.
+          OVERRIDDEN="$(sed -E 's/=.*//' "$OVERLAY" | paste -sd'|' -)"
+          sudo sed -i -E "/^(${OVERRIDDEN})=/d" "$ENV_FILE"
+          sudo tee -a "$ENV_FILE" < "$OVERLAY" >/dev/null
+          rm -f "$OVERLAY"
+
+          # The package's own lines must have survived. Without this assertion
+          # the next edit here can silently reintroduce the crash loop, and the
+          # failure would again present as a packaging defect that is not there.
+          # tests/build/test_smoke_preserves_packaged_env.py keeps this list
+          # honest against packaging/postinstall.sh.
+          for _key in CB_DATA_DIR UPLOADS_DIR STATIC_DIR CB_ALEMBIC_INI \
+                      CB_AGENT_BINARIES_DIR CB_ALLOW_DIRECT_EGRESS; do
+            sudo grep -q "^${_key}=" "$ENV_FILE" || {
+              echo "::error::${_key} is missing from $ENV_FILE — this step overwrote configuration packaging/postinstall.sh generated. Overlay the ephemeral values onto the packaged env instead of replacing the file."
+              exit 1
+            }
+          done
+
+          # root:circuitbreaker 0640 — the same ownership packaging/
+          # postinstall.sh gives config.toml, which is the other file in here
+          # that carries secrets. systemd reads EnvironmentFile= as root before
+          # dropping privileges, so the service account never needs to read it;
+          # matching the packaged convention keeps this gate from asserting a
+          # layout no real install has.
+          sudo chown root:circuitbreaker "$ENV_FILE"
+          sudo chmod 0640 "$ENV_FILE"
 
       # Neither postinstall script starts anything — both only `enable`. And
       # /readyz (apps/backend/src/app/api/health.py) is 200 only when Postgres,
@@ -310,6 +462,127 @@ jobs:
           fi
           curl -fsS http://127.0.0.1:8080/api/v1/readyz
 
+      # /readyz reports "db: ok" from a connection, which a database with no
+      # schema in it also satisfies. The row that proves migrations RAN is
+      # alembic_version, read out of the database the service was pointed at —
+      # not out of the package, and not out of the application's own opinion of
+      # itself.
+      - name: Assert migrations reached head in the packaged database
+        run: |
+          set -euo pipefail
+          # Over TCP with the password, not the container's local socket. A
+          # `docker exec psql -U circuitbreaker` would succeed on the postgres
+          # image's default local trust, which is exactly the shortcut this
+          # project does not take anywhere else — and it would keep passing if
+          # the credentials the application uses stopped working.
+          #
+          # -e by name: the value is passed through this process's environment
+          # and never appears in docker's argv.
+          REVISION="$(PGPASSWORD="${CB_DB_PASSWORD}" docker exec -e PGPASSWORD cb-boot-postgres \
+            psql -h 127.0.0.1 -U circuitbreaker -d circuitbreaker -tAc \
+            'SELECT version_num FROM alembic_version' 2>/dev/null | tr -d '[:space:]')"
+          if [ -z "${REVISION}" ]; then
+            echo "::error::alembic_version is empty — the service booted without applying migrations"
+            PGPASSWORD="${CB_DB_PASSWORD}" docker exec -e PGPASSWORD cb-boot-postgres \
+              psql -h 127.0.0.1 -U circuitbreaker -d circuitbreaker -c '\dt' || true
+            sudo journalctl -u circuit-breaker --no-pager -n 200
+            exit 1
+          fi
+          echo "migrations at revision ${REVISION}"
+
+      # The assertion that separates "the process is listening" from "the
+      # application works". /livez and /readyz are both unauthenticated, so a
+      # build whose auth stack never loaded passes every check above.
+      #
+      # Both halves matter. The 401 proves the endpoint is actually guarded —
+      # without it a service that authenticates nobody would satisfy the 200.
+      #
+      # CB_SETUP_TOKEN and CB_SMOKE_ADMIN_PASSWORD are read straight out of the
+      # step environment (the minting step exported them through $GITHUB_ENV)
+      # rather than re-interpolated through `${{ }}`, which would write both
+      # values into the rendered workflow command line.
+      - name: Exercise an authenticated API request
+        run: |
+          set -euo pipefail
+          BASE=http://127.0.0.1:8080/api/v1
+
+          NEEDS="$(curl -fsS "${BASE}/bootstrap/status" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["needs_bootstrap"])')"
+          [ "${NEEDS}" = "True" ] || {
+            echo "::error::a freshly installed candidate reports needs_bootstrap=${NEEDS}; this database is not clean"
+            exit 1
+          }
+
+          TOKEN="$(python3 - <<'PY'
+          import json, os, urllib.request
+          body = json.dumps({
+              "setup_token": os.environ["CB_SETUP_TOKEN"],
+              "email": "smoke-admin@local.invalid",
+              "password": os.environ["CB_SMOKE_ADMIN_PASSWORD"],
+              "theme_preset": "gruvbox-dark",
+          }).encode()
+          request = urllib.request.Request(
+              "http://127.0.0.1:8080/api/v1/bootstrap/initialize",
+              data=body,
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              print(json.load(response)["token"])
+          PY
+          )"
+          echo "::add-mask::${TOKEN}"
+
+          # Checked AFTER bootstrap, deliberately. Before it, auth_enabled is
+          # false and core/security.py hands an admin sentinel to the first-run
+          # setup surface — /api/v1/bootstrap, /api/v1/auth and the settings
+          # read the wizard needs — so an unauthenticated GET /auth/me answers
+          # 200 there by design. The guard only exists once an admin does.
+          UNAUTHED="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/auth/me")"
+          [ "${UNAUTHED}" = "401" ] || {
+            echo "::error::after bootstrap, GET /auth/me without a token answered ${UNAUTHED}, expected 401 — the API is not guarded, so the 200 below would prove nothing"
+            exit 1
+          }
+
+          PROFILE="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE}/auth/me")"
+          echo "${PROFILE}" | python3 -c '
+          import json, sys
+          profile = json.load(sys.stdin)
+          assert profile.get("email") == "smoke-admin@local.invalid", profile
+          print("authenticated as", profile["email"])
+          '
+
+      # GOV-20's other half: an artifact that cannot be removed is not
+      # installable either. Runs here rather than in `deb-install` because only
+      # this job has ever started the units, so only here can removal be shown
+      # to stop a RUNNING service rather than merely delete files.
+      - name: Uninstall the candidate and assert it left nothing behind
+        run: |
+          set -euo pipefail
+          sudo apt-get remove -y circuit-breaker circuit-breaker-nats
+
+          # `if`, never `cmd && { ... }`: under `set -e` an AND-list whose left
+          # side fails is itself a failing statement, so the healthy case —
+          # is-active returning 3 for an inactive unit — would fail the step.
+          if systemctl is-active --quiet circuit-breaker; then
+            echo "::error::circuit-breaker is still active after removal"
+            sudo systemctl status circuit-breaker --no-pager -l || true
+            exit 1
+          fi
+
+          for path in \
+            /usr/local/bin/circuit-breaker \
+            /usr/local/bin/nats-server \
+            /lib/systemd/system/circuit-breaker.service \
+            /lib/systemd/system/circuit-breaker-nats.service; do
+            [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
+          done
+
+          # The port has to be free again, or the next install on this host
+          # inherits a listener it did not start.
+          ! curl -sS --max-time 5 http://127.0.0.1:8080/api/v1/livez >/dev/null 2>&1 \
+            || { echo "::error::something is still serving :8080 after removal"; exit 1; }
+          echo "uninstall clean"
+
       - name: Collect diagnostics on failure
         if: failure()
         run: |
@@ -317,4 +590,11 @@ jobs:
           sudo systemctl status circuit-breaker-nats --no-pager -l || true
           sudo journalctl -u circuit-breaker --no-pager -n 200 || true
           sudo journalctl -u circuit-breaker-nats --no-pager -n 200 || true
+          docker logs --tail 200 cb-boot-postgres || true
+          # The rendered unit and the non-secret half of the environment: what
+          # a post-mortem needs and what the journal alone does not carry.
+          # `sed` strips every value, so the file's SHAPE is evidence and its
+          # contents are not.
+          sudo sed -E 's/=.*/=<redacted>/' /etc/circuit-breaker/circuit-breaker.env || true
+          sudo systemd-analyze verify circuit-breaker.service || true
 

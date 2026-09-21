@@ -1,0 +1,167 @@
+# Which operating-system families install.sh claims, and where each claim is
+# executed.
+#
+# install.sh has two `case "$ID"` statements that decide whether a host is
+# supported at all, and both print the same sentence when they refuse:
+# "Supported: Ubuntu, Debian, Fedora, RHEL, Rocky, AlmaLinux, Arch". That
+# sentence is a published promise, and before this file existed it was checked
+# by nothing: the installer journey ran two of the seven families, and the
+# `dnf` and `pacman` branches of deploy/setup.sh had never been executed by CI
+# at all.
+#
+# This file is the single declaration. tests/build/test_install_support_matrix.py
+# binds it to three things that must agree:
+#
+#   1. the OS ids install.sh's two case statements accept,
+#   2. the distro matrix in .github/workflows/installer-journey.yml,
+#   3. this file's own reasons for anything not executed.
+#
+# Adding a family to install.sh without adding a row here fails that test.
+# Adding a row without a `journey` and without `covered_by` + `reason` fails it
+# too: the rule is that a claim is either executed or explained, never silently
+# skipped.
+
+families:
+  - id: ubuntu
+    name: Ubuntu
+    package_manager: apt-get
+    journey: ubuntu2204
+    image: docker.io/library/ubuntu:22.04
+
+  - id: debian
+    name: Debian
+    package_manager: apt-get
+    journey: debian12
+    image: docker.io/library/debian:12
+
+  - id: fedora
+    name: Fedora
+    package_manager: dnf
+    journey: fedora
+    image: docker.io/library/fedora:44
+
+  - id: rocky
+    name: Rocky Linux
+    package_manager: dnf
+    journey: rockylinux
+    # Rocky 10, not 9. Rocky 9 ships glibc 2.34, below the build floor a
+    # candidate built on ubuntu-22.04 (glibc 2.35) carries, so a bundle this
+    # job builds could never run there regardless of install.sh's correctness.
+    # Rocky 10 is also the first EL release that ships Valkey in place of
+    # Redis, which is the only place the Valkey branches of deploy/setup.sh and
+    # deploy/scripts/wait-for-services.sh are exercised.
+    image: docker.io/rockylinux/rockylinux:10
+
+  - id: almalinux
+    name: AlmaLinux
+    package_manager: dnf
+    journey: almalinux
+    # The other EL10 rebuild. Carried separately from Rocky rather than assumed
+    # identical: the two differ in their default repository sets, and the
+    # installer resolves pgbouncer and Valkey from those repositories.
+    image: docker.io/library/almalinux:10
+
+  - id: arch
+    name: Arch Linux
+    package_manager: pacman
+    journey: archlinux
+    image: docker.io/library/archlinux:latest
+
+  - id: rhel
+    name: Red Hat Enterprise Linux
+    package_manager: dnf
+    journey: null
+    covered_by: [rocky, almalinux]
+    reason: >-
+      RHEL itself requires a paid subscription to install packages, so it
+      cannot be exercised in a public CI job. Rocky Linux and AlmaLinux are
+      binary-compatible rebuilds of the same release, built from the same
+      sources, and both are executed above — including the EL10 Valkey path,
+      which is the only EL-specific branch install.sh has. The claim is kept
+      because what is actually being verified (the dnf branch, the PGDG
+      repository, the Valkey substitution, the systemd unit layout) is
+      identical on all three; it is recorded here rather than left implicit so
+      that "RHEL is tested" is never read into a journey matrix that does not
+      contain it.
+
+# Architectures the installer accepts, and where each is executed.
+#
+# Recorded here for the same reason as the families: install.sh refuses
+# anything but x86_64 and aarch64, and until the artifact-smoke matrix ran on
+# `ubuntu-22.04-arm` the second of those was a claim with no execution behind
+# it. The installer journey is amd64 only — podman-in-Actions has no aarch64
+# runner with systemd available — so arm64's coverage comes from the packaged
+# path (artifact-smoke's deb-install, tarball-smoke and deb-boot legs), not
+# from install.sh.
+architectures:
+  - id: amd64
+    uname: x86_64
+    installer_journey: true
+    artifact_smoke: true
+  - id: arm64
+    uname: aarch64
+    installer_journey: false
+    artifact_smoke: true
+    reason: >-
+      GitHub's aarch64 runners are available to artifact-smoke, which installs
+      and boots the arm64 .deb on them. The installer journey needs systemd
+      inside podman, and the aarch64 runner image does not carry the podman
+      version that supports it, so install.sh itself is verified on amd64 only.
+      The gap is install.sh's own logic on arm64; everything it installs is
+      covered by the packaged path on real aarch64 silicon.
+
+# Install-path variants, and which of them the journey executes.
+#
+# The journey runs one shape: a fresh install from a staged local bundle, with
+# --no-tls, followed by a re-run (upgrade), a restart, a reboot-equivalent
+# recovery and an uninstall. The variants below are the ones install.sh
+# supports that it does NOT execute, recorded here so "untested" is a stated
+# position rather than an absence somebody has to notice.
+#
+# tests/build/test_install_support_matrix.py does not gate these rows today —
+# they are a ledger, not a contract — but they are in this file rather than a
+# design document because this is the file anyone changing the matrix opens.
+install_variants:
+  - id: local-bundle
+    executed: true
+    note: >-
+      The journey's only mode. --local-bundle means the artifact under test is
+      the one that was just built, and no outbound request is made for it.
+
+  - id: published-release
+    executed: partially
+    note: >-
+      install.sh's release-discovery path (resolve the tag through the GitHub
+      API, download the named asset) is exercised by release.yml's post-publish
+      job against the real release, and by release-dry-run.yml against staged
+      assets with the same asset-name derivation. What neither does is run
+      install.sh itself against a published release — that would need a release
+      to exist first, which is the ordering this whole pipeline exists to avoid.
+
+  - id: no-tls
+    executed: true
+    note: The journey passes --no-tls.
+
+  - id: tls
+    executed: false
+    reason: >-
+      A self-signed certificate changes the served port from 8088 to 443 and
+      adds a trust-store step, so the journey container would need a different
+      port mapping and the health probes a different scheme. It is a real gap:
+      nothing executes install.sh's certificate generation or the TLS nginx
+      template. The mono image's TLS path IS covered — dev-ci.yml's build-docker
+      job asserts the plain-HTTP redirect and that nginx serves the frontend
+      over TLS — so what is unverified is specifically install.sh's own
+      certificate handling, not the server's.
+
+  - id: airgap
+    executed: false
+    reason: >-
+      --airgap requires --local-bundle plus every dependency already present,
+      and proving it makes no outbound request needs the container's network
+      removed after the dependencies are installed but before the install runs.
+      That is a second container lifecycle the journey does not have.
+      tests/build/test_installer_airgap_contract.py covers the static half (that
+      the air-gap branch reaches for nothing), and CB_AIRGAP=true is honoured at
+      runtime by the application; the untested part is the installer's own
+      behaviour under it.

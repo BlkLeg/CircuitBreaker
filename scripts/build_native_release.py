@@ -91,9 +91,37 @@ def parse_args() -> argparse.Namespace:
 
 
 def sanitize_version(version: str) -> str:
+    """The version used for artifact names, checked against the one shipped.
+
+    `--version` names the archive, the .deb, the .rpm and the manifest.
+    ``share/VERSION`` is a straight copy of the repo's VERSION file, and the
+    binary answers ``--version`` from that same file embedded at build time.
+    Nothing reconciles the two, so a caller passing a different string produces
+    a package whose *name* claims one version and whose *contents* report
+    another.
+
+    That is not hypothetical: dev-ci.yml built ``--version dev-<sha>`` while the
+    bundle shipped ``0.4.3``, which is why the artifact-smoke contract could not
+    run against a dev candidate — its version-parity assertions compare exactly
+    these two values. Refusing here is what lets one gate definition serve the
+    integration branch and the release tag.
+
+    A build that wants a different version string changes VERSION; there is no
+    override, because every consumer of an override would be a package that
+    lies about itself.
+    """
     value = version.strip()
     if not value or not re.fullmatch(r"[A-Za-z0-9._-]+", value):
         raise SystemExit(f"Unsupported version string for archive naming: {version!r}")
+
+    shipped = VERSION_FILE.read_text(encoding="utf-8").strip()
+    if value != shipped:
+        raise SystemExit(
+            f"--version {value!r} disagrees with {VERSION_FILE} ({shipped!r}).\n"
+            "The bundle copies VERSION verbatim into share/VERSION and the binary\n"
+            "reports it, so this build would produce artifacts named for a version\n"
+            "they do not contain. Update VERSION, or drop --version to use it."
+        )
     return value
 
 
@@ -691,6 +719,17 @@ def stage_bundle(
     if installer_src.exists():
         shutil.copy2(installer_src, bundle_dir / "install.sh")
 
+    # The uninstaller travels with the bundle for the same reason the installer
+    # does. Without it, `cb uninstall` on a native install found neither
+    # /usr/local/bin/uninstall-circuit-breaker nor a sibling uninstall.sh and
+    # told the operator to "run it from a checkout" — on a host that was
+    # installed from a tarball and has no checkout. deploy/setup.sh installs
+    # this copy to /usr/local/bin/uninstall-circuit-breaker, which is the first
+    # path `cb uninstall` looks for.
+    uninstaller_src = REPO_ROOT / "uninstall.sh"
+    if uninstaller_src.exists():
+        shutil.copy2(uninstaller_src, bundle_dir / "uninstall.sh")
+
     manifest = {
         "app": "Circuit Breaker",
         "version": version,
@@ -708,6 +747,7 @@ def stage_bundle(
             "nats_pin": "share/nats-server.pin",
             "deploy": "deploy",
             "installer": "install.sh",
+            "uninstaller": "uninstall.sh",
             "agent_binaries": "agent-binaries",
         },
     }
@@ -1006,8 +1046,14 @@ def create_appimage(
         print(f"  Created: {appimage_path.name}")
         return appimage_path
     else:
-        print(f"  WARNING: AppImage creation failed: {result.stderr.strip()}")
-        return None
+        # Fatal for the same reason the Arch failure above is: appimagetool was
+        # present and was run. The AppImage is a published release asset (it is
+        # attached to every release since 0.3.9), so a build that drops it and
+        # exits 0 produces a release whose asset list is quietly short.
+        raise SystemExit(
+            "AppImage creation failed after appimagetool was found and invoked.\n"
+            f"  stderr: {result.stderr.strip()}"
+        )
 
 
 def create_arch_package(
@@ -1017,6 +1063,24 @@ def create_arch_package(
     makepkg = shutil.which("makepkg")
     if not makepkg:
         print("makepkg not found — skipping Arch package generation.")
+        return None
+
+    # makepkg being on PATH is not the same as makepkg being usable. It shells
+    # out to fakeroot for the packaging step, and a machine that has pacman
+    # tooling without it — which is most non-Arch machines that have either —
+    # fails with "Cannot find the fakeroot binary" after doing all the work.
+    #
+    # That belongs on the skip side of the line, not the fatal side. The rule
+    # this function follows is: a toolchain that cannot run is a format this
+    # machine cannot produce, and a toolchain that runs and fails is a defect.
+    # Conflating them would turn a missing optional dependency into a broken
+    # build, which is how a fail-closed rule gets deleted rather than obeyed.
+    missing_helpers = [tool for tool in ("fakeroot", "bsdtar") if shutil.which(tool) is None]
+    if missing_helpers:
+        print(
+            f"makepkg found but {', '.join(missing_helpers)} missing — "
+            "skipping Arch package generation."
+        )
         return None
 
     pkgbuild = REPO_ROOT / "PKGBUILD"
@@ -1047,6 +1111,23 @@ def create_arch_package(
     patched = re.sub(r'^pkgver=.*', f'pkgver={version}', patched, flags=re.MULTILINE)
     (work_dir / "PKGBUILD").write_text(patched)
 
+    # PKGBUILD's `install=` names a .install hook file, and makepkg resolves it
+    # relative to the PKGBUILD's own directory — which is this work_dir, not the
+    # repo root. Without this copy every invocation died before packaging with
+    # "install file (circuit-breaker.install) does not exist or is not a regular
+    # file", and the failure was a WARNING that left the build exiting 0. The
+    # result: this function has never once produced a package on any machine
+    # that had makepkg, and nothing said so.
+    install_hook = re.search(r'^install=(\S+)', patched, flags=re.MULTILINE)
+    if install_hook:
+        hook_src = REPO_ROOT / install_hook.group(1)
+        if not hook_src.exists():
+            raise SystemExit(
+                f"PKGBUILD declares install={install_hook.group(1)}, which does not "
+                f"exist at {hook_src}"
+            )
+        shutil.copy2(hook_src, work_dir / hook_src.name)
+
     env = {**os.environ, "PKGDEST": str(output_dir), "SRCDEST": str(work_dir)}
     try:
         result = subprocess.run(
@@ -1059,9 +1140,20 @@ def create_arch_package(
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
+    # Attempted and failed is fatal; absent toolchain is a skip. The two used
+    # to print the same shape of message and both left the build exiting 0,
+    # which is how `.pkg.tar.zst` came to be claimed as produced (ADR 0005,
+    # Tier 3) while no release has ever carried one. A silent success fallback
+    # is exactly what CLAUDE.md's "no placeholders / fail closed" rule is for:
+    # if makepkg is here, it runs, and if it fails the build stops.
     if result.returncode != 0:
-        print(f"  WARNING: Arch package creation failed:\n{result.stderr.strip()}")
-        return None
+        raise SystemExit(
+            "Arch package creation failed after makepkg was found and invoked.\n"
+            f"  exit status: {result.returncode}\n"
+            f"  stderr: {result.stderr.strip()}\n"
+            "Install a working makepkg or remove PKGBUILD; do not ship a build "
+            "that silently drops a format."
+        )
 
     pkgs = sorted(output_dir.glob("*.pkg.tar.zst"))
     if pkgs:

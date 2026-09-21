@@ -1534,6 +1534,51 @@ func awaitReadinessFrame(t *testing.T, ch <-chan frame.Frame) frame.Frame {
 	return frame.Frame{}
 }
 
+// awaitReadinessFrameWhere returns the first capability.readiness frame whose
+// decoded collector states satisfy want, discarding readiness frames that do
+// not. Non-readiness frames are skipped.
+//
+// This exists because "drain the channel, then take the next frame" races the
+// publisher. publishReadiness (daemon.go) writes status.json while holding
+// readinessMu and enqueues the control frame only AFTER releasing it, so
+// awaitReadiness — which polls the status FILE — can return before the frame
+// exists. A non-blocking drainFrames in that window takes nothing, and the next
+// frame read is then the stale initial readiness instead of the one the test
+// provoked:
+//
+//	readiness["host.core"] = "ready", want "disabled"
+//
+// Draining harder does not fix it, and neither does blocking for one frame
+// first: whether the initial frame is ever queued at all is itself
+// nondeterministic, because queueReadiness returns early while `linked` is
+// false. Measured over 300 runs on an idle machine, the drain took one frame
+// 264 times and zero frames 36 times. Selecting the frame by content is correct
+// under both orderings.
+//
+// This narrows only WHICH frame is examined; the caller still asserts the full
+// contract on it, so a frame that arrives with the wrong states fails exactly as
+// before — by never matching, and timing out here.
+func awaitReadinessFrameWhere(
+	t *testing.T, ch <-chan frame.Frame, want func(map[string]string) bool,
+) frame.Frame {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case f := <-ch:
+			if f.Type != frame.TypeCapabilityReadiness {
+				continue
+			}
+			if states, _ := readinessFrameStates(t, f); want(states) {
+				return f
+			}
+		case <-deadline:
+			t.Fatal("no matching capability.readiness frame within 5s")
+			return frame.Frame{}
+		}
+	}
+}
+
 // drainFrames empties ch without blocking and reports how many frames it took.
 func drainFrames(ch <-chan frame.Frame) int {
 	n := 0
@@ -1576,14 +1621,19 @@ func TestApplyHostConfig_DisableEmitsDisabledForEveryHostCollector(t *testing.T)
 	rt.linked.Store(true)
 
 	awaitReadiness(t, dir, "agent.identity", "host.core")
-	drainFrames(rt.controlFrames)
 
 	if _, err := rt.capGate.ApplyGrants([]byte(`{"host_telemetry":{"enabled":false}}`)); err != nil {
 		t.Fatalf("ApplyGrants() error = %v", err)
 	}
 	rt.applyHostConfig()
 
-	states, _ := readinessFrameStates(t, awaitReadinessFrame(t, rt.controlFrames))
+	// The seeded host.core="ready" frame may or may not be sitting in the
+	// channel here -- see awaitReadinessFrameWhere. Select the frame this test
+	// provoked rather than assuming it is the next one.
+	states, _ := readinessFrameStates(t, awaitReadinessFrameWhere(
+		t, rt.controlFrames,
+		func(s map[string]string) bool { return s[hostcollect.CollectorNames[0]] == "disabled" },
+	))
 	for _, name := range hostcollect.CollectorNames {
 		if states[name] != "disabled" {
 			t.Errorf("readiness[%q] = %q, want %q", name, states[name], "disabled")

@@ -8,6 +8,24 @@ on:
   push:
     tags:
       - "v*"
+  # Path-filtered, and not a release gate — see the note above, which still
+  # holds. What changes is when a defect in the agent or in this harness is
+  # first seen: before this, the earliest signal for an agent change was the
+  # nightly (against `dev`) or the tag itself, so v0.4.3's two failures were
+  # found by the release. A pull request that touches the agent, its E2E
+  # harness or the image it runs against now gets the same 40-minute journey
+  # while the change is still a proposal.
+  #
+  # The filter is what keeps this proportionate: a frontend or docs pull
+  # request does not pay for it.
+  pull_request:
+    paths:
+      - 'apps/agent/**'
+      - 'apps/backend/src/app/api/ws_agents.py'
+      - 'apps/backend/src/app/services/agent_*.py'
+      - 'Dockerfile.mono'
+      - 'docker/supervisord.mono.conf'
+      - '.github/workflows/e2e.yml'
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:

@@ -84,7 +84,20 @@ class TestCreateAppimage:
 
         assert result == expected
 
-    def test_returns_none_on_failure(self, tmp_path, tmp_bundle):
+    def test_a_failed_appimagetool_run_stops_the_build(self, tmp_path, tmp_bundle):
+        """appimagetool present and failing is fatal, not a warning.
+
+        This used to return None after printing "WARNING: AppImage creation
+        failed", and the build carried on and exited 0. The AppImage is a
+        published release asset, so that produced a release whose asset list
+        was quietly one file short — the same silent-success shape that let
+        `.pkg.tar.zst` be claimed for a format no release has ever carried.
+
+        The skip-when-absent path above keeps its old behaviour on purpose:
+        a machine without appimagetool is not a broken build, it is a machine
+        that cannot make this format. Present-and-failing is the case that has
+        to stop.
+        """
         def fake_run(cmd, **kwargs):
             r = MagicMock()
             r.returncode = 1
@@ -92,10 +105,9 @@ class TestCreateAppimage:
             return r
 
         with patch("build_native_release.shutil.which", return_value="/usr/bin/appimagetool"), \
-             patch("build_native_release.subprocess.run", side_effect=fake_run):
-            result = br.create_appimage(tmp_bundle, "0.1.3", "amd64", tmp_path)
-
-        assert result is None
+             patch("build_native_release.subprocess.run", side_effect=fake_run), \
+             pytest.raises(SystemExit, match="AppImage creation failed"):
+            br.create_appimage(tmp_bundle, "0.1.3", "amd64", tmp_path)
 
 
 class TestCreateArchPackage:

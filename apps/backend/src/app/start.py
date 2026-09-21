@@ -175,8 +175,66 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _native_config_path(args: argparse.Namespace) -> str | None:
+    """The native config file to load, or None when there is not one.
+
+    `Path.exists()` is not a total function. It answers False for a missing
+    file, but it *raises* when the filesystem refuses to answer — most often
+    EACCES, because a parent directory is not traversable by this process.
+    Probing the default path with a bare `.exists()` therefore turned a
+    directory-permission problem into an unhandled traceback at line one of
+    startup:
+
+        PermissionError: [Errno 13] Permission denied:
+          '/etc/circuit-breaker/config.yaml'
+        [PYI-3850:ERROR] Failed to execute script 'start'
+
+    The packaged layout has no `config.yaml` at all — it uses `config.toml`,
+    loaded separately below — so on a normal install this probe is asking about
+    a file that is *expected* to be absent, and a hardened `/etc/circuit-breaker`
+    was enough to crash-loop the service with no diagnosis.
+
+    Three outcomes, and they are not the same:
+
+      * readable and present -> load it;
+      * definitively absent  -> no native config, which is the packaged norm;
+      * cannot be determined -> say so. If the operator asked for this file, by
+        `--config` or CB_CONFIG_PATH, refusing is right: continuing would run
+        with settings they believe are applied and silently are not. If it is
+        only the built-in default, a warning and no config is right, because
+        nothing asked for it.
+    """
+    raw = args.config
+    if not raw:
+        return None
+
+    try:
+        return raw if Path(raw).exists() else None
+    except OSError as exc:
+        requested = bool(os.environ.get("CB_CONFIG_PATH")) or "--config" in sys.argv[1:]
+        detail = f"{raw}: {exc.strerror or exc}"
+        if requested:
+            raise SystemExit(
+                f"[start] cannot read the requested config file {detail}\n"
+                "[start] It was named by --config or CB_CONFIG_PATH, so starting "
+                "without it would run with settings that are not applied.\n"
+                "[start] Check that the file and every directory above it are "
+                "readable by the account this service runs as."
+            ) from exc
+        print(
+            f"[start] warning: cannot determine whether the default config exists — {detail}",
+            file=sys.stderr,
+        )
+        print(
+            "[start] warning: continuing without a native config file. If one is "
+            "meant to be there, make its directory traversable by this service account.",
+            file=sys.stderr,
+        )
+        return None
+
+
 def configure_runtime(args: argparse.Namespace) -> dict[str, Any]:
-    config_path = args.config if args.config and Path(args.config).exists() else None
+    config_path = _native_config_path(args)
     config = load_native_config(config_path)
 
     app_version = str(

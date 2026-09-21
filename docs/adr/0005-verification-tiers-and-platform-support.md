@@ -58,7 +58,9 @@ which of them are in force today and which are not:
 - **Tier 1** — guaranteed to install, boot, upgrade and roll back: deb/rpm on amd64.
 - **Tier 2** — guaranteed to install and boot: deb/rpm on arm64, verified on
   GitHub's native `ubuntu-22.04-arm` runners.
-- **Tier 3** — guaranteed to build only: apk, AppImage, tarball, `pkg.tar.zst`.
+- **Tier 3** — guaranteed to build only: apk, AppImage, tarball. `pkg.tar.zst` is
+  **not** in this list; see the 2026-09-21 note below for what was actually being
+  produced when it was.
 
 Four further rules apply repo-wide: a gate may not pass by not running; a gate may not
 pass by not asking; test configuration that changes semantics must be branch-invariant;
@@ -82,8 +84,8 @@ verified. It does not assert that the verification named above has been built.
 | Tier | Guarantee | In force when | State |
 |---|---|---|---|
 | 1 | Install, boot, upgrade, roll back — deb/rpm amd64 | The `mode: upgrade` row passes against a release candidate and its evidence is recorded | **Not in force, and not reachable before 0.5.0.** Phase 3 added `fedora-rpm-amd64-upgrade` and the assertions behind it, and fixed the packaging defects it exists to catch. The row has not been executed against a CI-built candidate — and it cannot yet be executed *honestly*, because no released version boots from its own deb/rpm, so there is no N-1 to upgrade from. 0.4.0 is the first release whose package boots and is retained as the N-1 fixture; this row's evidence is `0.4.0 → 0.5.0`. See the 2026-08-30 note. |
-| 2 | Install and boot — deb/rpm arm64 | The §8.2 L2 job extends `artifact-smoke.yml`'s `ubuntu-22.04-arm` run to the full boot-and-exercise contract | **Not in force.** That job still asserts only that the binary prints a version. |
-| 3 | Build only — apk, AppImage, tarball, `pkg.tar.zst` | The build gate is green for each format | **In force.** `make build` produces all four and `build.yml` gates them. |
+| 2 | Install and boot — deb/rpm arm64 | `artifact-smoke.yml`'s `deb-boot` job passes on the `ubuntu-22.04-arm` leg | **Built, not yet passed.** The job now installs the candidate, starts the units, waits for `/livez` and `/readyz`, reads `alembic_version` out of the database, bootstraps an admin and makes an authenticated request, then uninstalls. It has never completed: on v0.4.3 it failed in `Initialize containers` before its first step (see the 2026-09-21 note). It also now runs pre-tag, from `dev-ci.yml` and `ci.yml`, so the next passing run is on an integration branch rather than a release. |
+| 3 | Build only — apk, AppImage, tarball | The build gate is green for each format | **In force**, for those three. `pkg.tar.zst` was listed here and was never produced — see the 2026-09-21 note. |
 
 Two consequences follow while any row above reads *not in force*:
 
@@ -126,6 +128,40 @@ and restored — back the install-and-boot half of the claim and nothing beyond 
 Two things follow, and both are the point of writing this down. Tier 1 must not be promoted at
 0.4.0 on the strength of green install rows; and the 0.4.0 artifacts must be retained deliberately,
 because losing them costs another whole release cycle rather than a rebuild.
+
+**2026-09-21.** Three corrections, all of them cases of this table claiming more than
+the pipeline did.
+
+*`pkg.tar.zst` was never produced.* The Tier 3 row said "`make build` produces all four
+and `build.yml` gates them". It produces three. `create_arch_package()` patches a copy of
+the PKGBUILD into a work directory but never copied the `circuit-breaker.install` hook
+that PKGBUILD's `install=` line names, so `makepkg` refused every invocation with
+"install file (circuit-breaker.install) does not exist or is not a regular file" — and
+the failure was a `WARNING` that left the build exiting 0. On GitHub's runners the
+question never arose, because `makepkg` is not installed there and the function returns
+early. No published release carries a `.pkg.tar.zst`; v0.4.2's asset list is the record.
+The hook is now copied, and a failure *after* the toolchain is found is fatal rather than
+a warning. The row is corrected rather than the claim restored, because CI still has no
+`makepkg`: Arch users install through `install.sh`, which is exercised by the installer
+journey's `archlinux` leg.
+
+*Tier 2's row described a job that could not run.* It said "that job still asserts only
+that the binary prints a version", which stopped being true when `deb-boot` was added —
+but the replacement had never executed, because `artifact-smoke.yml` was reachable only
+from `release.yml`, which runs only on a tag. Its first execution was the v0.4.3 release,
+where it failed during container setup. The lesson is the one this ADR already states as
+"a gate may not pass by not running", extended: *a gate may not be counted before it has
+run at all*. `tests/build/test_release_paths_run_before_the_tag.py` now fails the build
+if any workflow `release.yml` depends on is unreachable from a push or a pull request.
+
+*The platform table had no counterpart for install.sh's own claims.* `install.sh` refuses
+any OS outside "Ubuntu, Debian, Fedora, RHEL, Rocky, AlmaLinux, Arch", and nothing bound
+that sentence to what CI runs.
+`specs/1.0.0/release-control/install-support-matrix.yaml` now declares each family, the
+image its journey runs in, and — for RHEL, which needs a paid subscription — which
+rebuilds cover it and why. `tests/build/test_install_support_matrix.py` reconciles the
+declaration with install.sh's two case statements and with the journey matrix, so a
+family cannot be claimed without being executed or explained.
 
 ## Rejected alternatives
 

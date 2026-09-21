@@ -45,6 +45,29 @@ $ cat share/build-info.json   # from dist/native/circuit-breaker_0.4.2_linux_amd
 A binary demanding `GLIBC_2.43` runs on anything whose own glibc is >= 2.43. Measured
 directly:
 
+> **Corrected 2026-09-21.** The build host's glibc version is not the bundle's floor. The
+> floor is the highest symbol version anything in the bundle actually references, and for
+> a Fedora 44 build that is **GLIBC_2.38**, not 2.43 — measured by running the bundle,
+> not by reading `build-info.json`. The consequence is that one of this document's
+> conclusions below is wrong in the operator's favour and one is right for the wrong
+> reason:
+>
+> * **Rocky 10 (2.39) does run a Fedora-44-built bundle.** The full installer journey —
+>   install, boot, `/readyz`, migrations, authenticated request, upgrade re-run,
+>   uninstall — was executed against one on 2026-09-21 and reached "Journey complete".
+>   The table below records Rocky as untestable in this sandbox; it is not.
+>   AlmaLinux 10 (2.39) is above the floor for the same reason.
+> * **Debian 12 (2.36) and Ubuntu 22.04 (2.35) genuinely cannot run it**, and fail
+>   exactly as predicted: `Failed to load Python shared library
+>   '/tmp/_MEI.../libpython3.14.so.1.0': /lib/x86_64-linux-gnu/libm.so.6: version
+>   'GLIBC_2.38' not found`. That is the real number, observed.
+>
+> None of this changes CI, which builds on ubuntu-22.04 (2.35) and is therefore below
+> every target's floor. It changes what a laptop can be used to verify: on a Fedora host,
+> the `dnf` and `pacman` families are locally reproducible and the `apt` family is not.
+
+Measured directly:
+
 ```
 $ podman run --rm docker.io/library/fedora:44 ldd --version | head -1        (not run: same host family, known >= 2.43)
 $ podman run --rm docker.io/library/archlinux:latest ...                      (rolling, tracks current glibc, >= 2.43)

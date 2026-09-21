@@ -57,8 +57,32 @@ type Status struct {
 
 	// LastError/LastErrorAt describe the most recent rejection or
 	// disconnect. Cleared on the next accepted hello.ack.
+	//
+	// This is a single slot and it is overwritten constantly. Losing a link
+	// is immediately followed by trying to rebuild it, and on a partitioned
+	// host that redial fails too — so within milliseconds of a connection
+	// dropping, LastError has stopped describing why it dropped and started
+	// describing why the reconnect failed. Anything asking "why did this
+	// agent go offline" needs the pair below, not this one.
 	LastError   string    `json:"last_error,omitempty"`
 	LastErrorAt time.Time `json:"last_error_at,omitempty"`
+
+	// LastLinkFailure/LastLinkFailureAt describe why an ESTABLISHED
+	// connection ended: the read deadline expiring, data frames going
+	// unacknowledged, a socket closing. Dial failures never land here.
+	//
+	// The distinction is the whole point. "link: dial: dial tcp: lookup
+	// circuitbreaker on 127.0.0.11:53: server misbehaving" is what an
+	// operator saw for every outage, whatever the cause, because the redial
+	// that follows a drop always overwrote the drop's own reason. The two
+	// causes need different responses — a silent server is a server-side
+	// fault, an unresolvable name is a network one — and the one an operator
+	// could see was always the second.
+	//
+	// Cleared on the next accepted hello.ack, like LastError: a working link
+	// supersedes the last failure.
+	LastLinkFailure   string    `json:"last_link_failure,omitempty"`
+	LastLinkFailureAt time.Time `json:"last_link_failure_at,omitempty"`
 
 	// Grants mirrors the capability gate's current authoritative set (see
 	// internal/capability), updated whenever a capabilities.set frame is
@@ -131,6 +155,8 @@ func (w *Writer) SetAccepted() error {
 	w.cur.LastConnected = time.Now().UTC()
 	w.cur.LastError = ""
 	w.cur.LastErrorAt = time.Time{}
+	w.cur.LastLinkFailure = ""
+	w.cur.LastLinkFailureAt = time.Time{}
 	return w.persistLocked()
 }
 
@@ -149,12 +175,33 @@ func (w *Writer) SetRejected(reason string) error {
 // nil (e.g. a clean, expected teardown); when non-nil its message is
 // recorded as the last error.
 func (w *Writer) SetDisconnected(cause error) error {
+	return w.setDisconnected(cause, false)
+}
+
+// SetLinkFailure records the end of a connection that had been ACCEPTED: the
+// server went silent, stopped acknowledging, or closed the socket. It does
+// everything SetDisconnected does and additionally stamps LastLinkFailure,
+// which no subsequent dial failure overwrites.
+//
+// Callers must use this one only for a session that reached an accepted
+// hello.ack. A failed dial is not a link failure — it is the absence of a
+// link — and recording it here would reintroduce exactly the overwriting this
+// field exists to prevent.
+func (w *Writer) SetLinkFailure(cause error) error {
+	return w.setDisconnected(cause, true)
+}
+
+func (w *Writer) setDisconnected(cause error, established bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.cur.LinkState = LinkDisconnected
 	if cause != nil {
 		w.cur.LastError = cause.Error()
 		w.cur.LastErrorAt = time.Now().UTC()
+		if established {
+			w.cur.LastLinkFailure = cause.Error()
+			w.cur.LastLinkFailureAt = w.cur.LastErrorAt
+		}
 	}
 	return w.persistLocked()
 }

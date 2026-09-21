@@ -16,6 +16,12 @@ on:
       - 'scripts/ci/installer-journey.sh'
       - '.github/workflows/installer-journey.yml'
   workflow_dispatch:
+  # Called by release-dry-run.yml, so a release candidate can be put through
+  # the whole install matrix before a tag exists. The pull_request trigger
+  # above is path-filtered, which is right for day-to-day work and wrong for a
+  # release: a candidate whose installer inputs did not change still has to be
+  # installed before it ships.
+  workflow_call:
 
 permissions:
   contents: read
@@ -26,7 +32,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: [ubuntu2204, debian12, fedora, archlinux, rockylinux]
+        # Every family install.sh claims, per
+        # specs/1.0.0/release-control/install-support-matrix.yaml, which
+        # tests/build/test_install_support_matrix.py binds to this list. RHEL
+        # is absent by declaration there, not by omission: it needs a paid
+        # subscription, and its two rebuilds are both here.
+        distro: [ubuntu2204, debian12, fedora, archlinux, rockylinux, almalinux]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -124,6 +135,10 @@ jobs:
             # (glibc 2.39) clears that floor; chosen for that reason, not by
             # default.
             rockylinux) IMAGE=docker.io/rockylinux/rockylinux:10 ;;
+            # The other EL10 rebuild, carried separately rather than assumed
+            # identical to Rocky: the two ship different default repository
+            # sets, and the installer resolves pgbouncer and Valkey from them.
+            almalinux)  IMAGE=docker.io/library/almalinux:10 ;;
             *) echo "::error::unknown distro ${DISTRO}"; exit 1 ;;
           esac
 
@@ -142,7 +157,7 @@ jobs:
                 apt-get install -y -qq systemd systemd-sysv curl jq openssl ca-certificates
               '
               ;;
-            fedora|rockylinux)
+            fedora|rockylinux|almalinux)
               sudo podman exec cb-journey-bootstrap bash -c '
                 set -euo pipefail
                 dnf install -y -q systemd curl jq openssl ca-certificates

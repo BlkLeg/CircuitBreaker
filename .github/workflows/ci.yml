@@ -693,3 +693,35 @@ jobs:
             exit 1
           fi
           echo "all Playwright shards passed"
+
+  # ── Release-candidate artifact path (GOV-20) ─────────────────────────────────
+  # `main` is where a release tag is cut from, so a pull request into `main` IS
+  # the release candidate. Running the release's own build and its installed-
+  # artifact gate here is what stops a tag from being the first execution of
+  # either.
+  #
+  # Both jobs are the same reusable workflows release.yml calls, with the same
+  # inputs and both architectures — not a parallel copy that can drift. The
+  # signing key is passed so the candidate is built exactly as the release one
+  # is; it is absent in forks, which yields warn-mode agent binaries rather than
+  # a failed build (see build.yml's input documentation).
+  #
+  # tests/build/test_release_paths_run_before_the_tag.py keeps this wired.
+  candidate-build:
+    name: Build Packages
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ""
+      signing_pubkey: ${{ vars.AGENT_SIGNING_PUBLIC_KEY }}
+    secrets:
+      AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.AGENT_SIGNING_PRIVATE_KEY }}
+
+  candidate-artifact-smoke:
+    name: Artifact Smoke
+    needs: candidate-build
+    uses: ./.github/workflows/artifact-smoke.yml
+    with:
+      # build.yml falls back to the tree's VERSION when the input is empty, and
+      # build_native_release.py refuses any other value, so this is the version
+      # the candidate actually carries.
+      version: ${{ needs.candidate-build.outputs.version }}
