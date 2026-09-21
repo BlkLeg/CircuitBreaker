@@ -349,7 +349,39 @@ jobs:
             exit 1
           fi
 
-          sudo tee /etc/circuit-breaker/circuit-breaker.env >/dev/null <<EOF
+          # Overlay, never replace.
+          #
+          # This step used to `tee` the whole file, which truncated the env
+          # packaging/postinstall.sh had just generated and threw away every
+          # line it writes — CB_DATA_DIR, UPLOADS_DIR, STATIC_DIR,
+          # CB_ALEMBIC_INI, CB_AGENT_BINARIES_DIR and the egress waiver. With
+          # CB_DATA_DIR gone the service falls back to `Path.cwd()/"data"`; the
+          # unit sets no WorkingDirectory, so systemd runs it from `/`, and
+          # ProtectSystem=strict makes `/` read-only:
+          #
+          #   OSError: [Errno 30] Read-only file system: '/data'
+          #
+          # The unit crash-looped for the whole budget and /livez never
+          # answered. That is the same mistake as the /etc mode above, one step
+          # further down — the gate failing the artifact for a condition the
+          # gate created — except this time it destroyed the configuration the
+          # package exists to install, so the boot check had stopped testing
+          # the package at all.
+          #
+          # Only the values that have to point at THIS runner's ephemeral
+          # dependencies are overridden. Everything the package decided stays.
+          ENV_FILE=/etc/circuit-breaker/circuit-breaker.env
+          [ -f "$ENV_FILE" ] || {
+            echo "::error::the package did not generate $ENV_FILE"
+            exit 1
+          }
+
+          # Secrets reach the file through this process's environment and a
+          # 0600 temp file; they never appear in argv, where `ps` would show
+          # them to every account on the runner.
+          OVERLAY="$(mktemp)"
+          chmod 600 "$OVERLAY"
+          cat > "$OVERLAY" <<EOF
           CB_DB_URL=postgresql://circuitbreaker:${CB_DB_PASSWORD}@127.0.0.1:5432/circuitbreaker
           CB_REDIS_URL=redis://127.0.0.1:6379/0
           CB_JWT_SECRET=${CB_JWT_SECRET}
@@ -357,14 +389,36 @@ jobs:
           NATS_AUTH_TOKEN=${CB_NATS_TOKEN}
           CB_SETUP_TOKEN=${CB_SETUP_TOKEN}
           EOF
+
+          # Drop the keys being overridden, keep every other packaged line,
+          # then append the overrides — one line per key, the package's own
+          # lines otherwise untouched and in order.
+          OVERRIDDEN="$(sed -E 's/=.*//' "$OVERLAY" | paste -sd'|' -)"
+          sudo sed -i -E "/^(${OVERRIDDEN})=/d" "$ENV_FILE"
+          sudo tee -a "$ENV_FILE" < "$OVERLAY" >/dev/null
+          rm -f "$OVERLAY"
+
+          # The package's own lines must have survived. Without this assertion
+          # the next edit here can silently reintroduce the crash loop, and the
+          # failure would again present as a packaging defect that is not there.
+          # tests/build/test_smoke_preserves_packaged_env.py keeps this list
+          # honest against packaging/postinstall.sh.
+          for _key in CB_DATA_DIR UPLOADS_DIR STATIC_DIR CB_ALEMBIC_INI \
+                      CB_AGENT_BINARIES_DIR CB_ALLOW_DIRECT_EGRESS; do
+            sudo grep -q "^${_key}=" "$ENV_FILE" || {
+              echo "::error::${_key} is missing from $ENV_FILE — this step overwrote configuration packaging/postinstall.sh generated. Overlay the ephemeral values onto the packaged env instead of replacing the file."
+              exit 1
+            }
+          done
+
           # root:circuitbreaker 0640 — the same ownership packaging/
           # postinstall.sh gives config.toml, which is the other file in here
           # that carries secrets. systemd reads EnvironmentFile= as root before
           # dropping privileges, so the service account never needs to read it;
           # matching the packaged convention keeps this gate from asserting a
           # layout no real install has.
-          sudo chown root:circuitbreaker /etc/circuit-breaker/circuit-breaker.env
-          sudo chmod 0640 /etc/circuit-breaker/circuit-breaker.env
+          sudo chown root:circuitbreaker "$ENV_FILE"
+          sudo chmod 0640 "$ENV_FILE"
 
       # Neither postinstall script starts anything — both only `enable`. And
       # /readyz (apps/backend/src/app/api/health.py) is 200 only when Postgres,
