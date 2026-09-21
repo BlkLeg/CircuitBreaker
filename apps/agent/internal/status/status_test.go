@@ -302,3 +302,88 @@ func TestWriter_RepeatedWritesRemain0600AndConsistent(t *testing.T) {
 		t.Error("final Grants lost the earlier SetGrants() call")
 	}
 }
+
+// TestLinkFailureSurvivesTheReconnectThatFollowsIt pins the field that exists
+// because LastError could not answer "why did this agent go offline".
+//
+// The sequence is the real one: an accepted link drops because the server
+// went silent, the daemon immediately redials, and on a partitioned host that
+// dial fails too. Before LastLinkFailure existed, the second event erased the
+// first within milliseconds — so every outage, whatever its cause, was
+// reported to the operator as whatever the reconnect happened to hit, usually
+// a DNS failure. The composed agent E2E was asserting against that same
+// overwritten slot and failing for the same reason.
+func TestLinkFailureSurvivesTheReconnectThatFollowsIt(t *testing.T) {
+	dir := t.TempDir()
+	w := NewWriter(dir, "test", "fp")
+
+	if err := w.SetAccepted(); err != nil {
+		t.Fatalf("SetAccepted() error = %v", err)
+	}
+
+	silence := errors.New("link: connection lost: link: server stopped acknowledging data frames")
+	if err := w.SetLinkFailure(silence); err != nil {
+		t.Fatalf("SetLinkFailure() error = %v", err)
+	}
+
+	// The redial, and the one after it. Both are dial failures, not link
+	// failures, so both move LastError and neither may touch LastLinkFailure.
+	for _, dialErr := range []error{
+		errors.New("link: dial: dial tcp: lookup circuitbreaker on 127.0.0.11:53: server misbehaving"),
+		errors.New("link: dial: dial tcp 10.0.0.2:8443: connect: connection refused"),
+	} {
+		if err := w.SetDisconnected(dialErr); err != nil {
+			t.Fatalf("SetDisconnected() error = %v", err)
+		}
+	}
+
+	st, ok, err := Read(dir)
+	if err != nil || !ok {
+		t.Fatalf("Read() = (%+v, %v, %v)", st, ok, err)
+	}
+	if st.LastLinkFailure != silence.Error() {
+		t.Errorf("LastLinkFailure = %q, want the reason the link went down (%q)",
+			st.LastLinkFailure, silence)
+	}
+	if st.LastError == silence.Error() {
+		t.Error("LastError still holds the link failure; it is supposed to track " +
+			"the most recent event, which is the failed redial")
+	}
+	if st.LinkState != LinkDisconnected {
+		t.Errorf("LinkState = %q, want %q", st.LinkState, LinkDisconnected)
+	}
+
+	// A working link supersedes both.
+	if err := w.SetAccepted(); err != nil {
+		t.Fatalf("SetAccepted() error = %v", err)
+	}
+	st, _, err = Read(dir)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if st.LastLinkFailure != "" || !st.LastLinkFailureAt.IsZero() {
+		t.Errorf("SetAccepted() left LastLinkFailure = %q at %v; an accepted link "+
+			"clears the previous failure", st.LastLinkFailure, st.LastLinkFailureAt)
+	}
+}
+
+// TestADialFailureIsNotRecordedAsALinkFailure is the other half: an agent that
+// has never connected must not report a link failure it never had.
+func TestADialFailureIsNotRecordedAsALinkFailure(t *testing.T) {
+	dir := t.TempDir()
+	w := NewWriter(dir, "test", "fp")
+
+	if err := w.SetDisconnected(errors.New("link: dial: connection refused")); err != nil {
+		t.Fatalf("SetDisconnected() error = %v", err)
+	}
+
+	st, ok, err := Read(dir)
+	if err != nil || !ok {
+		t.Fatalf("Read() = (%+v, %v, %v)", st, ok, err)
+	}
+	if st.LastLinkFailure != "" {
+		t.Errorf("LastLinkFailure = %q after a dial that never connected; the field "+
+			"describes an established connection ending, and there was none",
+			st.LastLinkFailure)
+	}
+}

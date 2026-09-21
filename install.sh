@@ -1561,6 +1561,18 @@ stage0_install_bundle() {
     cb_ok "Deploy templates installed"
   fi
 
+  # The uninstaller, so the host that was installed from a tarball can be
+  # uninstalled without one. stage9_install_cb_cli puts a copy at
+  # /usr/local/bin/uninstall-circuit-breaker, which is the first path
+  # `cb uninstall` looks for. Guarded like the agent binaries below: a bundle
+  # built before the uninstaller shipped still installs.
+  if [[ -f "${CB_BUNDLE_DIR}/uninstall.sh" ]]; then
+    cp -f "${CB_BUNDLE_DIR}/uninstall.sh" /opt/circuitbreaker/uninstall.sh
+    chmod 755 /opt/circuitbreaker/uninstall.sh
+    chown root:root /opt/circuitbreaker/uninstall.sh
+    cb_ok "Uninstaller installed"
+  fi
+
   # Copy agent binaries (absent in bundles built before this feature —
   # guarded so upgrading from an older release tarball degrades gracefully
   # instead of failing the install)

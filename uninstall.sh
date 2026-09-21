@@ -11,6 +11,101 @@
 
 set -e
 
+# ─── Non-interactive consent ─────────────────────────────────────────────────
+#
+# Every prompt in this script reads from /dev/tty, and the preflight below
+# refuses to start when no terminal can answer them. That is correct for a
+# human running `curl ... | bash`, and it makes the uninstaller unrunnable by
+# anything else — including the installer journey, which is why the most
+# prominently documented removal path had never been executed by CI.
+#
+# These two flags are consent expressed on the command line rather than at a
+# prompt. There is deliberately no bare `--unattended`: the only questions this
+# script asks are "may I delete your data?", so a non-interactive run has to say
+# which answer it is giving. Passing neither leaves the interactive behaviour
+# exactly as it was.
+CB_UNATTENDED=false
+CB_PURGE_DATA=false
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --purge)
+      CB_UNATTENDED=true
+      CB_PURGE_DATA=true
+      ;;
+    --keep-data)
+      CB_UNATTENDED=true
+      CB_PURGE_DATA=false
+      ;;
+    -h|--help)
+      echo "Usage: bash uninstall.sh [--purge | --keep-data]"
+      echo ""
+      echo "  --purge      Remove everything, including configuration and data."
+      echo "               Implies non-interactive: no prompt is shown."
+      echo "  --keep-data  Remove the software, retain /etc/circuitbreaker,"
+      echo "               /var/lib/circuitbreaker and the Docker data volume."
+      echo "               Implies non-interactive."
+      echo ""
+      echo "  With neither flag the uninstaller is interactive and asks before"
+      echo "  removing anything irreversible."
+      exit 0
+      ;;
+    *)
+      echo "uninstall.sh: unknown option '$1'" >&2
+      echo "Run 'bash uninstall.sh --help' for usage." >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+# Answers a y/N prompt from the flags when running non-interactively, and from
+# /dev/tty otherwise. Callers branch on the value exactly as they did when every
+# read was inline, so consent is still explicit at each site.
+cb_confirm_destructive() {
+  local prompt="$1"
+  if [ "$CB_UNATTENDED" = "true" ]; then
+    if [ "$CB_PURGE_DATA" = "true" ]; then
+      echo "  ${prompt} [--purge] yes"
+      REPLY="y"
+    else
+      echo "  ${prompt} [--keep-data] no"
+      REPLY="n"
+    fi
+    return 0
+  fi
+  printf "  %s [y/N] " "$prompt"
+  read -r REPLY < /dev/tty
+}
+
+# The other half: prompts whose subject is recoverable — a Docker image that
+# re-pulls, a local CA that re-issues — and which therefore default to yes. A
+# non-interactive run takes that default whichever data flag was given, because
+# neither flag is about images or certificates.
+cb_confirm_cleanup() {
+  local prompt="$1"
+  if [ "$CB_UNATTENDED" = "true" ]; then
+    echo "  ${prompt} [non-interactive] yes"
+    REPLY="y"
+    return 0
+  fi
+  printf "  %s [Y/n] " "$prompt"
+  read -r REPLY < /dev/tty
+}
+
+# ─── sudo on hosts that do not have it ───────────────────────────────────────
+#
+# Every privileged step below calls `sudo`, which is the right shape for the
+# advertised invocation (a non-root operator running the script). It is absent
+# from the debian:12 and fedora base images the installer journey runs in, and
+# on those the script is already root — so `sudo rm -rf /opt/circuitbreaker`
+# died with "command not found" partway through a removal it had already
+# started. Only defined when it is both missing and unnecessary; where a real
+# sudo exists, that is what runs.
+if [ "$(id -u)" -eq 0 ] && ! command -v sudo >/dev/null 2>&1; then
+  sudo() { "$@"; }
+fi
+
 CB_CONTAINER="${CB_CONTAINER:-circuit-breaker}"
 CB_VOLUME="${CB_VOLUME:-circuit-breaker-data}"
 CB_IMAGE="${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:latest}"
@@ -88,9 +183,42 @@ echo ""
 
 _cb_phase cb_phase_begin preflight "Pre-flight checks"
 
-# Verify Docker is available
+# ─── What is actually installed here ─────────────────────────────────────────
+#
+# Three layouts, and this script used to know about two of them.
+#
+#   docker   — the container, its volume and Caddy.
+#   package  — the deb/rpm layout: /usr/local/bin/circuit-breaker,
+#              circuit-breaker.service, /etc/circuit-breaker.
+#   native   — what install.sh creates: /opt/circuitbreaker, the
+#              circuitbreaker-* units, /etc/circuitbreaker, the breaker user.
+#
+# The third was invisible. Its paths differ from the packaged ones by a single
+# hyphen, and every test of the native section matched only the packaged
+# spelling — so `bash uninstall.sh` after `bash install.sh` skipped the whole
+# section and left a running deployment behind, reporting success. The
+# installer journey now uninstalls what it installed, which is what makes this
+# checkable rather than merely written down.
+CB_HAS_NATIVE=false
+if [ -d /opt/circuitbreaker ] || [ -f /etc/systemd/system/circuitbreaker-backend.service ]; then
+  CB_HAS_NATIVE=true
+fi
+
+CB_HAS_PACKAGE=false
+if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-breaker.service ]; then
+  CB_HAS_PACKAGE=true
+fi
+
+# Docker is a requirement of the docker layout, not of this script. A native
+# install does not need it — install.sh treats container telemetry as optional
+# and carries on when Docker cannot be installed — so refusing here made the
+# uninstaller unusable on exactly the hosts the native path targets.
 if ! command -v docker >/dev/null 2>&1; then
-  Show 1 "Docker is not installed. Nothing to uninstall."
+  if [ "$CB_HAS_NATIVE" = "false" ] && [ "$CB_HAS_PACKAGE" = "false" ]; then
+    Show 1 "Docker is not installed and no native or packaged install was found. Nothing to uninstall."
+  fi
+  Show 2 "Docker is not installed — skipping container cleanup."
+  docker() { return 1; }
 fi
 
 # ─── Interactive terminal preflight ──────────────────────────────────────────
@@ -124,7 +252,10 @@ fi
 # The 2>/dev/null must come *before* the redirection it is silencing — bash
 # applies redirections left to right, so with the order reversed the failure
 # message is written to a stderr that has not been redirected yet.
-if ! true 2>/dev/null < /dev/tty; then
+# --purge / --keep-data answer every prompt up front, so there is nothing left
+# to ask and no terminal to need. The preflight still applies to every run that
+# did not say which answer it is giving.
+if [ "$CB_UNATTENDED" = "false" ] && ! true 2>/dev/null < /dev/tty; then
   echo ""
   Show 3 "No terminal is available to answer this uninstaller's prompts."
   echo ""
@@ -211,8 +342,20 @@ echo ""
 # thanks", a stray keystroke — keeps the data. The [yY]* glob and the [y/N]
 # marker match the config and data prompts in the Linux and macOS cleanup
 # sections further down, which have always had this shape.
-printf "  Delete data volume '%s'? [y/N] " "$CB_VOLUME"
-read -r REPLY < /dev/tty
+#
+# Kept inline rather than routed through cb_confirm_destructive: this prompt is
+# the one whose exact shape is pinned, character by character, by
+# tests/build/test_uninstall_volume_prompt.py — the `[y/N]` marker, the `[yY]*`
+# glob and the `< /dev/tty` read are all assertions there, and that test lifts
+# this block out of the file and runs it on its own. A non-interactive run
+# answers from the flags without moving the read.
+if [ "${CB_UNATTENDED:-false}" = "true" ]; then
+  if [ "${CB_PURGE_DATA:-false}" = "true" ]; then REPLY="y"; else REPLY="n"; fi
+  echo "  Delete data volume '$CB_VOLUME'? [non-interactive] $REPLY"
+else
+  printf "  Delete data volume '%s'? [y/N] " "$CB_VOLUME"
+  read -r REPLY < /dev/tty
+fi
 echo ""
 
 case "$REPLY" in
@@ -247,8 +390,7 @@ echo ""
 Show 3 "Docker image: $CB_IMAGE"
 echo ""
 _cb_phase cb_ui_teardown
-printf "  Remove Docker image '%s'? [Y/n] " "$CB_IMAGE"
-read -r REPLY < /dev/tty
+cb_confirm_cleanup "$(printf "Remove Docker image '%s'?" "$CB_IMAGE")"
 echo ""
 
 case "$REPLY" in
@@ -316,8 +458,7 @@ if [[ "$TLS_DETECTED" == "1" ]]; then
   if docker image inspect caddy:2-alpine >/dev/null 2>&1; then
     echo ""
     _cb_phase cb_ui_teardown
-    printf "  Remove Caddy Docker image 'caddy:2-alpine'? [Y/n] "
-    read -r REPLY < /dev/tty
+    cb_confirm_cleanup "Remove Caddy Docker image 'caddy:2-alpine'?"
     echo ""
     case "$REPLY" in
       [nN][oO]|[nN])
@@ -340,8 +481,7 @@ if [[ "$TLS_DETECTED" == "1" ]]; then
   echo -e "    • Remove '${CB_HOSTNAME}' from /etc/hosts"
   echo ""
   _cb_phase cb_ui_teardown
-  printf "  Proceed with CA cleanup? [Y/n] "
-  read -r REPLY < /dev/tty
+  cb_confirm_cleanup "Proceed with CA cleanup?"
   echo ""
 
   case "$REPLY" in
@@ -397,6 +537,147 @@ if [[ "$TLS_DETECTED" == "1" ]]; then
   esac
 fi
 
+# ─── install.sh (native) cleanup ────────────────────────────────────────────
+#
+# The layout install.sh builds: /opt/circuitbreaker, seven circuitbreaker-*
+# units plus a target, a slice, a healthcheck timer, the helper daemon, an
+# nginx site and the `breaker` service account. None of it shares a path with
+# the packaged layout below, which is why the section below never touched it.
+#
+# Ordered stop-then-remove, and idempotent throughout: every step tolerates the
+# thing it removes being absent, so a re-run after a partial uninstall finishes
+# the job instead of failing on the first missing file.
+if [ "$CB_HAS_NATIVE" = "true" ]; then
+  echo ""
+  echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
+  echo -e " ${aCOLOUR[1]}Circuit Breaker (install.sh) Cleanup${COLOUR_RESET}"
+  echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
+  echo ""
+
+  # The target first, so systemd tears the tree down in dependency order rather
+  # than leaving the backend talking to a database that has already gone.
+  Show 2 "Stopping Circuit Breaker services..."
+  sudo systemctl stop circuitbreaker.target >/dev/null 2>&1 || true
+  for unit in \
+    circuitbreaker-healthcheck.timer \
+    circuitbreaker-healthcheck.service \
+    'circuitbreaker-worker@*.service' \
+    circuitbreaker-backend.service \
+    circuitbreaker-docker-proxy.service \
+    cb-helperd.service \
+    circuitbreaker-nats.service \
+    circuitbreaker-redis.service \
+    circuitbreaker-pgbouncer.service \
+    circuitbreaker-postgres.service; do
+    # Unquoted on purpose for the worker glob: systemctl expands instance
+    # templates itself only for a literal list, so the shell supplies the names.
+    # shellcheck disable=SC2086
+    sudo systemctl stop $unit >/dev/null 2>&1 || true
+    # shellcheck disable=SC2086
+    sudo systemctl disable $unit >/dev/null 2>&1 || true
+  done
+  sudo systemctl disable circuitbreaker.target >/dev/null 2>&1 || true
+  # The slice outlives its units: removing circuitbreaker.slice's unit file
+  # leaves the cgroup loaded and "active" until something stops it, so
+  # `systemctl list-units 'circuitbreaker*'` still names the product on a host
+  # it has been removed from.
+  sudo systemctl stop circuitbreaker.slice >/dev/null 2>&1 || true
+  Show 0 "Services stopped and disabled."
+
+  Show 2 "Removing systemd units..."
+  sudo rm -f \
+    /etc/systemd/system/circuitbreaker-backend.service \
+    /etc/systemd/system/circuitbreaker-postgres.service \
+    /etc/systemd/system/circuitbreaker-pgbouncer.service \
+    /etc/systemd/system/circuitbreaker-redis.service \
+    /etc/systemd/system/circuitbreaker-nats.service \
+    /etc/systemd/system/circuitbreaker-docker-proxy.service \
+    /etc/systemd/system/circuitbreaker-healthcheck.service \
+    /etc/systemd/system/circuitbreaker-healthcheck.timer \
+    /etc/systemd/system/'circuitbreaker-worker@.service' \
+    /etc/systemd/system/circuitbreaker.target \
+    /etc/systemd/system/circuitbreaker.slice \
+    /etc/systemd/system/cb-helperd.service >/dev/null 2>&1 || true
+  sudo systemctl daemon-reload >/dev/null 2>&1 || true
+  # Without this a unit that exited non-zero stays in `failed` forever, and
+  # `systemctl status` keeps naming a service that no longer exists.
+  sudo systemctl reset-failed >/dev/null 2>&1 || true
+  Show 0 "systemd units removed."
+
+  # nginx keeps serving a proxy_pass to a backend that is gone otherwise, which
+  # is worse than serving nothing: the operator gets 502s from a product they
+  # believe they removed.
+  if [ -e /etc/nginx/sites-enabled/circuitbreaker.conf ] \
+    || [ -e /etc/nginx/conf.d/circuitbreaker.conf ]; then
+    Show 2 "Removing nginx site configuration..."
+    sudo rm -f \
+      /etc/nginx/sites-enabled/circuitbreaker.conf \
+      /etc/nginx/sites-available/circuitbreaker.conf \
+      /etc/nginx/conf.d/circuitbreaker.conf >/dev/null 2>&1 || true
+    if sudo nginx -t >/dev/null 2>&1; then
+      sudo systemctl reload nginx >/dev/null 2>&1 || true
+      Show 0 "nginx configuration removed and reloaded."
+    else
+      Show 3 "nginx configuration removed; nginx did not reload cleanly — check: nginx -t"
+    fi
+  fi
+
+  if [ -d /opt/circuitbreaker ]; then
+    sudo rm -rf /opt/circuitbreaker
+    Show 0 "Application directory removed (/opt/circuitbreaker)."
+  fi
+
+  if [ -f /usr/local/bin/cb ]; then
+    sudo rm -f /usr/local/bin/cb
+    Show 0 "cb CLI removed."
+  fi
+
+  # The installed uninstaller, unless it is the script currently running. bash
+  # reads a script incrementally, so deleting the file mid-execution can leave
+  # the interpreter reading from a hole; when this IS that file it stays, and
+  # the operator is told so rather than finding it later and wondering.
+  if [ -f /usr/local/bin/uninstall-circuit-breaker ]; then
+    if [ "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)" = /usr/local/bin/uninstall-circuit-breaker ]; then
+      Show 2 "Uninstaller retained at /usr/local/bin/uninstall-circuit-breaker (it is running now)."
+      Show 2 "  Remove it with: sudo rm /usr/local/bin/uninstall-circuit-breaker"
+    else
+      sudo rm -f /usr/local/bin/uninstall-circuit-breaker
+      Show 0 "Installed uninstaller removed."
+    fi
+  fi
+
+  # Runtime state systemd owns rather than the package: left behind, the next
+  # install inherits a vault.env written by a deployment that no longer exists.
+  sudo rm -rf /run/circuitbreaker >/dev/null 2>&1 || true
+
+  # Config and data, asked for separately and in that order: an operator who
+  # keeps the data almost always wants the credentials that decrypt it, and
+  # CB_VAULT_KEY lives in /etc/circuitbreaker/.env. Removing the config while
+  # retaining the data would leave an unreadable database behind.
+  if [ -d /etc/circuitbreaker ] || [ -d /var/lib/circuitbreaker ]; then
+    echo ""
+    _cb_phase cb_ui_teardown
+    cb_confirm_destructive "Remove Circuit Breaker configuration and data (/etc/circuitbreaker, /var/lib/circuitbreaker)? This deletes the database and the vault key, and cannot be undone."
+    case "$REPLY" in
+      [yY]*)
+        sudo rm -rf /etc/circuitbreaker /var/lib/circuitbreaker
+        Show 0 "Configuration and data removed."
+        # The account is only removed alongside the data it owns. Deleting it
+        # while /var/lib/circuitbreaker survives would orphan every file in
+        # there to a bare uid.
+        if id breaker >/dev/null 2>&1; then
+          sudo userdel breaker >/dev/null 2>&1 || true
+          Show 0 "Service account 'breaker' removed."
+        fi
+        ;;
+      *)
+        Show 2 "Configuration retained at /etc/circuitbreaker"
+        Show 2 "Data retained at /var/lib/circuitbreaker"
+        ;;
+    esac
+  fi
+fi
+
 # ─── Native binary cleanup ──────────────────────────────────────────────────
 if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-breaker.service ]; then
   echo ""
@@ -436,8 +717,7 @@ if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-bre
   echo ""
   if [ -d /etc/circuit-breaker ]; then
     _cb_phase cb_ui_teardown
-    printf "  Remove config (/etc/circuit-breaker)? [y/N] "
-    read -r REPLY < /dev/tty
+    cb_confirm_destructive "Remove config (/etc/circuit-breaker)?"
     case "$REPLY" in
       [yY]*) sudo rm -rf /etc/circuit-breaker; Show 0 "Config removed." ;;
       *) Show 2 "Config retained at /etc/circuit-breaker" ;;
@@ -446,8 +726,7 @@ if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-bre
 
   if [ -d /var/lib/circuit-breaker ]; then
     _cb_phase cb_ui_teardown
-    printf "  Remove data (/var/lib/circuit-breaker)? [y/N] "
-    read -r REPLY < /dev/tty
+    cb_confirm_destructive "Remove data (/var/lib/circuit-breaker)?"
     case "$REPLY" in
       [yY]*) sudo rm -rf /var/lib/circuit-breaker; Show 0 "Data removed." ;;
       *) Show 2 "Data retained at /var/lib/circuit-breaker" ;;
@@ -471,8 +750,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 
     if [ -d "$HOME/Library/Application Support/CircuitBreaker" ]; then
       _cb_phase cb_ui_teardown
-      printf "  Remove app data? [y/N] "
-      read -r REPLY < /dev/tty
+      cb_confirm_destructive "Remove app data?"
       case "$REPLY" in
         [yY]*) rm -rf "$HOME/Library/Application Support/CircuitBreaker"; Show 0 "App data removed." ;;
         *) Show 2 "App data retained." ;;
@@ -481,8 +759,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 
     if [ -d "$HOME/.config/circuitbreaker" ]; then
       _cb_phase cb_ui_teardown
-      printf "  Remove config (~/.config/circuitbreaker)? [y/N] "
-      read -r REPLY < /dev/tty
+      cb_confirm_destructive "Remove config (~/.config/circuitbreaker)?"
       case "$REPLY" in
         [yY]*) rm -rf "$HOME/.config/circuitbreaker"; Show 0 "Config removed." ;;
         *) Show 2 "Config retained." ;;

@@ -22,6 +22,14 @@ on:
       # than failing.
       AGENT_SIGNING_PRIVATE_KEY:
         required: false
+    outputs:
+      # The version the candidate actually carries, so a caller gating on these
+      # artifacts names them from what was built rather than re-deriving a
+      # string that can disagree. Both matrix legs compute it identically from
+      # the same tree.
+      version:
+        description: "Version string the built packages are named for."
+        value: ${{ jobs.build.outputs.version }}
   workflow_dispatch:
     # checkov:skip=CKV_GHA_7: Manual RC/package rebuilds require an operator-supplied version; release.yml consumes the protected artifact path.
     inputs:
@@ -45,6 +53,8 @@ jobs:
           - os: ubuntu-22.04-arm
             arch: arm64
     runs-on: ${{ matrix.os }}
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
 
     steps:
       - uses: actions/checkout@v5
@@ -57,13 +67,22 @@ jobs:
         with:
           node-version: "20"
 
+      # Falls back to the tree's VERSION, never to `dev-<sha>`: the bundle
+      # copies VERSION into share/VERSION and the binary answers --version from
+      # it, so any other string names a package after a version it does not
+      # contain. scripts/build_native_release.py refuses that mismatch, which
+      # would have turned the old default into a hard build failure on every
+      # workflow_dispatch that omitted the input.
       - name: Derive version
         id: ver
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ -n "${REQUESTED_VERSION}" ]; then
+            echo "version=${REQUESTED_VERSION}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+            echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install build deps
@@ -87,9 +106,14 @@ jobs:
           # failing.
           AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.AGENT_SIGNING_PRIVATE_KEY }}
           SIGNING_PUBKEY: ${{ inputs.signing_pubkey }}
+          # Through the environment, not interpolated into the command line:
+          # this value originates in a workflow_dispatch input, which is
+          # attacker-shaped text by the time it reaches a shell.
+          CB_VERSION: ${{ steps.ver.outputs.version }}
         run: |
+          set -euo pipefail
           .venv/bin/python scripts/build_native_release.py \
-            --version "${{ steps.ver.outputs.version }}" \
+            --version "$CB_VERSION" \
             --clean
 
       - name: List artifacts

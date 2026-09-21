@@ -158,8 +158,25 @@ func runDaemon() {
 	onDisconnected := func(cause error) {
 		// Stop spending the readiness budget on frames runOnce would discard;
 		// the next OnConnected re-arms the send with the newest payload.
-		rt.linked.Store(false)
-		if err := statusWriter.SetDisconnected(cause); err != nil {
+		//
+		// `established` distinguishes the two things the link reports through
+		// this one callback: a connection that was accepted and then ended,
+		// and a dial that never connected at all. Only the first is a link
+		// failure, and only the first gets stamped somewhere a subsequent
+		// redial cannot overwrite — see status.Writer.SetLinkFailure.
+		//
+		// Swap(false) rather than Load(): the flag has to be consumed here, or
+		// the failed dials that follow a drop would each re-stamp the same
+		// failure and LastLinkFailureAt would track the reconnect ladder
+		// instead of the moment the link went down.
+		established := rt.linked.Swap(false)
+		var err error
+		if established {
+			err = statusWriter.SetLinkFailure(cause)
+		} else {
+			err = statusWriter.SetDisconnected(cause)
+		}
+		if err != nil {
 			log.Printf("cb-agent: status: %v", err)
 		}
 	}

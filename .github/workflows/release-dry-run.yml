@@ -1,0 +1,511 @@
+name: Release Dry Run
+
+# The whole promotion graph, against any ref, publishing nothing.
+#
+# Before this existed, several steps of a release had no rehearsal at all: the
+# multi-architecture manifest assembly, the image smoke, the asset naming that
+# install.sh depends on, and the post-publish verification itself. Each ran for
+# the first time during the release that depended on it. v0.4.2 published a
+# binary with no application in it; v0.4.3's release then died in
+# `Initialize containers` inside the very gate added to catch that.
+#
+# Everything here is the same reusable workflow release.yml calls, with the
+# same inputs, plus staged equivalents of the three things that genuinely need
+# a registry or a published release:
+#
+#   * manifest assembly runs against a throwaway `registry:2` on the runner,
+#     using the same `docker buildx imagetools create` and the same
+#     "does the manifest list cover both platforms" check;
+#   * the image smoke boots the assembled image from that registry;
+#   * post-publish discovery runs against a staged SHA256SUMS and the asset
+#     names install.sh actually constructs, rather than the GitHub API.
+#
+# Nothing here pushes to GHCR, creates a Release, or moves a tag. `permissions`
+# is read-only for exactly that reason: a dry run that could publish is not a
+# dry run.
+#
+# No `workflow_dispatch` inputs. An earlier draft had a boolean for skipping the
+# install matrix, and two things were wrong with it: Checkov's CKV_GHA_7 refuses
+# dispatch inputs outright (the build output must not depend on user
+# parameters), and a rehearsal with a leg switched off is not the rehearsal this
+# workflow exists to be. The ref is chosen when the run is dispatched; nothing
+# else is negotiable.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── The same parity gate the release runs, minus the tag ──────────────────
+  version:
+    name: Derive Version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # A dry run has no tag to strip, so VERSION is the candidate by
+      # definition. The parity script still runs: it is what catches a VERSION
+      # the rest of the tree disagrees with, and a dry run that skipped it
+      # would be rehearsing a different release from the real one.
+      - name: Derive version string
+        id: ver
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Assert version parity
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: python3 scripts/check_version_parity.py --expected "$CB_VERSION"
+
+      - name: Assert the release checklist would pass
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: python3 scripts/release_checklist.py --version "$CB_VERSION"
+
+      # release.yml decides the registry tags and the prerelease flag from this
+      # one function. Printing its answer here is the difference between
+      # discovering at publication time that a candidate would have moved
+      # `:latest` and knowing it now.
+      - name: Report the channel this candidate would publish to
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "tags:       $(python3 scripts/release_channel.py --version "$CB_VERSION" --field tags)"
+          echo "prerelease: $(python3 scripts/release_channel.py --version "$CB_VERSION" --field prerelease)"
+
+  # ── Native packages, built exactly as the release builds them ─────────────
+  build:
+    name: Build Packages
+    needs: version
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      signing_pubkey: ${{ vars.AGENT_SIGNING_PUBLIC_KEY }}
+    secrets:
+      AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.AGENT_SIGNING_PRIVATE_KEY }}
+
+  # ── Install, boot, migrate, authenticate, uninstall ───────────────────────
+  artifact-smoke:
+    name: Artifact Smoke
+    needs: [version, build]
+    uses: ./.github/workflows/artifact-smoke.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+
+  # ── install.sh, on every family it claims ─────────────────────────────────
+  installer-journey:
+    name: Installer Journey
+    needs: version
+    uses: ./.github/workflows/installer-journey.yml
+
+  # ── Container images, per architecture, exported rather than pushed ───────
+  image:
+    name: Build Image (${{ matrix.arch }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: amd64
+          - os: ubuntu-22.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Same BuildKit-secret handling as release.yml: a file, never a build
+      # arg, because build args are readable with `docker history`.
+      - name: Stage the agent signing key
+        env:
+          AGENT_SIGNING_PRIVATE_KEY: ${{ secrets.AGENT_SIGNING_PRIVATE_KEY }}
+        run: |
+          umask 077
+          printf '%s' "${AGENT_SIGNING_PRIVATE_KEY}" > /tmp/agent-signing-key
+
+      # `type=oci` rather than a push. The release pushes each architecture to
+      # GHCR by digest; here each leg writes an OCI layout the merge job loads
+      # into a throwaway registry, so the assembly below exercises the real
+      # `imagetools create` path without anything becoming pullable by name.
+      - name: Build and export an OCI archive
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "linux/${{ matrix.arch }}" \
+            -f Dockerfile.mono \
+            --build-arg SIGNING_PUBKEY="${{ vars.AGENT_SIGNING_PUBLIC_KEY }}" \
+            --secret id=agent_signing_key,src=/tmp/agent-signing-key \
+            --provenance=false \
+            --output "type=oci,dest=/tmp/image-${{ matrix.arch }}.tar,name=circuitbreaker:dry-run" \
+            .
+          ls -lh "/tmp/image-${{ matrix.arch }}.tar"
+
+      - name: Shred the staged signing key
+        if: always()
+        run: shred -u /tmp/agent-signing-key 2>/dev/null || rm -f /tmp/agent-signing-key
+
+      - name: Upload the OCI archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: dry-run-image-${{ matrix.arch }}
+          path: /tmp/image-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Manifest assembly and image smoke, against a throwaway registry ───────
+  image-merge:
+    name: Merge Image Manifest (staged)
+    needs: [version, image]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download both OCI archives
+        uses: actions/download-artifact@v5
+        with:
+          path: /tmp/images
+          pattern: dry-run-image-*
+          merge-multiple: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # A registry on localhost, thrown away with the runner. It is what makes
+      # `imagetools create` — the real assembly command — runnable without
+      # anything reaching GHCR.
+      - name: Start a throwaway registry
+        run: |
+          set -euo pipefail
+          docker run -d --name dry-run-registry -p 5000:5000 registry:2
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:5000/v2/ >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:5000/v2/ >/dev/null
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Push each architecture into the throwaway registry
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+          # Two files are expected, one per architecture. Anything else means a
+          # leg vanished — the same assertion release.yml makes on its digest
+          # count, and for the same reason: a half-built release must not be
+          # able to assemble a manifest that looks complete.
+          COUNT=$(find /tmp/images -maxdepth 1 -name 'image-*.tar' | wc -l)
+          if [ "${COUNT}" -ne 2 ]; then
+            echo "::error::expected 2 per-architecture OCI archives, found ${COUNT}"
+            ls -la /tmp/images
+            exit 1
+          fi
+
+          for arch in amd64 arm64; do
+            skopeo copy --dest-tls-verify=false \
+              "oci-archive:/tmp/images/image-${arch}.tar" \
+              "docker://127.0.0.1:5000/circuitbreaker:${arch}"
+          done
+
+      - name: Assemble the manifest list
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          IMAGE=127.0.0.1:5000/circuitbreaker
+
+          # The same command release.yml's image-merge runs, and the same tag
+          # list, so a change to scripts/release_channel.py is rehearsed here
+          # rather than discovered at publication.
+          TAG_ARGS=""
+          FIRST_TAG=""
+          for tag in $(python3 scripts/release_channel.py --version "${VERSION}" --field tags); do
+            TAG_ARGS="${TAG_ARGS} -t ${IMAGE}:${tag}"
+            [ -n "${FIRST_TAG}" ] || FIRST_TAG="${tag}"
+          done
+          echo "would publish tags:${TAG_ARGS}"
+
+          # shellcheck disable=SC2086
+          docker buildx imagetools create ${TAG_ARGS} \
+            "${IMAGE}:amd64" "${IMAGE}:arm64"
+
+          docker buildx imagetools inspect "${IMAGE}:${FIRST_TAG}" --raw > /tmp/manifest.json
+          echo "FIRST_TAG=${FIRST_TAG}" >> "$GITHUB_ENV"
+
+      # Byte-for-byte the check release.yml makes before signing. Running it
+      # here is what turns "the merge probably covers both architectures" into
+      # a fact known before a tag exists.
+      - name: Assert the assembled manifest covers both architectures
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, sys
+          index = json.load(open("/tmp/manifest.json"))
+          found = {
+              f"{m['platform']['os']}/{m['platform']['architecture']}"
+              for m in index.get("manifests", [])
+              if "platform" in m and m["platform"].get("architecture") != "unknown"
+          }
+          required = {"linux/amd64", "linux/arm64"}
+          missing = required - found
+          if missing:
+              print(f"::error::assembled manifest is missing {sorted(missing)}; found {sorted(found)}")
+              sys.exit(1)
+          print(f"manifest covers {sorted(found)}")
+          PY
+
+      # The image smoke: the assembled manifest is pulled by tag, exactly as a
+      # user would, and the application inside it is started. A manifest that
+      # resolves and an image that runs are different claims.
+      #
+      # Through docker-compose.yml with CB_IMAGE overridden, not a hand-rolled
+      # `docker run`: the mono image needs a data volume, tmpfs mounts, four
+      # secrets including NATS_AUTH_TOKEN (without which /readyz never reaches
+      # 200) and three capabilities. Compose is where that arrangement is
+      # written down, and dev-ci.yml's build-docker job smokes the image the
+      # same way — so this rehearses the documented deployment rather than a
+      # second one invented here.
+      - name: Mint ephemeral secrets for the image smoke
+        env:
+          FIRST_TAG: ${{ env.FIRST_TAG }}
+        run: |
+          set -euo pipefail
+          hexgen() { python3 -c 'import secrets; print(secrets.token_hex(32))'; }
+          DB_PASSWORD="$(hexgen)"
+          JWT_SECRET="$(hexgen)"
+          NATS_TOKEN="$(hexgen)"
+          VAULT_KEY="$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
+          for secret in "${DB_PASSWORD}" "${JWT_SECRET}" "${NATS_TOKEN}" "${VAULT_KEY}"; do
+            echo "::add-mask::${secret}"
+          done
+
+          # printf per line rather than a heredoc, so the values are written
+          # verbatim with no chance of picking up the block's indentation.
+          umask 077
+          {
+            printf 'CB_DB_PASSWORD=%s\n' "${DB_PASSWORD}"
+            printf 'CB_JWT_SECRET=%s\n' "${JWT_SECRET}"
+            printf 'NATS_AUTH_TOKEN=%s\n' "${NATS_TOKEN}"
+            printf 'CB_VAULT_KEY=%s\n' "${VAULT_KEY}"
+            printf 'CB_IMAGE=127.0.0.1:5000/circuitbreaker:%s\n' "${FIRST_TAG}"
+            # Not 80/443: the runner already has services on the low ports, and
+            # a bind failure here would read as a container fault.
+            printf 'CB_PORT=%s\n' "18080"
+            printf 'CB_PORT_HTTPS=%s\n' "18443"
+            printf 'CB_DATA_DIR=%s\n' "${RUNNER_TEMP}/cb-dry-run-data"
+          } > .env
+          echo "wrote .env with $(wc -l < .env) settings (values masked)"
+
+      - name: Boot the assembled image
+        env:
+          FIRST_TAG: ${{ env.FIRST_TAG }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/cb-dry-run-data"
+
+          # Pulled explicitly, BEFORE compose runs. docker-compose.yml carries
+          # both an `image:` and a `build:`, and `up -d` builds when the image
+          # is not present locally — so without this, compose would quietly
+          # build the mono image from source and smoke that instead of the
+          # manifest list this job just assembled. The whole point of the job
+          # is to exercise the published artifact, so the pull is the gate:
+          # if the manifest does not resolve, this fails here rather than
+          # succeeding against a different image.
+          docker pull "127.0.0.1:5000/circuitbreaker:${FIRST_TAG}"
+
+          # No --build, and the image is now local, so compose uses it.
+          docker compose -f docker-compose.yml up -d
+          docker compose -f docker-compose.yml ps
+
+          for attempt in $(seq 1 36); do
+            code="$(curl -s -o /tmp/readyz.json -w '%{http_code}' --max-time 5 http://127.0.0.1:18080/api/v1/readyz || true)"
+            if [ "${code}" = "200" ]; then
+              echo "ready after ${attempt} attempt(s)"
+              cat /tmp/readyz.json
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::the assembled image never became ready within 180s; last /readyz body:"
+          cat /tmp/readyz.json 2>/dev/null || echo "(no response body)"
+          docker compose -f docker-compose.yml logs --tail 300 || true
+          exit 1
+
+      - name: Collect image diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker compose -f docker-compose.yml logs --tail 400 > diagnostics/image-boot.log 2>&1 || true
+          docker compose -f docker-compose.yml ps > diagnostics/compose-ps.txt 2>&1 || true
+          cp /tmp/manifest.json diagnostics/ 2>/dev/null || true
+          docker ps -a > diagnostics/containers.txt 2>&1 || true
+          # The .env is shredded rather than uploaded: it holds the minted
+          # secrets, and nothing about their values is evidence.
+          shred -u .env 2>/dev/null || rm -f .env
+
+      - name: Upload image diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dry-run-image-diagnostics
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml down -v >/dev/null 2>&1 || true
+          docker rm -f dry-run-registry >/dev/null 2>&1 || true
+          shred -u .env 2>/dev/null || rm -f .env
+
+  # ── What post-publish would check, against staged assets ──────────────────
+  staged-publication:
+    name: Verify the staged release
+    needs: [version, build, artifact-smoke]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the candidate packages
+        uses: actions/download-artifact@v5
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist/release/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same command release.yml runs before attaching anything.
+      - name: Generate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist/release/
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -exec sha256sum {} + > SHA256SUMS
+          cat SHA256SUMS
+
+      # install.sh builds the asset name it downloads from the version and the
+      # architecture. Reading the format out of install.sh rather than
+      # restating it here is the point: a rename on either side fails this
+      # step instead of failing every `curl | bash` install after publication.
+      - name: Assert install.sh can discover every asset it asks for
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, sys
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          installer = Path("install.sh").read_text(encoding="utf-8")
+
+          match = re.search(r'tarball_name="([^"]+)"', installer)
+          if match is None:
+              print("::error::install.sh no longer builds a tarball_name; this check "
+                    "cannot know what it downloads. Update it rather than deleting it.")
+              sys.exit(1)
+
+          template = match.group(1)
+          print(f"install.sh downloads: {template}")
+
+          missing = []
+          for arch in ("amd64", "arm64"):
+              name = (template
+                      .replace("${CB_VERSION}", version)
+                      .replace("${ARCH}", arch))
+              if not (Path("dist/release") / name).exists():
+                  missing.append(name)
+
+          if missing:
+              print(f"::error::the build produced no asset named {missing}")
+              print("present:", sorted(p.name for p in Path("dist/release").iterdir()))
+              sys.exit(1)
+          print("every asset install.sh resolves is present")
+          PY
+
+      - name: Verify the staged tarball against the staged checksums
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist/release
+          grep -E "( |/|^)circuit-breaker_${VERSION}_linux_amd64.tar.gz\$" SHA256SUMS > expected.sha256 || {
+            echo "::error::SHA256SUMS has no entry for the amd64 tarball"
+            cat SHA256SUMS
+            exit 1
+          }
+          sha256sum -c expected.sha256
+
+      - name: Assert the staged binary can load the application it serves
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist/release
+          mkdir -p unpacked
+          tar -xzf "circuit-breaker_${VERSION}_linux_amd64.tar.gz" -C unpacked
+          if [ -x "unpacked/circuit-breaker" ]; then
+            BUNDLE=unpacked
+          else
+            BUNDLE="$(find unpacked -maxdepth 1 -mindepth 1 -type d | head -1)"
+          fi
+          "${BUNDLE}/circuit-breaker" --selftest
+
+      - name: Upload the staged asset listing
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          ls -la dist/release > diagnostics/staged-assets.txt 2>&1 || true
+          cp dist/release/SHA256SUMS diagnostics/ 2>/dev/null || true
+
+      - name: Upload staged publication evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dry-run-staged-publication
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ── One place to read the answer ──────────────────────────────────────────
+  summary:
+    name: Dry run result
+    needs: [version, build, artifact-smoke, installer-journey, image, image-merge, staged-publication]
+    # always(), so a failure anywhere still produces the summary rather than
+    # leaving the run with no verdict — and the step below is what decides,
+    # not the absence of a red job.
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Assert every leg passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+
+          results = json.loads(os.environ["RESULTS"])
+          # Nothing may be skipped. A skipped job reads as satisfied to every
+          # consumer of a run's status, so "skipped" here means a needs edge did
+          # not resolve — which is precisely the failure this workflow exists to
+          # find before a tag does.
+          bad = []
+          for name, job in sorted(results.items()):
+              if job.get("result") != "success":
+                  bad.append(f"{name}: {job.get('result')}")
+
+          for name, job in sorted(results.items()):
+              print(f"{name}: {job.get('result')}")
+
+          if bad:
+              print("::error::dry run did not pass: " + ", ".join(bad))
+              sys.exit(1)
+          print("\ndry run green: this candidate would publish")
+          PY

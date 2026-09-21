@@ -572,6 +572,10 @@ jobs:
     name: Build Native (amd64)
     runs-on: ubuntu-22.04
     timeout-minutes: 40
+    # Published so `artifact-smoke` below can install the candidate this job
+    # built rather than re-deriving the version string and hoping the two agree.
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v5
 
@@ -587,9 +591,16 @@ jobs:
           cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
 
+      # The tree's own VERSION, not `dev-<sha>`. The bundle copies VERSION into
+      # share/VERSION and the binary answers --version from it, so a build named
+      # anything else produces a package that contradicts itself — and the
+      # artifact-smoke contract below compares exactly those two values.
+      # scripts/build_native_release.py now refuses the mismatch outright.
+      # What distinguishes one dev candidate from another is the run id and the
+      # artifact name, not a version string the artifact cannot carry.
       - name: Derive version
         id: ver
-        run: echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Install build deps
         run: bash scripts/install-build-deps.sh
@@ -621,6 +632,30 @@ jobs:
           path: dist/native/
           if-no-files-found: error
           retention-days: 3
+
+  # ── Installed-artifact gate, on the integration branch ───────────────────────
+  # The same workflow release.yml calls, against the candidate build-native just
+  # produced: install the .deb, prove the binary contains its application, boot
+  # the unit, reach /livez and /readyz, confirm migrations ran, make an
+  # authenticated API request, and uninstall.
+  #
+  # This job is the answer to "a release was the first execution of the artifact
+  # path". Before it, artifact-smoke.yml ran only from a tag push, so every
+  # defect in it — and every packaging defect it covers — first surfaced during
+  # a release. v0.4.2 shipped an application-less binary and v0.4.3's release
+  # died in `Initialize containers`, both for that reason.
+  #
+  # amd64 only: build-native builds one architecture. The arm64 legs stay on the
+  # release path, where build.yml produces them.
+  # tests/build/test_release_paths_run_before_the_tag.py keeps this wired.
+  artifact-smoke:
+    name: Artifact Smoke
+    needs: build-native
+    uses: ./.github/workflows/artifact-smoke.yml
+    with:
+      version: ${{ needs.build-native.outputs.version }}
+      artifact_prefix: dev-packages
+      arches: '["amd64"]'
 
   # ── Docker Smoke Build ────────────────────────────────────────────────────────
   build-docker:

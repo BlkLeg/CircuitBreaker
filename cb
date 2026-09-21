@@ -2027,26 +2027,28 @@ cmd_version() {
 _CB_UNINSTALL_URL="https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh"
 
 cmd_uninstall() {
-  if [[ "$CB_MODE" == "native" ]]; then
-    read -rp "  Remove Circuit Breaker and ALL data? [y/N]: " confirm
-    [[ "$confirm" != "y" ]] && echo "Cancelled." && exit 0
-    systemctl stop circuitbreaker.target 2>/dev/null || true
-    systemctl disable circuitbreaker.target 2>/dev/null || true
-    rm -rf /opt/circuitbreaker /etc/circuitbreaker
-    rm -rf "${CB_DATA_DIR:-/var/lib/circuitbreaker}"
-    rm -f /usr/local/bin/cb
-    echo "Circuit Breaker removed (native)."
-    return 0
-  fi
-
+  # One uninstaller, for every mode.
+  #
+  # The native branch used to remove things itself: stop and disable
+  # circuitbreaker.target, delete /opt, /etc and the data directory, delete
+  # /usr/local/bin/cb, done. That left behind every unit FILE in
+  # /etc/systemd/system — seven services, a target, a slice, a timer — still
+  # enabled, with no daemon-reload, all of them pointing at a directory that no
+  # longer existed. The next boot started a fleet of units that could only fail,
+  # and `systemctl status` went on naming a product the operator had removed.
+  # It also left the nginx site proxying to nothing, and the `breaker` account.
+  #
+  # uninstall.sh knows that layout properly now, so this delegates rather than
+  # keeping a second, worse copy. Arguments are forwarded, which is what makes
+  # `cb uninstall --purge` and `cb uninstall --keep-data` work.
   local here
   here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 
   if [[ -x /usr/local/bin/uninstall-circuit-breaker ]]; then
-    exec /usr/local/bin/uninstall-circuit-breaker
+    exec /usr/local/bin/uninstall-circuit-breaker "$@"
   elif [[ -f "$here/uninstall.sh" ]]; then
     _info "Running ${here}/uninstall.sh"
-    exec bash "$here/uninstall.sh"
+    exec bash "$here/uninstall.sh" "$@"
   else
     _fail "$(printf '%s\n' \
       "No uninstaller on this host." \
@@ -2296,7 +2298,7 @@ case "${1:-help}" in
   config)          _require_identity_or_fail config; cmd_config "${2:-}" ;;
   vault-recover)   _require_identity_or_fail vault-recover; cmd_vault_recover ;;
   version)         cmd_version ;;
-  uninstall)       cmd_uninstall ;;
+  uninstall)       cmd_uninstall "${@:2}" ;;
   help|--help|-h)  usage ;;
   *) echo -e "\n  Unknown command: ${RED}$1${R}\n"; usage; exit 1 ;;
 esac

@@ -690,24 +690,78 @@ class _AgentStreamListener:
         self.events: list[dict] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        # Why the reader thread ended, if it did. `_run` used to `return` on
+        # any exception, which made a dropped stream indistinguishable from a
+        # quiet one: `has_event` went on answering False and the test failed
+        # with "condition not met within 10s (last error: None)" — a sentence
+        # that is true of a server that pushed nothing AND of a listener that
+        # stopped listening a minute earlier. That is the error-path-becomes-
+        # silence shape ADR 0005 names, in the harness rather than the product.
+        self._reader_error: BaseException | None = None
+        self._reader_ended_at: float | None = None
+        self._frames_seen = 0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
-        while not self._stop.is_set():
-            try:
-                raw = self._ws.recv(timeout=1)
-            except TimeoutError:
-                continue
-            except Exception:
-                return
-            try:
-                msg = json.loads(raw)
-            except Exception:
-                continue
-            if isinstance(msg, dict) and "event_type" in msg:
+        try:
+            while not self._stop.is_set():
+                try:
+                    raw = self._ws.recv(timeout=1)
+                except TimeoutError:
+                    continue
                 with self._lock:
-                    self.events.append(msg)
+                    self._frames_seen += 1
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(msg, dict) and "event_type" in msg:
+                    with self._lock:
+                        self.events.append(msg)
+        except BaseException as exc:  # noqa: BLE001 — recorded, then re-raised to nobody
+            with self._lock:
+                self._reader_error = exc
+        finally:
+            with self._lock:
+                self._reader_ended_at = time.monotonic()
+
+    def diagnostics(self) -> str:
+        """What this listener knows about its own state, for an assertion.
+
+        A test that waited for a push and did not get one needs to say which
+        of the two things happened, and only this object can tell it.
+        """
+        with self._lock:
+            alive = self._thread.is_alive()
+            error = self._reader_error
+            frames = self._frames_seen
+            seen = [
+                (e.get("agent_id"), e.get("event_type")) for e in self.events
+            ]
+        state = "alive" if alive else "ENDED"
+        detail = f"reader={state}, frames_received={frames}, events={seen}"
+        if error is not None:
+            detail += f", reader_error={type(error).__name__}: {error}"
+        elif not alive:
+            detail += (
+                ", reader_error=none — the socket closed cleanly, which means the "
+                "server hung up on this viewer"
+            )
+        return detail
+
+    def assert_alive(self, context: str) -> None:
+        """Fail naming the stream, not the event, when the stream is gone.
+
+        Called before asserting that a push did not arrive. A dead reader is a
+        harness or transport failure and must not be reported as "the server
+        never sent the event", which is a product claim.
+        """
+        if not self._thread.is_alive():
+            raise AssertionError(
+                f"{context}: the /agents/stream listener is no longer reading. "
+                f"{self.diagnostics()}"
+            )
 
     def has_event(self, agent_id: int, event_type: str) -> bool:
         with self._lock:
@@ -1449,7 +1503,20 @@ def test_agent_full_lifecycle_enroll_through_revoke_and_reconnect():
 
             # The live presence stream (already connected the whole test)
             # must see the "revoked" push directly — not by polling.
-            _wait_until(lambda: stream.has_event(agent_id, "revoked"), timeout=10)
+            try:
+                _wait_until(lambda: stream.has_event(agent_id, "revoked"), timeout=10)
+            except TimeoutError as exc:
+                # Distinguish the two failures this used to report identically.
+                # `assert_alive` raises if the listener died — a transport
+                # problem — so what survives it is the product claim: the
+                # server revoked the agent and pushed nothing to the live
+                # viewers watching it.
+                stream.assert_alive("no `revoked` push arrived")
+                raise AssertionError(
+                    "the agent was revoked but no `revoked` event reached the live "
+                    "/agents/stream viewer within 10s, and the viewer was still "
+                    f"reading the whole time. {stream.diagnostics()}"
+                ) from exc
 
             # the /link poll interval is 5s — allow a bit of margin for
             # the immediate cross-worker disconnect push to land and the
@@ -2523,30 +2590,33 @@ def test_agent_black_hole_partition_is_detected_and_spools():
                 with _cut_agent_network():
                     partition_start = time.monotonic()
 
-                    # Every distinct `last_error` seen while waiting, not just
-                    # whichever one happens to be current when the wait ends.
+                    # `last_link_failure`, not `last_error`.
                     #
-                    # `last_error` is a single slot that the agent overwrites,
-                    # and dropping the link is immediately followed by trying to
-                    # rebuild it. On a cut network that redial fails too, so by
-                    # the time a separate `_agent_status()` call runs, the
-                    # reason the link went down has already been replaced by the
-                    # reason the *reconnect* failed:
+                    # `last_error` is a single slot the agent overwrites, and
+                    # dropping the link is immediately followed by trying to
+                    # rebuild it. On a cut network that redial fails too, so
+                    # within milliseconds the reason the link went down has been
+                    # replaced by the reason the *reconnect* failed:
                     #
                     #   last_error='link: dial: dial tcp: lookup circuitbreaker
                     #               on 127.0.0.11:53: server misbehaving'
                     #
-                    # which says nothing about whether the silence detectors
-                    # ever fired. Recording the sequence removes the race
-                    # instead of narrowing it.
-                    seen_errors: list[str] = []
-
+                    # An earlier version of this test polled every 0.5s and kept
+                    # each distinct `last_error` it saw, with a comment claiming
+                    # that "removes the race". It does not — it narrows it, to
+                    # whether a poll lands in the gap between the drop and the
+                    # redial. It did not, on the v0.4.3 tag, and the run failed
+                    # with a DNS error as the only observed cause.
+                    #
+                    # The race is gone now because the agent stopped throwing
+                    # the answer away: status.json carries `last_link_failure`,
+                    # stamped only when an ESTABLISHED connection ends and never
+                    # touched by a dial failure (internal/status.SetLinkFailure).
+                    # One read, no sampling, and an operator running
+                    # `cb-agent status` gets the same improvement — they used to
+                    # be told about DNS no matter what had actually happened.
                     def _link_down() -> bool:
-                        snapshot = _agent_status()
-                        error = snapshot.get("last_error") or ""
-                        if error and (not seen_errors or seen_errors[-1] != error):
-                            seen_errors.append(error)
-                        return snapshot["link_state"] == "disconnected"
+                        return _agent_status()["link_state"] == "disconnected"
 
                     _wait_until(
                         _link_down, timeout=_PARTITION_DETECT_BUDGET_S, interval=0.5
@@ -2570,12 +2640,18 @@ def test_agent_black_hole_partition_is_detected_and_spools():
                     # first. Both mean "the server went quiet"; neither is an
                     # incidental error.
                     _silence_signals = ("read deadline", "stopped acknowledging data frames")
-                    assert any(
-                        signal in error for error in seen_errors for signal in _silence_signals
-                    ), (
+                    snapshot = _agent_status()
+                    link_failure = snapshot.get("last_link_failure") or ""
+                    assert link_failure, (
+                        "the link went down during the partition but recorded no "
+                        "last_link_failure. Either the drop was never classified as "
+                        "an established-connection failure, or the agent is an older "
+                        f"build without the field. Status: {snapshot}"
+                    )
+                    assert any(signal in link_failure for signal in _silence_signals), (
                         "the link went down during the partition, but no silence detector "
-                        f"({' / '.join(_silence_signals)}) was ever the reason. Errors "
-                        f"observed, oldest first: {seen_errors}"
+                        f"({' / '.join(_silence_signals)}) was the reason. "
+                        f"last_link_failure={link_failure!r}"
                     )
                     # A floor as well as a ceiling: dropping the link far
                     # sooner than the deadline would mean something other

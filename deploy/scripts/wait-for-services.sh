@@ -39,13 +39,47 @@ if [[ -z "$REDIS_CLI" ]]; then
   exit 1
 fi
 
+# An empty password is not something to wait out. requirepass would be unset on
+# the server too, so the loop below could only ever succeed by accident, and
+# sixty seconds of silence is a worse answer than one line naming the file.
+# validate-secrets.sh already refuses an empty CB_REDIS_PASSWORD as an
+# ExecStartPre before this script; checking again is cheap and keeps this script
+# correct when it is run by hand, which is exactly when it is being used to
+# diagnose something.
+if [[ -z "${CB_REDIS_PASSWORD:-}" ]]; then
+  echo "FATAL: CB_REDIS_PASSWORD is empty in /etc/circuitbreaker/.env" >&2
+  echo "Redis is configured with requirepass, so no client can connect." >&2
+  exit 1
+fi
+
+# The client's own stderr is kept and reported on timeout.
+#
+# This loop discarded it (`2>/dev/null`), so every failure — wrong password,
+# connection refused, a client binary that does not exist — produced the same
+# sentence: "Redis did not accept authenticated connections within 60s". That
+# one sentence is what a Rocky Linux 10 install printed while Redis was
+# healthy, the password was correct and the only actual problem was that
+# `redis-cli` is not a file on a Valkey host. It cost two speculative fixes
+# before anyone could see which of those cases it was.
+#
+# The error is kept in a file rather than a variable so the loop body stays a
+# single pipeline, and the file is created with a private umask because the
+# client echoes its own argv — including -a — into some error paths.
+REDIS_PROBE_ERR="$(umask 077; mktemp)"
+trap 'rm -f "$REDIS_PROBE_ERR"' EXIT
+
 echo "Waiting for Redis to accept authenticated connections..."
 elapsed=0
-while ! "$REDIS_CLI" -h 127.0.0.1 -p 6379 -a "${CB_REDIS_PASSWORD}" --no-auth-warning PING 2>/dev/null | grep -q PONG; do
+while ! "$REDIS_CLI" -h 127.0.0.1 -p 6379 -a "${CB_REDIS_PASSWORD}" --no-auth-warning PING 2>"$REDIS_PROBE_ERR" | grep -q PONG; do
   sleep $INTERVAL
   elapsed=$((elapsed + INTERVAL))
   if [[ $elapsed -ge $MAX_WAIT ]]; then
     echo "FATAL: Redis did not accept authenticated connections within ${MAX_WAIT}s" >&2
+    echo "  client:     ${REDIS_CLI}" >&2
+    # The password never reaches this output: only the client's message does,
+    # and `-a <value>` is rewritten if the client echoed the argv back.
+    echo "  last error: $(sed -e "s/-a [^ ]*/-a <redacted>/g" "$REDIS_PROBE_ERR" | tr '\n' ' ' | head -c 400)" >&2
+    echo "Check: journalctl -u circuitbreaker-redis -n 50" >&2
     exit 1
   fi
 done
@@ -63,13 +97,21 @@ while ! curl -sf http://127.0.0.1:8222/healthz >/dev/null 2>&1; do
 done
 
 # Actual DB connection test - port open ≠ DB accepting connections
+#
+# psql's message is kept for the same reason the Redis one is: "cannot connect
+# within 60s" does not distinguish a wrong password from a database that does
+# not exist from pgbouncer refusing the pool, and those have different fixes.
 echo "Waiting for DB to accept connections..."
+DB_PROBE_ERR="$(umask 077; mktemp)"
+trap 'rm -f "$REDIS_PROBE_ERR" "$DB_PROBE_ERR"' EXIT
 elapsed=0
-while ! PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' 2>/dev/null; do
+while ! PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 6432 -U breaker -d circuitbreaker -c '\q' 2>"$DB_PROBE_ERR"; do
   sleep $INTERVAL
   elapsed=$((elapsed + INTERVAL))
   if [[ $elapsed -ge $MAX_WAIT ]]; then
     echo "FATAL: Cannot connect to DB through pgbouncer within ${MAX_WAIT}s" >&2
+    echo "  last error: $(tr '\n' ' ' < "$DB_PROBE_ERR" | head -c 400)" >&2
+    echo "Check: journalctl -u circuitbreaker-pgbouncer -n 50" >&2
     exit 1
   fi
 done

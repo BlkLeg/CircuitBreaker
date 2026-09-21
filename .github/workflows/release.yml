@@ -335,6 +335,61 @@ jobs:
           path: dist/release/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The tarballs carry a .sha256 written by the build that produced them,
+      # inside the same artifact. Checking it here is what makes the SHA256SUMS
+      # generated below a statement about the bytes the BUILD made, rather than
+      # about whatever bytes arrived: without it, an artifact corrupted between
+      # the build job and this one would simply be checksummed in its corrupted
+      # state and published with a checksum that matches.
+      #
+      # It also pins the other half of "consume the exact artifacts": these
+      # files are downloaded from the run's own artifact store, and nothing in
+      # this job rebuilds anything.
+      - name: Verify every downloaded tarball against the checksum its build wrote
+        run: |
+          set -euo pipefail
+          cd dist/release/
+          shopt -s nullglob
+          checked=0
+          for sum in *.tar.gz.sha256; do
+            echo "verifying ${sum%.sha256}"
+            sha256sum -c "${sum}"
+            checked=$((checked + 1))
+          done
+          if [ "${checked}" -eq 0 ]; then
+            echo "::error::no *.tar.gz.sha256 arrived with the packages; the build no longer ships the checksum this step verifies, so nothing here confirms the artifacts are the ones that were built"
+            ls -la
+            exit 1
+          fi
+          echo "verified ${checked} build-time checksums"
+
+      # Every architecture that will be published has to be present before the
+      # release is assembled. A missing leg otherwise produces a release that is
+      # simply short an architecture, which nothing downstream notices: the
+      # manifest check covers the container, and nothing covered the packages.
+      - name: Assert both architectures arrived
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist/release/
+          missing=""
+          for arch in amd64 arm64; do
+            for suffix in tar.gz deb rpm; do
+              case "${suffix}" in
+                tar.gz) name="circuit-breaker_${VERSION}_linux_${arch}.tar.gz" ;;
+                *)      name="circuit-breaker_${VERSION}_${arch}.${suffix}" ;;
+              esac
+              [ -f "${name}" ] || missing="${missing} ${name}"
+            done
+          done
+          if [ -n "${missing}" ]; then
+            echo "::error::the build produced no:${missing}"
+            ls -la
+            exit 1
+          fi
+          echo "both architectures present in every packaged format"
+
       - name: Generate preliminary SHA256SUMS
         run: |
           cd dist/release/

@@ -217,9 +217,37 @@ stage1_bootstrap() {
   fi
   cb_ok "Directory ownership verified"
 
-  # File descriptor limits for the breaker user
-  if ! grep -q "breaker.*nofile" /etc/security/limits.conf 2>/dev/null; then
-    printf '\nbreaker soft nofile 65536\nbreaker hard nofile 65536\n' >> /etc/security/limits.conf
+  # File descriptor limits for the breaker user.
+  #
+  # A drop-in, not an append to /etc/security/limits.conf. Two reasons, and the
+  # first one aborted the install outright on AlmaLinux 10:
+  #
+  #   * that file is shipped by `pam`, and a minimal AlmaLinux 10 image has
+  #     neither it nor /etc/security/limits.d. The old `printf ... >> file`
+  #     was a redirect to a path with no directory behind it, so bash failed it
+  #     and `set -e` ended the install at "System dependencies" with
+  #     "/etc/security/limits.conf: No such file or directory" — a PAM tuning
+  #     line killing an install that does not depend on PAM;
+  #   * a drop-in is genuinely idempotent. The append was guarded by a grep,
+  #     which makes it idempotent only for as long as the grep pattern and the
+  #     written text agree; rewriting one whole owned file cannot drift.
+  #
+  # Best-effort throughout, because this governs *interactive* sessions as
+  # `breaker` — an account with a nologin shell that nobody logs into. What
+  # actually bounds the daemons is LimitNOFILE=65536 in
+  # circuitbreaker-backend.service, which systemd applies regardless of PAM.
+  if [[ -d /etc/security ]]; then
+    if mkdir -p /etc/security/limits.d 2>/dev/null; then
+      cat > /etc/security/limits.d/90-circuitbreaker.conf <<'LIMITS'
+# Managed by the Circuit Breaker installer. Edits are overwritten on upgrade.
+breaker soft nofile 65536
+breaker hard nofile 65536
+LIMITS
+      chmod 644 /etc/security/limits.d/90-circuitbreaker.conf
+    else
+      cb_warn "Could not write /etc/security/limits.d — PAM file-descriptor limits not set"
+      cb_warn "The services are unaffected: their units set LimitNOFILE themselves"
+    fi
   fi
 
   # Secret generation
@@ -338,6 +366,39 @@ stage1_bootstrap() {
     set -u
   fi
 
+  # Resolved here too, because a fresh install renders unit templates in the
+  # same run. stage0_preflight already ran it; this call picks up anything the
+  # bootstrap above created (the breaker account, the data directory).
+  cb_resolve_service_binaries
+
+  export CB_DATA_DIR
+}
+
+# Total RAM in MiB, without depending on free(1).
+#
+# free(1) ships in procps-ng, which minimal Fedora, Rocky and AlmaLinux images do
+# NOT install — and nothing in this installer's dependency lists pulls it in. Two
+# call sites used it, and they failed differently, which is why only one was ever
+# visible: the pre-flight check assigns with `local ram_mb=$(free -m ...)`, and a
+# `local` declaration's exit status is the declaration's, not the command
+# substitution's, so `set -e` let it through and merely printed
+# "Low RAM detected: MB (< 1GB)" with an empty value. The Redis sizing call was a
+# bare assignment, so `set -e` saw the 127 and aborted the whole install at
+# "Services and networking".
+#
+# /proc/meminfo is part of procfs, present on every Linux the installer supports,
+# and needs no package. Falls back to 0 rather than empty so the numeric
+# comparisons at the call sites can never be fed a non-integer.
+cb_total_ram_mb() {
+  local kb=""
+  if [[ -r /proc/meminfo ]]; then
+    kb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+  fi
+  [[ "$kb" =~ ^[0-9]+$ ]] || kb=0
+  printf '%s' "$(( kb / 1024 ))"
+}
+
+cb_resolve_service_binaries() {
   # Detect the Redis service account. Arch and Debian use 'redis'; some RHEL
   # builds use '_redis'; RHEL/Rocky/Alma 10 ship Valkey instead of Redis (Redis
   # was relicensed away from OSI terms in 2024 and Red Hat replaced it), whose
@@ -374,31 +435,10 @@ stage1_bootstrap() {
   export CB_REDIS_SERVER_BIN CB_REDIS_CLI_BIN
   CB_REDIS_SERVER_BIN="$(command -v redis-server 2>/dev/null || command -v valkey-server 2>/dev/null || echo /usr/bin/redis-server)"
   CB_REDIS_CLI_BIN="$(command -v redis-cli 2>/dev/null || command -v valkey-cli 2>/dev/null || echo redis-cli)"
-  export CB_DATA_DIR
-}
 
-# Total RAM in MiB, without depending on free(1).
-#
-# free(1) ships in procps-ng, which minimal Fedora, Rocky and AlmaLinux images do
-# NOT install — and nothing in this installer's dependency lists pulls it in. Two
-# call sites used it, and they failed differently, which is why only one was ever
-# visible: the pre-flight check assigns with `local ram_mb=$(free -m ...)`, and a
-# `local` declaration's exit status is the declaration's, not the command
-# substitution's, so `set -e` let it through and merely printed
-# "Low RAM detected: MB (< 1GB)" with an empty value. The Redis sizing call was a
-# bare assignment, so `set -e` saw the 127 and aborted the whole install at
-# "Services and networking".
-#
-# /proc/meminfo is part of procfs, present on every Linux the installer supports,
-# and needs no package. Falls back to 0 rather than empty so the numeric
-# comparisons at the call sites can never be fed a non-integer.
-cb_total_ram_mb() {
-  local kb=""
-  if [[ -r /proc/meminfo ]]; then
-    kb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)"
-  fi
-  [[ "$kb" =~ ^[0-9]+$ ]] || kb=0
-  printf '%s' "$(( kb / 1024 ))"
+  # Re-run freely: every line is a lookup with a deterministic default, so
+  # calling this again after packages are installed simply produces better
+  # answers than calling it before.
 }
 
 stage0_preflight() {
@@ -523,6 +563,22 @@ stage0_preflight() {
     fi
     cb_ok "Certificate: Self-signed"
   fi
+
+  # Both flows run this preflight; only the fresh one runs stage1_bootstrap.
+  # Resolving here is what makes CB_PGBOUNCER_BIN, CB_DOCKER_BIN,
+  # CB_REDIS_SERVER_BIN, CB_REDIS_CLI_BIN and CB_REDIS_USER available on the
+  # UPGRADE path too.
+  #
+  # Without it an upgrade died at the first unit template with "Template
+  # .../circuitbreaker-pgbouncer.service needs variables the installer never
+  # set: CB_PGBOUNCER_BIN" — after the pre-upgrade backup and after the new
+  # bundle was already on disk. run_upgrade's only other chance to set them is
+  # stage2_dependencies' re-resolution, which is *below* that function's
+  # "dependencies already present — skipping" early return, so it was reached
+  # only on hosts whose dependency check failed. In other words: an upgrade
+  # worked exactly when a preceding check was broken, which is why re-running
+  # the installer had never succeeded on a healthy host and nothing noticed.
+  cb_resolve_service_binaries
 }
 
 stage3_configure_postgres() {
@@ -1447,6 +1503,22 @@ stage9_install_cb_cli() {
     return 0
   fi
 
+  # The uninstaller, at the first path `cb uninstall` looks for. Without it
+  # that command dead-ended on every native install: no
+  # /usr/local/bin/uninstall-circuit-breaker, no sibling uninstall.sh, and a
+  # message telling the operator to run it "from a checkout" of a host that was
+  # installed from a tarball. Best-effort, like the CLI itself — a bundle built
+  # before the uninstaller shipped still upgrades.
+  if [[ -f /opt/circuitbreaker/uninstall.sh ]]; then
+    if cp /opt/circuitbreaker/uninstall.sh /usr/local/bin/uninstall-circuit-breaker \
+      && chmod 755 /usr/local/bin/uninstall-circuit-breaker \
+      && chown root:root /usr/local/bin/uninstall-circuit-breaker; then
+      echo "    Uninstaller: /usr/local/bin/uninstall-circuit-breaker (or: cb uninstall)"
+    else
+      cb_warn "Uninstaller could not be installed — remove with: bash uninstall.sh"
+    fi
+  fi
+
   # Shared identity helpers travel with the bundle when present.
   if [[ -f /opt/circuitbreaker/deploy/lib/install-identity.sh ]]; then
     mkdir -p /usr/local/lib/circuitbreaker
@@ -1737,9 +1809,18 @@ cb_deps_present() {
   # Real presence check, not a flag — lets upgrade mode tell a genuinely
   # complete prior install (safe to skip) apart from a partial/broken one
   # (needs a real install pass) without the caller having to know which.
+  # redis-server OR valkey-server, the same resolution every other site in this
+  # file performs. Asking only for redis-server meant this check could never
+  # pass on RHEL/Rocky/AlmaLinux 10, where Redis was replaced by Valkey — so
+  # every upgrade on those hosts reported "one or more dependencies missing
+  # despite an existing install" and re-ran the whole dependency stage,
+  # including a fresh NATS download over the network. That is how the
+  # ETXTBSY on /usr/local/bin/nats-server (see stage2_dependencies) became
+  # reachable at all: on every other distro this check passes and that code
+  # never runs on an upgrade.
   [[ -n "$PG_BIN_DIR" ]] && [[ -x "$PG_BIN_DIR/pg_ctl" ]] \
     && command -v pgbouncer &>/dev/null \
-    && command -v redis-server &>/dev/null \
+    && { command -v redis-server &>/dev/null || command -v valkey-server &>/dev/null; } \
     && command -v nats-server &>/dev/null \
     && command -v nginx &>/dev/null \
     && command -v nmap &>/dev/null \
@@ -1958,9 +2039,31 @@ stage2_dependencies() {
   echo "${nats_sha}  ${nats_tarball}" | sha256sum --check --status \
     || cb_fail "NATS checksum mismatch" "expected ${nats_sha} for ${nats_tarball}"
   tar -xzf "$nats_tarball" >> "$LOG_FILE" 2>&1
-  cp "nats-server-v${nats_version}-linux-${ARCH}/nats-server" /usr/local/bin/nats-server
-  chmod 755 /usr/local/bin/nats-server
-  chown root:root /usr/local/bin/nats-server
+
+  # Staged next to the target and renamed into place, never copied over it.
+  #
+  # On an upgrade circuitbreaker-nats.service is running /usr/local/bin/
+  # nats-server, and Linux refuses to open a running executable for writing:
+  # the copy fails with ETXTBSY ("Text file busy"), `set -e` sees it, and the
+  # whole upgrade aborts partway through — after the pre-upgrade backup, after
+  # the new bundle is already installed. That is what a re-run of install.sh
+  # did on every Valkey host, because those are the hosts where cb_deps_present
+  # sends the upgrade back through this function at all.
+  #
+  # rename(2) replaces the directory entry rather than the file's contents, so
+  # the running broker keeps executing the old inode until it is restarted and
+  # every new exec gets the new binary. It is also atomic: there is no moment
+  # where /usr/local/bin/nats-server is absent or half-written, which `cp -f`
+  # (which unlinks first) cannot promise. The temp file is created in the
+  # destination directory so the rename stays within one filesystem.
+  local nats_staged
+  nats_staged="$(mktemp /usr/local/bin/.nats-server.XXXXXX)"
+  cp "nats-server-v${nats_version}-linux-${ARCH}/nats-server" "$nats_staged" \
+    || { rm -f "$nats_staged"; cb_fail "Failed to stage the NATS binary" "Check disk space: df -h /usr/local/bin"; }
+  chmod 755 "$nats_staged"
+  chown root:root "$nats_staged"
+  mv -f "$nats_staged" /usr/local/bin/nats-server \
+    || { rm -f "$nats_staged"; cb_fail "Failed to install the NATS binary" "Check: ls -la /usr/local/bin/nats-server"; }
   rm -rf "$nats_tarball" "nats-server-v${nats_version}-linux-${ARCH}"
   
   if ! /usr/local/bin/nats-server --version &>/dev/null; then

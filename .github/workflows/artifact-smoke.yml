@@ -1,10 +1,40 @@
 name: Artifact Smoke
+
+# The promotion contract for a built candidate: install it, prove the binary
+# contains its application, boot it, migrate, answer an authenticated request,
+# and uninstall cleanly.
+#
+# Callable from two places on purpose. release.yml calls it with the release
+# candidate and both architectures; dev-ci.yml calls it with the dev candidate
+# and amd64 only. That second caller is the point: before it existed, this
+# workflow ran ONLY on a tag, so a defect in it — or in the artifact path it
+# covers — could not be discovered until a release was already underway. That
+# is exactly how v0.4.3's `deb-boot` job shipped a `services:` block whose
+# Postgres password could never resolve (see
+# tests/build/test_service_containers_resolve_at_job_setup.py): the job was
+# correct-looking YAML that nothing had ever executed.
+#
+# tests/build/test_release_paths_run_before_the_tag.py keeps both callers
+# wired.
 on:
   workflow_call:
     inputs:
       version:
         required: true
         type: string
+      # Which uploaded artifact set to install. release.yml's build job uploads
+      # `packages-<arch>`; dev-ci.yml's uploads `dev-packages-<arch>`. Naming it
+      # here is what lets one definition serve both without a copy.
+      artifact_prefix:
+        required: false
+        type: string
+        default: packages
+      # A JSON array of architecture names. The release path passes both; the
+      # integration path passes amd64 only, because dev-ci builds one.
+      arches:
+        required: false
+        type: string
+        default: '["amd64","arm64"]'
 permissions:
   contents: read
 jobs:
@@ -13,17 +43,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-        - os: ubuntu-22.04
-          arch: amd64
-        - os: ubuntu-22.04-arm
-          arch: arm64
-    runs-on: ${{ matrix.os }}
+        arch: ${{ fromJSON(inputs.arches) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
     steps:
     - name: Download candidate packages
       uses: actions/download-artifact@v5
       with:
-        name: packages-${{ matrix.arch }}
+        name: ${{ inputs.artifact_prefix }}-${{ matrix.arch }}
         path: dist/
         github-token: ${{ secrets.GITHUB_TOKEN }}
     - name: Install the candidate .deb on a clean host
@@ -97,17 +123,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            arch: amd64
-          - os: ubuntu-22.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.os }}
+        arch: ${{ fromJSON(inputs.arches) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
     steps:
       - name: Download candidate packages
         uses: actions/download-artifact@v5
         with:
-          name: packages-${{ matrix.arch }}
+          name: ${{ inputs.artifact_prefix }}-${{ matrix.arch }}
           path: dist/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -144,7 +166,9 @@ jobs:
             circuit-breaker \
             deploy/setup.sh \
             share/VERSION \
-            manifest.json; do
+            manifest.json \
+            install.sh \
+            uninstall.sh; do
             [ -e "${BUNDLE}/${path}" ] || {
               echo "::error::bundle is missing ${path}; install.sh reads it"
               exit 1
@@ -173,12 +197,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            arch: amd64
-          - os: ubuntu-22.04-arm
-            arch: arm64
-    runs-on: ${{ matrix.os }}
+        arch: ${{ fromJSON(inputs.arches) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
 
     # ADR 0005's Tier 2 promise is "install and boot". Until this job existed
     # that row read "not in force" with the reason recorded in the ADR itself:
@@ -218,7 +238,17 @@ jobs:
           JWT_SECRET="$(hexgen)"
           NATS_TOKEN="$(hexgen)"
           VAULT_KEY="$(python3 -c 'import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())')"
-          for secret in "${DB_PASSWORD}" "${JWT_SECRET}" "${NATS_TOKEN}" "${VAULT_KEY}"; do
+          # Supplied rather than read back from disk. The generated token lands
+          # in $CB_DATA_DIR/bootstrap-setup-token (auth_service._bootstrap_token
+          # _file_path), and the packaged unit runs under ProtectSystem=strict
+          # with no CB_DATA_DIR of its own, so where that file lands is a
+          # property of the unit rather than of the artifact under test.
+          # CB_SETUP_TOKEN short-circuits the file entirely and keeps this gate
+          # about whether the application authenticates, not about path layout.
+          SETUP_TOKEN="$(hexgen)"
+          ADMIN_PASSWORD="Smoke-$(python3 -c 'import secrets; print(secrets.token_hex(12))')!aA1"
+          for secret in "${DB_PASSWORD}" "${JWT_SECRET}" "${NATS_TOKEN}" "${VAULT_KEY}" \
+                        "${SETUP_TOKEN}" "${ADMIN_PASSWORD}"; do
             echo "::add-mask::${secret}"
           done
           {
@@ -226,6 +256,8 @@ jobs:
             echo "CB_JWT_SECRET=${JWT_SECRET}"
             echo "CB_NATS_TOKEN=${NATS_TOKEN}"
             echo "CB_VAULT_KEY=${VAULT_KEY}"
+            echo "CB_SETUP_TOKEN=${SETUP_TOKEN}"
+            echo "CB_SMOKE_ADMIN_PASSWORD=${ADMIN_PASSWORD}"
           } >> "$GITHUB_ENV"
 
       # Postgres cannot be a `services:` container in this job. GitHub creates
@@ -268,7 +300,7 @@ jobs:
       - name: Download candidate packages
         uses: actions/download-artifact@v5
         with:
-          name: packages-${{ matrix.arch }}
+          name: ${{ inputs.artifact_prefix }}-${{ matrix.arch }}
           path: dist/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -293,6 +325,7 @@ jobs:
           CB_JWT_SECRET=${CB_JWT_SECRET}
           CB_VAULT_KEY=${CB_VAULT_KEY}
           NATS_AUTH_TOKEN=${CB_NATS_TOKEN}
+          CB_SETUP_TOKEN=${CB_SETUP_TOKEN}
           EOF
           sudo chmod 0640 /etc/circuit-breaker/circuit-breaker.env
 
@@ -338,6 +371,127 @@ jobs:
           fi
           curl -fsS http://127.0.0.1:8080/api/v1/readyz
 
+      # /readyz reports "db: ok" from a connection, which a database with no
+      # schema in it also satisfies. The row that proves migrations RAN is
+      # alembic_version, read out of the database the service was pointed at —
+      # not out of the package, and not out of the application's own opinion of
+      # itself.
+      - name: Assert migrations reached head in the packaged database
+        run: |
+          set -euo pipefail
+          # Over TCP with the password, not the container's local socket. A
+          # `docker exec psql -U circuitbreaker` would succeed on the postgres
+          # image's default local trust, which is exactly the shortcut this
+          # project does not take anywhere else — and it would keep passing if
+          # the credentials the application uses stopped working.
+          #
+          # -e by name: the value is passed through this process's environment
+          # and never appears in docker's argv.
+          REVISION="$(PGPASSWORD="${CB_DB_PASSWORD}" docker exec -e PGPASSWORD cb-boot-postgres \
+            psql -h 127.0.0.1 -U circuitbreaker -d circuitbreaker -tAc \
+            'SELECT version_num FROM alembic_version' 2>/dev/null | tr -d '[:space:]')"
+          if [ -z "${REVISION}" ]; then
+            echo "::error::alembic_version is empty — the service booted without applying migrations"
+            PGPASSWORD="${CB_DB_PASSWORD}" docker exec -e PGPASSWORD cb-boot-postgres \
+              psql -h 127.0.0.1 -U circuitbreaker -d circuitbreaker -c '\dt' || true
+            sudo journalctl -u circuit-breaker --no-pager -n 200
+            exit 1
+          fi
+          echo "migrations at revision ${REVISION}"
+
+      # The assertion that separates "the process is listening" from "the
+      # application works". /livez and /readyz are both unauthenticated, so a
+      # build whose auth stack never loaded passes every check above.
+      #
+      # Both halves matter. The 401 proves the endpoint is actually guarded —
+      # without it a service that authenticates nobody would satisfy the 200.
+      #
+      # CB_SETUP_TOKEN and CB_SMOKE_ADMIN_PASSWORD are read straight out of the
+      # step environment (the minting step exported them through $GITHUB_ENV)
+      # rather than re-interpolated through `${{ }}`, which would write both
+      # values into the rendered workflow command line.
+      - name: Exercise an authenticated API request
+        run: |
+          set -euo pipefail
+          BASE=http://127.0.0.1:8080/api/v1
+
+          NEEDS="$(curl -fsS "${BASE}/bootstrap/status" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["needs_bootstrap"])')"
+          [ "${NEEDS}" = "True" ] || {
+            echo "::error::a freshly installed candidate reports needs_bootstrap=${NEEDS}; this database is not clean"
+            exit 1
+          }
+
+          TOKEN="$(python3 - <<'PY'
+          import json, os, urllib.request
+          body = json.dumps({
+              "setup_token": os.environ["CB_SETUP_TOKEN"],
+              "email": "smoke-admin@local.invalid",
+              "password": os.environ["CB_SMOKE_ADMIN_PASSWORD"],
+              "theme_preset": "gruvbox-dark",
+          }).encode()
+          request = urllib.request.Request(
+              "http://127.0.0.1:8080/api/v1/bootstrap/initialize",
+              data=body,
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              print(json.load(response)["token"])
+          PY
+          )"
+          echo "::add-mask::${TOKEN}"
+
+          # Checked AFTER bootstrap, deliberately. Before it, auth_enabled is
+          # false and core/security.py hands an admin sentinel to the first-run
+          # setup surface — /api/v1/bootstrap, /api/v1/auth and the settings
+          # read the wizard needs — so an unauthenticated GET /auth/me answers
+          # 200 there by design. The guard only exists once an admin does.
+          UNAUTHED="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/auth/me")"
+          [ "${UNAUTHED}" = "401" ] || {
+            echo "::error::after bootstrap, GET /auth/me without a token answered ${UNAUTHED}, expected 401 — the API is not guarded, so the 200 below would prove nothing"
+            exit 1
+          }
+
+          PROFILE="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${BASE}/auth/me")"
+          echo "${PROFILE}" | python3 -c '
+          import json, sys
+          profile = json.load(sys.stdin)
+          assert profile.get("email") == "smoke-admin@local.invalid", profile
+          print("authenticated as", profile["email"])
+          '
+
+      # GOV-20's other half: an artifact that cannot be removed is not
+      # installable either. Runs here rather than in `deb-install` because only
+      # this job has ever started the units, so only here can removal be shown
+      # to stop a RUNNING service rather than merely delete files.
+      - name: Uninstall the candidate and assert it left nothing behind
+        run: |
+          set -euo pipefail
+          sudo apt-get remove -y circuit-breaker circuit-breaker-nats
+
+          # `if`, never `cmd && { ... }`: under `set -e` an AND-list whose left
+          # side fails is itself a failing statement, so the healthy case —
+          # is-active returning 3 for an inactive unit — would fail the step.
+          if systemctl is-active --quiet circuit-breaker; then
+            echo "::error::circuit-breaker is still active after removal"
+            sudo systemctl status circuit-breaker --no-pager -l || true
+            exit 1
+          fi
+
+          for path in \
+            /usr/local/bin/circuit-breaker \
+            /usr/local/bin/nats-server \
+            /lib/systemd/system/circuit-breaker.service \
+            /lib/systemd/system/circuit-breaker-nats.service; do
+            [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
+          done
+
+          # The port has to be free again, or the next install on this host
+          # inherits a listener it did not start.
+          ! curl -sS --max-time 5 http://127.0.0.1:8080/api/v1/livez >/dev/null 2>&1 \
+            || { echo "::error::something is still serving :8080 after removal"; exit 1; }
+          echo "uninstall clean"
+
       - name: Collect diagnostics on failure
         if: failure()
         run: |
@@ -346,4 +500,10 @@ jobs:
           sudo journalctl -u circuit-breaker --no-pager -n 200 || true
           sudo journalctl -u circuit-breaker-nats --no-pager -n 200 || true
           docker logs --tail 200 cb-boot-postgres || true
+          # The rendered unit and the non-secret half of the environment: what
+          # a post-mortem needs and what the journal alone does not carry.
+          # `sed` strips every value, so the file's SHAPE is evidence and its
+          # contents are not.
+          sudo sed -E 's/=.*/=<redacted>/' /etc/circuit-breaker/circuit-breaker.env || true
+          sudo systemd-analyze verify circuit-breaker.service || true
 
