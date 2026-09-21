@@ -35,6 +35,37 @@ cb_find_install_identity() {
   return 1
 }
 
+# Why the search came up empty: unreadable, or genuinely absent.
+#
+# Prints the first candidate path this user provably cannot read, and returns 0.
+# Returns 1 when nothing is in the way, which means the identity really is not
+# installed.
+#
+# /etc/circuitbreaker is root:breaker:0750. An unprivileged caller gets EACCES
+# on the directory, so `[[ -f ... ]]` on the file inside it is false for exactly
+# the same reason it would be false on a host with no install at all. The two
+# cases need opposite advice — "run it with sudo" versus "run the installer" —
+# and the search alone cannot tell them apart. The directory itself is still
+# stattable, because /etc is world-executable, so this can.
+cb_identity_unreadable_path() {
+  local candidate dir
+  while IFS= read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    dir="$(dirname -- "$candidate")"
+    # A directory we cannot traverse hides whatever is inside it.
+    if [[ -d "$dir" && ! -x "$dir" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    # Or the file is visible but not readable by us.
+    if [[ -e "$candidate" && ! -r "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done < <(cb_identity_candidate_paths "${1:-${CB_DATA_DIR:-}}")
+  return 1
+}
+
 # Validate minimal required fields with python3 when available, else grep-level.
 # Returns 0 when usable.
 cb_validate_install_identity_file() {
