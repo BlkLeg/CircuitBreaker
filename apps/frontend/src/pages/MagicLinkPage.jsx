@@ -20,6 +20,11 @@ export default function MagicLinkPage() {
     }
 
     let cancelled = false;
+    // Held so the cleanup below can cancel it. `cancelled` alone does not: it is
+    // set before the timer fires, but the timer is already armed, and a user who
+    // clicks away inside that 1.2s window was yanked back to /map from wherever
+    // they had navigated to.
+    let redirectTimer = null;
 
     (async () => {
       try {
@@ -28,7 +33,7 @@ export default function MagicLinkPage() {
         const { token: jwt, user } = res.data;
         login(jwt, user);
         setStatus('success');
-        setTimeout(() => navigate('/map', { replace: true }), 1200);
+        redirectTimer = setTimeout(() => navigate('/map', { replace: true }), 1200);
       } catch (err) {
         if (cancelled) return;
         setStatus('error');
@@ -40,6 +45,7 @@ export default function MagicLinkPage() {
 
     return () => {
       cancelled = true;
+      if (redirectTimer !== null) clearTimeout(redirectTimer);
     };
   }, [token, login, navigate]);
 

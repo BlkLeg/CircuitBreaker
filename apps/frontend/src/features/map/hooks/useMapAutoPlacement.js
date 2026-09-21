@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { graphApi } from '../../../api/client';
 import { resolveNonOverlappingPosition } from '../../../utils/mapGeometryUtils';
 import { VIEWPORT_FIT_DEFAULTS } from '../../../utils/viewportFit';
@@ -30,6 +30,22 @@ export function useMapAutoPlacement({
   fitView,
   toast,
 }) {
+  // The batch tail below hands two callbacks to the browser — a rAF to save the
+  // layout once React has flushed, and a 100ms timer to fit the view. Both
+  // outlive the placement that scheduled them, so leaving the map while a batch
+  // was completing left them to run against a ReactFlow instance and a save
+  // callback that were already gone. Hold the handles and cancel on unmount.
+  const batchFrameRef = useRef(null);
+  const batchTimerRef = useRef(null);
+
+  useEffect(
+    () => () => {
+      if (batchFrameRef.current !== null) cancelAnimationFrame(batchFrameRef.current);
+      if (batchTimerRef.current !== null) clearTimeout(batchTimerRef.current);
+    },
+    []
+  );
+
   const updateNodePos = useCallback(
     (id, pos) => {
       setNodes((nds) => {
@@ -72,13 +88,15 @@ export function useMapAutoPlacement({
           });
           // Defer save until after React flushes setNodes so nodesRef.current
           // holds real positions (not zeros) when the layout is written to the DB.
-          requestAnimationFrame(() => {
+          batchFrameRef.current = requestAnimationFrame(() => {
+            batchFrameRef.current = null;
             saveLayoutRef
               .current?.()
               .catch((err) => console.error('Auto-save after placement failed', err));
           });
           // Fit view after all auto-placed nodes are positioned
-          setTimeout(() => {
+          batchTimerRef.current = setTimeout(() => {
+            batchTimerRef.current = null;
             fitView({ ...VIEWPORT_FIT_DEFAULTS, duration: 600 });
           }, 100);
         }
