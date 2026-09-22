@@ -323,11 +323,38 @@ echo "authenticated as ${PROFILE_EMAIL}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "Assert the installed layout, ownership, capabilities and ordering"
-# The binary needs CAP_NET_RAW to send ICMP without running as root; the unit
-# also declares it as an ambient capability. If setcap silently did nothing,
-# discovery fails at runtime with a permission error and nothing here notices.
-getcap /opt/circuitbreaker/bin/circuit-breaker | grep -q 'cap_net_raw' \
-  || fail "CAP_NET_RAW was not granted to the installed binary — ICMP discovery cannot work"
+# CAP_NET_RAW must reach the services ambiently, and must NOT be a file
+# capability on the binary.
+#
+# This assertion used to require the opposite — `getcap ... | grep cap_net_raw`
+# — and so enforced the defect. A file capability makes every exec of the
+# binary privilege-gaining, which (a) marks the process non-dumpable so
+# PyInstaller's onefile child cannot read /proc/<ppid>/exe and dies, and (b)
+# CLEARS the ambient set systemd just configured, which is the very mechanism
+# services/discovery_probes.py::_has_ambient_net_raw() looks for and the only
+# one that propagates into nmap children.
+if command -v getcap >/dev/null 2>&1; then
+  BIN_CAPS="$(getcap /opt/circuitbreaker/bin/circuit-breaker 2>/dev/null || true)"
+  [ -z "$BIN_CAPS" ] \
+    || fail "the installed binary carries a file capability (${BIN_CAPS}); that makes every exec privilege-gaining, kills the workers and clears the ambient set discovery relies on"
+fi
+grep -q '^AmbientCapabilities=.*CAP_NET_RAW' /etc/systemd/system/circuitbreaker-backend.service \
+  || fail "circuitbreaker-backend.service does not declare ambient CAP_NET_RAW — ICMP discovery cannot work"
+grep -q '^AmbientCapabilities=.*CAP_NET_RAW' /etc/systemd/system/circuitbreaker-worker@.service \
+  || fail "circuitbreaker-worker@.service does not declare ambient CAP_NET_RAW — the discovery and telemetry workers cannot probe"
+echo "no file caps on the binary; NET_RAW is ambient on the backend and workers"
+
+# The symptom an operator actually hits. `cb doctor` and `cb diag bundle` both
+# run --selftest, and both are run by ordinary users, not only by root. With a
+# file capability on the binary this fails for every non-root caller and
+# reports a perfectly healthy install as a binary that cannot load its
+# application.
+if id breaker >/dev/null 2>&1; then
+  runuser -u breaker -- /opt/circuitbreaker/bin/circuit-breaker --selftest \
+    > "$EVIDENCE/selftest-unprivileged.log" 2>&1 \
+    || { cat "$EVIDENCE/selftest-unprivileged.log"; fail "--selftest failed as an unprivileged user; cb doctor and cb diag bundle report this as a broken binary"; }
+  echo "--selftest passes unprivileged"
+fi
 
 [ "$(stat -c '%U' "$DATA_DIR")" = "breaker" ] \
   || fail "$DATA_DIR is not owned by breaker (found $(stat -c '%U' "$DATA_DIR"))"

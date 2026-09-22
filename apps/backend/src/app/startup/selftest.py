@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import traceback
 from dataclasses import dataclass
 
 from app.start import ASGI_TARGET
@@ -39,25 +40,47 @@ class SelfTestResult:
         ok: True when every target resolved.
         checked: Fully qualified names of everything that resolved, in order.
         failure: A human-readable description of the first failure, or None.
+        detail: The traceback of that failure, or None. Kept apart from
+            `failure` so a caller wanting one line still gets one line.
     """
 
     ok: bool
     checked: list[str]
     failure: str | None
+    detail: str | None = None
 
 
-def _resolve_asgi_target(target: str, checked: list[str]) -> str | None:
-    """Resolve `<module>:<attribute>` as uvicorn does. Returns a failure or None."""
+def _describe(exc: BaseException) -> str:
+    """The exception's traceback, for a failure that repr() cannot explain.
+
+    `PermissionError(13, 'Permission denied')` names no file, because the
+    errno came from a syscall rather than an open. Without the traceback there
+    is nothing to act on — and this module exists to be acted on. The text is a
+    Python traceback over the bundle's own modules: no configuration, no
+    secrets, no user data.
+    """
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
+
+
+def _resolve_asgi_target(target: str, checked: list[str]) -> tuple[str, str | None] | None:
+    """Resolve `<module>:<attribute>` as uvicorn does.
+
+    Returns:
+        None when the target resolved, else (failure, traceback-or-None).
+    """
     module_name, separator, attribute = target.partition(":")
     if not separator or not module_name or not attribute:
-        return f'ASGI target {target!r} is not in uvicorn\'s required "<module>:<attribute>" form'
+        return (
+            f'ASGI target {target!r} is not in uvicorn\'s required "<module>:<attribute>" form',
+            None,
+        )
     try:
         module = importlib.import_module(module_name)
     except Exception as exc:  # noqa: BLE001 — any import failure is the finding
-        return f"could not import ASGI module {module_name!r}: {exc!r}"
+        return (f"could not import ASGI module {module_name!r}: {exc!r}", _describe(exc))
     checked.append(module_name)
     if not hasattr(module, attribute):
-        return f"{module_name!r} has no attribute {attribute!r} for uvicorn to serve"
+        return (f"{module_name!r} has no attribute {attribute!r} for uvicorn to serve", None)
     checked.append(target)
     return None
 
@@ -71,9 +94,10 @@ def run_selftest() -> SelfTestResult:
     os.environ.setdefault("CB_DB_URL", "postgresql://selftest:dummy@localhost/selftest")
     checked: list[str] = []
 
-    failure = _resolve_asgi_target(ASGI_TARGET, checked)
-    if failure is not None:
-        return SelfTestResult(ok=False, checked=checked, failure=failure)
+    asgi_failure = _resolve_asgi_target(ASGI_TARGET, checked)
+    if asgi_failure is not None:
+        failure, detail = asgi_failure
+        return SelfTestResult(ok=False, checked=checked, failure=failure, detail=detail)
 
     for worker_type, module_name in sorted(WORKER_MODULES.items()):
         try:
@@ -86,6 +110,7 @@ def run_selftest() -> SelfTestResult:
                     f"could not import worker module {module_name!r} for worker "
                     f"type {worker_type!r}: {exc!r}"
                 ),
+                detail=_describe(exc),
             )
         checked.append(module_name)
 
@@ -96,6 +121,7 @@ def run_selftest() -> SelfTestResult:
             ok=False,
             checked=checked,
             failure=f"could not import migration entrypoint {ALEMBIC_ENV_MODULE!r}: {exc!r}",
+            detail=_describe(exc),
         )
     checked.append(ALEMBIC_ENV_MODULE)
 
@@ -103,7 +129,16 @@ def run_selftest() -> SelfTestResult:
 
 
 def format_result(result: SelfTestResult) -> str:
-    """One line, suitable for a CI log or a doctor check."""
+    """The failure, and the traceback that explains it.
+
+    Still one line when it succeeds, and when it fails the first line is the
+    same summary as before — callers that log only the first line are
+    unaffected. The traceback follows, because a bare repr of an errno-only
+    exception names nothing an operator can act on.
+    """
     if result.ok:
         return f"selftest OK — {len(result.checked)} targets resolved"
-    return f"selftest FAILED — {result.failure}"
+    summary = f"selftest FAILED — {result.failure}"
+    if result.detail:
+        return f"{summary}\n{result.detail}"
+    return summary

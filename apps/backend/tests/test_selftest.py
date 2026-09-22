@@ -107,3 +107,61 @@ def test_cli_selftest_runs_before_config_is_loaded(monkeypatch: pytest.MonkeyPat
     from app.start import main
 
     assert main(["--selftest"]) == 0
+
+
+# ── Failure detail ───────────────────────────────────────────────────────────
+#
+# The installer journey caught `--selftest` failing as an unprivileged user
+# with, in full:
+#
+#     selftest FAILED — could not import ASGI module 'app.main':
+#     PermissionError(13, 'Permission denied')
+#
+# An errno-only exception names no file, because the error came from a syscall
+# rather than an open. There was nothing to act on, from the one module in the
+# codebase whose entire job is to be acted on — `cb doctor` and `cb diag
+# bundle` both surface exactly this string to an operator.
+
+
+def test_an_import_failure_carries_its_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The summary line is unchanged; the traceback follows it."""
+    import app.startup.selftest as selftest_module
+
+    def _raise(_name: str) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(selftest_module.importlib, "import_module", _raise)
+    result = selftest_module.run_selftest()
+
+    assert not result.ok
+    assert result.detail, "an import failure must carry a traceback"
+    assert "PermissionError" in result.detail
+    assert "Traceback" in result.detail
+
+    rendered = selftest_module.format_result(result)
+    assert rendered.splitlines()[0].startswith("selftest FAILED — "), (
+        "the first line must stay the one-line summary; callers log it alone"
+    )
+    assert "Traceback" in rendered, "the traceback must reach the operator"
+
+
+def test_a_successful_selftest_stays_one_line() -> None:
+    """The traceback must not turn a healthy result into a wall of text."""
+    from app.startup.selftest import format_result, run_selftest
+
+    result = run_selftest()
+    assert result.ok, result.failure
+    assert result.detail is None
+    assert "\n" not in format_result(result)
+
+
+def test_a_malformed_target_has_no_traceback_to_offer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Not every failure is an exception; that path must not invent a detail."""
+    import app.startup.selftest as selftest_module
+
+    monkeypatch.setattr(selftest_module, "ASGI_TARGET", "no-colon-here")
+    result = selftest_module.run_selftest()
+
+    assert not result.ok
+    assert result.detail is None
+    assert "\n" not in selftest_module.format_result(result)
