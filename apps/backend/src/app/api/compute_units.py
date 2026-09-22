@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_audit
-from app.core.config import settings
+from app.core.paths import uploads_dir
 from app.core.security import require_write_auth
 from app.core.upload_validation import MIME_TO_SUFFIX
 from app.db.models import ComputeNetwork, UserIcon
@@ -22,7 +22,11 @@ router = APIRouter(tags=["compute-units"])
 
 router = APIRouter(tags=["compute-units"])
 
-ICON_UPLOAD_DIR = Path(settings.uploads_dir) / "icons"
+
+def _icon_upload_dir() -> Path:
+    return uploads_dir() / "icons"
+
+
 ALLOWED_TYPES = {"image/png", "image/jpeg", "image/webp"}
 MAX_SIZE = 1 * 1024 * 1024  # 1 MB
 
@@ -122,8 +126,8 @@ def list_icons(db: Session = Depends(get_db)):
     # Let's map from db
     db_icons = {icon.slug: icon for icon in db.query(UserIcon).all()}
 
-    if ICON_UPLOAD_DIR.exists():
-        for f in sorted(ICON_UPLOAD_DIR.iterdir()):
+    if _icon_upload_dir().exists():
+        for f in sorted(_icon_upload_dir().iterdir()):
             if f.is_file():
                 slug = f.name
                 label = f.stem
@@ -195,7 +199,7 @@ async def upload_icon(
         )
 
     # Ensure directory exists before saving (fix for brand-new instances handling first uploads)
-    ICON_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    _icon_upload_dir().mkdir(parents=True, exist_ok=True)
 
     # Suffix comes from the content type we just magic-byte verified, never from
     # the client's filename: a PNG body named "x.html" was previously stored and
@@ -204,7 +208,7 @@ async def upload_icon(
     # constrained to ALLOWED_TYPES above, so the lookup always hits.
     suffix = MIME_TO_SUFFIX[file.content_type]
     slug = f"user-{uuid.uuid4().hex[:8]}{suffix}"
-    dest = ICON_UPLOAD_DIR / slug
+    dest = _icon_upload_dir() / slug
     dest.write_bytes(data)
 
     db_icon = UserIcon(slug=slug, name=name, category=category)
@@ -232,9 +236,9 @@ def delete_icon(slug: str, db: Session = Depends(get_db), _=Depends(require_writ
     # path construction to satisfy static analysis and prevent path traversal.
     if not _SAFE_SLUG_RE.match(slug) or ".." in slug:
         raise HTTPException(status_code=400, detail="Invalid icon slug.")
-    # Canonicalise and verify the resolved path remains within ICON_UPLOAD_DIR.
-    icon_root = ICON_UPLOAD_DIR.resolve()
-    dest = (ICON_UPLOAD_DIR / slug).resolve()
+    # Canonicalise and verify the resolved path remains within _icon_upload_dir().
+    icon_root = _icon_upload_dir().resolve()
+    dest = (_icon_upload_dir() / slug).resolve()
     if not dest.is_relative_to(icon_root):
         raise HTTPException(status_code=400, detail="Invalid icon slug.")
     dest.unlink(missing_ok=True)

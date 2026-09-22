@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
+from app.core.paths import uploads_dir
 from app.services.acme_service import webroot as _acme_webroot
 from app.startup.paths import APP_DIR
 
@@ -56,40 +57,44 @@ if _frontend_dir:
         if _entry.is_file():
             _frontend_root_files[_entry.name] = _entry
 
-_uploads_dir = Path(settings.uploads_dir)
-_user_icons_dir = _uploads_dir / "icons"
-_branding_dir_data = _uploads_dir / "branding"
 
-# Ensure directories exist so mounting never fails
-_uploads_dir.mkdir(parents=True, exist_ok=True)
-_user_icons_dir.mkdir(parents=True, exist_ok=True)
-_branding_dir_data.mkdir(parents=True, exist_ok=True)
+def _user_icons_dir() -> Path:
+    return uploads_dir() / "icons"
 
 
-class _AcmeChallengeFiles(StaticFiles):
-    """StaticFiles pinned to `acme_service.webroot()` as it is at request time.
+def _branding_dir_data() -> Path:
+    return uploads_dir() / "branding"
 
-    The CA fetches this path with no credentials, before any certificate exists. nginx serves
-    it directly in the mono image and on a native install; the plain image has no nginx, so the
-    application serves the same webroot certbot writes into. One directory, two servers.
 
-    The webroot is resolved per request rather than at import: CB_DATA_DIR is what names it,
-    the directory does not exist until the first issuance, and a `/data` that this process
-    cannot create must not be able to stop the application from importing.
+class _DeferredDirectoryFiles(StaticFiles):
+    """StaticFiles pinned to a directory resolved at request time, not import.
 
-    The assignment in `lookup_path` writes shared instance state from a request handler, which
-    is safe here for one reason and only one: `webroot()` reads CB_DATA_DIR, which is fixed for
-    the life of the process, so every request writes the identical value. Starlette's own
-    traversal guard still runs in `super().lookup_path`, so a token containing `..` cannot
+    Generalises what was originally written only for the ACME webroot (see the
+    class this replaced, `_AcmeChallengeFiles`): CB_DATA_DIR is what names the
+    uploads tree, the directory may not exist until the first write, and a
+    `/data` this process cannot create must not be able to stop the
+    application from importing. `check_dir=False` and `directory=None` mean
+    Starlette never touches the filesystem at construction time.
+
+    The assignment in `lookup_path` writes shared instance state from a
+    request handler, which is safe here for one reason and only one: `resolve`
+    reads environment state that is fixed for the life of the process, so
+    every request writes the identical value. Starlette's own traversal guard
+    still runs in `super().lookup_path`, so a token containing `..` cannot
     escape the directory this names.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, resolve: Callable[[], Path]) -> None:
         super().__init__(directory=None, check_dir=False)
+        self._resolve = resolve
 
     def lookup_path(self, path: str) -> tuple[str, os.stat_result | None]:
-        self.all_directories = [str(_acme_webroot() / ".well-known" / "acme-challenge")]
+        self.all_directories = [str(self._resolve())]
         return super().lookup_path(path)
+
+
+def _acme_challenge_dir() -> Path:
+    return _acme_webroot() / ".well-known" / "acme-challenge"
 
 
 async def _static_cache_middleware(
@@ -109,7 +114,7 @@ async def _static_cache_middleware(
 
 
 async def favicon_file() -> Response:
-    favicon = _branding_dir_data / _FAVICON_FILENAME
+    favicon = _branding_dir_data() / _FAVICON_FILENAME
     if favicon.exists():
         return FileResponse(str(favicon), media_type="image/x-icon")
     if _frontend_dir and (_frontend_dir / _FAVICON_FILENAME).exists():
@@ -188,10 +193,14 @@ def register(app: FastAPI) -> None:
     catch-all, and every mount below has to exist before it or it will swallow
     the request.
     """
-    app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
-    app.mount("/user-icons", StaticFiles(directory=str(_user_icons_dir)), name="user-icons")
-    app.mount("/branding", StaticFiles(directory=str(_branding_dir_data)), name="branding")
-    app.mount("/.well-known/acme-challenge", _AcmeChallengeFiles(), name="acme-challenge")
+    app.mount("/uploads", _DeferredDirectoryFiles(uploads_dir), name="uploads")
+    app.mount("/user-icons", _DeferredDirectoryFiles(_user_icons_dir), name="user-icons")
+    app.mount("/branding", _DeferredDirectoryFiles(_branding_dir_data), name="branding")
+    app.mount(
+        "/.well-known/acme-challenge",
+        _DeferredDirectoryFiles(_acme_challenge_dir),
+        name="acme-challenge",
+    )
 
     app.middleware("http")(_static_cache_middleware)
 
@@ -203,11 +212,13 @@ def register(app: FastAPI) -> None:
     if _frontend_dir:
         _assets = _frontend_dir / "assets"
         if _assets.exists():
-            app.mount("/assets", StaticFiles(directory=str(_assets)), name="assets")
+            app.mount(
+                "/assets", StaticFiles(directory=str(_assets), check_dir=False), name="assets"
+            )
 
         _icons = _frontend_dir / "icons"
         if _icons.exists():
-            app.mount("/icons", StaticFiles(directory=str(_icons)), name="icons")
+            app.mount("/icons", StaticFiles(directory=str(_icons), check_dir=False), name="icons")
 
         app.add_api_route(
             "/{full_path:path}",

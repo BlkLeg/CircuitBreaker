@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.paths import uploads_dir
 from app.core.rbac import require_role
 from app.core.security import require_write_auth
 from app.core.upload_validation import is_active_content_type, verify_image_magic_bytes
@@ -19,12 +19,13 @@ _ICON_TYPE = "image/x-icon"
 _ALLOWED_TYPES = {"image/png", "image/jpeg", _ICON_TYPE}
 _MAX_ICON_BYTES = 2 * 1024 * 1024
 
-_UPLOADS_DIR = Path(settings.uploads_dir)
-_USER_ICONS_DIR = _UPLOADS_DIR / "icons"
-_BRANDING_DIR = _UPLOADS_DIR / "branding"
 
-for directory in (_UPLOADS_DIR, _USER_ICONS_DIR, _BRANDING_DIR):
-    directory.mkdir(parents=True, exist_ok=True)
+def _user_icons_dir() -> Path:
+    return uploads_dir() / "icons"
+
+
+def _branding_dir() -> Path:
+    return uploads_dir() / "branding"
 
 
 def _suffix_for(content_type: str, filename: str) -> str:
@@ -76,7 +77,9 @@ async def upload_user_icon(
             "icon_id": existing[0],
         }
 
-    filepath = _USER_ICONS_DIR / filename
+    icons_dir = _user_icons_dir()
+    icons_dir.mkdir(parents=True, exist_ok=True)
+    filepath = icons_dir / filename
     filepath.write_bytes(content)
 
     db.execute(
@@ -130,7 +133,9 @@ async def upload_favicon(
     if not verify_image_magic_bytes(content, file.content_type):
         raise HTTPException(status_code=400, detail="Image content does not match file type")
 
-    filepath = _BRANDING_DIR / "favicon.ico"
+    branding_dir = _branding_dir()
+    branding_dir.mkdir(parents=True, exist_ok=True)
+    filepath = branding_dir / "favicon.ico"
     filepath.write_bytes(content)
 
     get_or_create_settings(db)

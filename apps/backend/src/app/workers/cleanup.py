@@ -1,10 +1,9 @@
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.paths import uploads_dir
 from app.core.worker_audit import log_worker_audit
 
 
@@ -26,7 +25,7 @@ def cleanup_old_icons(db: Session) -> int:
         {"cutoff": cutoff.isoformat()},
     ).fetchall()
 
-    icons_dir = Path(settings.uploads_dir) / "icons"
+    icons_dir = uploads_dir() / "icons"
     removed = 0
 
     try:

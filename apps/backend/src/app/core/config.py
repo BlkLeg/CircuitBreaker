@@ -142,7 +142,12 @@ class Settings(BaseSettings):
     # Base directory for all user uploads. Override with UPLOADS_DIR env var.
     # In Docker (single image) set UPLOADS_DIR=/data/uploads so files land on the volume.
     # In Docker Compose set UPLOADS_DIR=/app/data/uploads to match the compose volume.
-    uploads_dir: str = "data/uploads"
+    # Empty means "derive from CB_DATA_DIR" — see app.core.paths.uploads_dir(),
+    # which every consumer of this field goes through rather than reading it
+    # directly. A non-empty default here would still be an import-time
+    # constant a --selftest run has no way to create; leaving it empty means
+    # the derivation happens lazily, at the point something actually writes.
+    uploads_dir: str = ""
     # Optional DuckDB file path for analytics queries.
     # Leave empty to run analytics on the primary PostgreSQL engine, which is
     # what db_client._make_analytics_engine falls back to.

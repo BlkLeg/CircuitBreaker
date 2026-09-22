@@ -9848,7 +9848,7 @@
         "GET",
         "HEAD"
       ],
-      "mount_class": "app.api.static_spa._AcmeChallengeFiles",
+      "mount_class": "app.api.static_spa._DeferredDirectoryFiles",
       "name": "acme-challenge",
       "path": "/.well-known/acme-challenge/{path:path}",
       "public_reason": "ACME HTTP-01 validation must be readable by the certificate authority before any certificate exists.",
@@ -9878,7 +9878,7 @@
         "GET",
         "HEAD"
       ],
-      "mount_class": "starlette.staticfiles.StaticFiles",
+      "mount_class": "app.api.static_spa._DeferredDirectoryFiles",
       "name": "branding",
       "path": "/branding/{path:path}",
       "public_reason": "Branding and favicon assets must render before or outside authenticated API calls.",
@@ -9908,7 +9908,7 @@
         "GET",
         "HEAD"
       ],
-      "mount_class": "starlette.staticfiles.StaticFiles",
+      "mount_class": "app.api.static_spa._DeferredDirectoryFiles",
       "name": "uploads",
       "path": "/uploads/{path:path}",
       "public_reason": "Uploaded media is user-facing browser content and is served only under the upload safety policy.",
@@ -9923,7 +9923,7 @@
         "GET",
         "HEAD"
       ],
-      "mount_class": "starlette.staticfiles.StaticFiles",
+      "mount_class": "app.api.static_spa._DeferredDirectoryFiles",
       "name": "user-icons",
       "path": "/user-icons/{path:path}",
       "public_reason": "User and device icon images are referenced by the browser UI.",

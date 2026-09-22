@@ -112,3 +112,62 @@ def test_asgi_target_is_in_uvicorn_import_string_form() -> None:
         f"ASGI_TARGET {ASGI_TARGET!r} is not in uvicorn's required "
         '"<module>:<attribute>" form.'
     )
+
+
+BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_native_release.py"
+
+
+def _dynamic_import_packages() -> set[str]:
+    """The `_DYNAMIC_IMPORT_PACKAGES` tuple the build script hides-imports.
+
+    Read from the AST, matching the rest of this module's approach, so this
+    suite stays runnable without PyInstaller installed.
+    """
+    tree = ast.parse(BUILD_SCRIPT.read_text(encoding="utf-8"), filename=str(BUILD_SCRIPT))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "_DYNAMIC_IMPORT_PACKAGES" for t in node.targets)
+            and isinstance(node.value, ast.Tuple)
+        ):
+            return {
+                elt.value
+                for elt in node.value.elts
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+            }
+    raise AssertionError(
+        "No `_DYNAMIC_IMPORT_PACKAGES = (...)` tuple literal was found in "
+        f"{BUILD_SCRIPT.name}. Either it was renamed or this parser is broken."
+    )
+
+
+def test_selftest_probes_every_dynamic_import_package() -> None:
+    """--selftest must prove the packaging fix for #104's whole class, not just proxmoxer.
+
+    `_DYNAMIC_IMPORT_PACKAGES` in the build script is what PyInstaller's static
+    import graph would otherwise silently drop (gh#104: `proxmoxer.backends`).
+    `collect_submodules` at build time puts the files in the bundle; nothing
+    proved they are actually importable until `--selftest` probes one submodule
+    per package. A package added to the build list with no matching probe here
+    is the same "declared, never verified" gap #104 already was.
+    """
+    from app.startup.selftest import DYNAMIC_IMPORT_PROBES
+
+    packages = _dynamic_import_packages()
+    probed = set(DYNAMIC_IMPORT_PROBES)
+    missing = packages - probed
+    extra = probed - packages
+    assert not missing, (
+        f"{sorted(missing)} are hidden-imported by the build but --selftest never "
+        "probes them. Add a representative submodule to DYNAMIC_IMPORT_PROBES."
+    )
+    assert not extra, (
+        f"DYNAMIC_IMPORT_PROBES names {sorted(extra)}, which the build script does "
+        "not hidden-import. Remove the stale probe, or add the package to "
+        "_DYNAMIC_IMPORT_PACKAGES."
+    )
+    for package, probe in DYNAMIC_IMPORT_PROBES.items():
+        assert probe.startswith(f"{package}."), (
+            f"DYNAMIC_IMPORT_PROBES[{package!r}] = {probe!r} does not name a "
+            f"submodule of {package!r}."
+        )

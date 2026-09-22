@@ -115,6 +115,7 @@ not_in_nav: |
   /design/backend-functions/*.md
   /plans/*.md
   /superpowers/plans/*.md
+  /superpowers/specs/*.md
   /assets/screenshots/MANIFEST.md
   /installation/docker-compose-prod.md
   /1.0.0-release-readiness-audit.md

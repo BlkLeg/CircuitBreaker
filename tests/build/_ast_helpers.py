@@ -1,9 +1,9 @@
 """AST walkers shared by the boundary ratchets.
 
-Three gates count three different things, but they must agree on what a
-"session operation", an "import", and a "silent handler" are — otherwise a
-refactor can lower one count while raising another and the suite still passes.
-One module, one definition each.
+Four gates count four different things, but they must agree on what a
+"session operation", an "import", a "silent handler" and an "import-time
+filesystem write" are — otherwise a refactor can lower one count while raising
+another and the suite still passes. One module, one definition each.
 
 `ast` rather than grep, deliberately. The route's own F6 number (354) came from
 a grep pattern it does not record, and could not be reproduced: the same
@@ -14,6 +14,7 @@ gate.
 from __future__ import annotations
 
 import ast
+from collections.abc import Iterator
 from pathlib import Path
 
 #: Parameter names bound to a SQLAlchemy `Session` in this codebase. `db` is the
@@ -138,5 +139,152 @@ def silent_handlers(path: Path) -> list[int]:
             and only.value.value is Ellipsis
         )
         if is_pass or is_ellipsis:
+            found.append(node.lineno)
+    return sorted(found)
+
+
+#: `pathlib.Path` / `shutil` method names that mutate the filesystem. A call
+#: to one of these, reached at import time, is what made importing
+#: `app.api.assets` fail as an unprivileged user in an unwritable cwd — see
+#: `test_import_time_side_effects.py`.
+#:
+#: Deliberately excludes `rename`, `replace` and `copy`: all three are common
+#: method names on non-filesystem builtins (`str.replace`, `dict.copy`,
+#: `dataclasses.replace`) and a pure attribute-name match cannot tell them
+#: apart from `Path.rename`/`Path.replace`/`shutil.copy` without type
+#: inference. `str.replace` at module level is exactly the false positive
+#: this exclusion exists to avoid — measured against this tree.
+_FS_WRITE_METHODS = frozenset(
+    {
+        "mkdir",
+        "makedirs",
+        "touch",
+        "write_text",
+        "write_bytes",
+        "unlink",
+        "rmtree",
+        "chmod",
+        "chown",
+        "symlink",
+        "copy2",
+        "copyfile",
+        "copytree",
+    }
+)
+
+#: `open()` mode characters that mutate the filesystem. Read-only modes ("r",
+#: "rb") are not in this set on purpose.
+_WRITE_MODE_CHARS = frozenset("wax+")
+
+
+def _is_write_open_call(node: ast.Call) -> bool:
+    if not (isinstance(node.func, ast.Name) and node.func.id == "open"):
+        return False
+    mode_arg: ast.expr | None = node.args[1] if len(node.args) >= 2 else None
+    for kw in node.keywords:
+        if kw.arg == "mode":
+            mode_arg = kw.value
+    if not (isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str)):
+        return False
+    return any(ch in _WRITE_MODE_CHARS for ch in mode_arg.value)
+
+
+def _is_fs_write_call(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Attribute) and node.func.attr in _FS_WRITE_METHODS:
+        return True
+    return _is_write_open_call(node)
+
+
+def _contains_fs_write(node: ast.AST) -> bool:
+    """Whether *node*'s subtree contains a filesystem-mutating call anywhere.
+
+    Used only on function bodies, to decide whether calling that function is
+    itself a filesystem write — deliberately a full `ast.walk`, not a pruned
+    one: a function that writes via a nested helper still writes.
+    """
+    return any(_is_fs_write_call(n) for n in ast.walk(node))
+
+
+def _iter_import_time_nodes(node: ast.AST) -> Iterator[ast.AST]:
+    """Yield *node* and every descendant that runs when the module is imported.
+
+    Does not descend into a function/class body or a lambda — those run
+    later, not at import time. A `def`'s decorators and default-argument
+    expressions DO run at import time, so those are visited before the body
+    is pruned.
+    """
+    yield node
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        for decorator in node.decorator_list:
+            yield from _iter_import_time_nodes(decorator)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for default in (*node.args.defaults, *node.args.kw_defaults):
+                if default is not None:
+                    yield from _iter_import_time_nodes(default)
+        return
+    if isinstance(node, ast.Lambda):
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _iter_import_time_nodes(child)
+
+
+def module_level_filesystem_writes(path: Path) -> list[int]:
+    """Line numbers of filesystem-mutating calls this module makes at import.
+
+    Two shapes are caught: a direct write call at module scope (inside an
+    `if`/`try`/`with`/`for` is still module scope — only a `def`/`class`/
+    `lambda` body is not), and a module-scope call to a function *defined in
+    this same module* whose own body writes — the `_ensure_dir()` pattern
+    that made `app.db.cve_session` fail alongside `app.api.assets` and
+    `app.api.static_spa`, and that a scan limited to direct calls would miss.
+    """
+    tree = _parse(path)
+
+    functions_that_write: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _contains_fs_write(node):
+            functions_that_write.add(node.name)
+
+    found: list[int] = []
+    for top_level_node in tree.body:
+        for node in _iter_import_time_nodes(top_level_node):
+            if _is_fs_write_call(node):
+                found.append(node.lineno)
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in functions_that_write
+            ):
+                found.append(node.lineno)
+    return sorted(set(found))
+
+
+def static_files_calls_missing_check_dir_false(path: Path) -> list[int]:
+    """Line numbers of `StaticFiles(...)` calls that do not pass `check_dir=False`.
+
+    `StaticFiles.__init__` defaults to `check_dir=True`, which stats the
+    directory during construction — at import time, for any mount built at
+    module scope or from `app.main`'s straight-line construction. A directory
+    this process cannot create must not be able to stop the application from
+    importing; `check_dir=False` defers that check to the first request,
+    where a missing directory is a 404, not an ImportError.
+    """
+    found: list[int] = []
+    for node in ast.walk(_parse(path)):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "StaticFiles"
+        ):
+            continue
+        has_false = any(
+            kw.arg == "check_dir"
+            and isinstance(kw.value, ast.Constant)
+            and kw.value.value is False
+            for kw in node.keywords
+        )
+        if not has_false:
             found.append(node.lineno)
     return sorted(found)

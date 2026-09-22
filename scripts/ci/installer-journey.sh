@@ -58,8 +58,10 @@ CB_WORKER_UNITS=(
   circuitbreaker-worker@discovery
   circuitbreaker-worker@notification
   circuitbreaker-worker@telemetry
+  circuitbreaker-worker@integration
   circuitbreaker-worker@monitor_scheduler
   circuitbreaker-worker@monitor_poll
+  circuitbreaker-worker@monitor_probe_dispatch
 )
 
 mkdir -p "$EVIDENCE"
@@ -323,11 +325,38 @@ echo "authenticated as ${PROFILE_EMAIL}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "Assert the installed layout, ownership, capabilities and ordering"
-# The binary needs CAP_NET_RAW to send ICMP without running as root; the unit
-# also declares it as an ambient capability. If setcap silently did nothing,
-# discovery fails at runtime with a permission error and nothing here notices.
-getcap /opt/circuitbreaker/bin/circuit-breaker | grep -q 'cap_net_raw' \
-  || fail "CAP_NET_RAW was not granted to the installed binary — ICMP discovery cannot work"
+# CAP_NET_RAW must reach the services ambiently, and must NOT be a file
+# capability on the binary.
+#
+# This assertion used to require the opposite — `getcap ... | grep cap_net_raw`
+# — and so enforced the defect. A file capability makes every exec of the
+# binary privilege-gaining, which (a) marks the process non-dumpable so
+# PyInstaller's onefile child cannot read /proc/<ppid>/exe and dies, and (b)
+# CLEARS the ambient set systemd just configured, which is the very mechanism
+# services/discovery_probes.py::_has_ambient_net_raw() looks for and the only
+# one that propagates into nmap children.
+if command -v getcap >/dev/null 2>&1; then
+  BIN_CAPS="$(getcap /opt/circuitbreaker/bin/circuit-breaker 2>/dev/null || true)"
+  [ -z "$BIN_CAPS" ] \
+    || fail "the installed binary carries a file capability (${BIN_CAPS}); that makes every exec privilege-gaining, kills the workers and clears the ambient set discovery relies on"
+fi
+grep -q '^AmbientCapabilities=.*CAP_NET_RAW' /etc/systemd/system/circuitbreaker-backend.service \
+  || fail "circuitbreaker-backend.service does not declare ambient CAP_NET_RAW — ICMP discovery cannot work"
+grep -q '^AmbientCapabilities=.*CAP_NET_RAW' /etc/systemd/system/circuitbreaker-worker@.service \
+  || fail "circuitbreaker-worker@.service does not declare ambient CAP_NET_RAW — the discovery and telemetry workers cannot probe"
+echo "no file caps on the binary; NET_RAW is ambient on the backend and workers"
+
+# The symptom an operator actually hits. `cb doctor` and `cb diag bundle` both
+# run --selftest, and both are run by ordinary users, not only by root. With a
+# file capability on the binary this fails for every non-root caller and
+# reports a perfectly healthy install as a binary that cannot load its
+# application.
+if id breaker >/dev/null 2>&1; then
+  runuser -u breaker -- /opt/circuitbreaker/bin/circuit-breaker --selftest \
+    > "$EVIDENCE/selftest-unprivileged.log" 2>&1 \
+    || { cat "$EVIDENCE/selftest-unprivileged.log"; fail "--selftest failed as an unprivileged user; cb doctor and cb diag bundle report this as a broken binary"; }
+  echo "--selftest passes unprivileged"
+fi
 
 [ "$(stat -c '%U' "$DATA_DIR")" = "breaker" ] \
   || fail "$DATA_DIR is not owned by breaker (found $(stat -c '%U' "$DATA_DIR"))"
@@ -414,6 +443,15 @@ SECRETS_BEFORE="$(for key in CB_JWT_SECRET CB_VAULT_KEY CB_DB_PASSWORD CB_REDIS_
   env_value "$key"
 done | sha256sum | cut -d' ' -f1)"
 
+# Put this host into the shape every native install had before deploy/setup.sh
+# gained CB_WORKER_TYPES: two of the seven workers never enabled or started.
+# The rerun below is the only place in this journey that exercises the actual
+# upgrade path — a host that has these disabled and re-running install.sh must
+# come back with every worker enabled and running, or the fix only ever
+# applied to a fresh install.
+systemctl disable --now circuitbreaker-worker@integration circuitbreaker-worker@monitor_probe_dispatch \
+  >/dev/null 2>&1 || true
+
 set +e
 bash install.sh --local-bundle "$BUNDLE" --unattended --no-tls \
   > "$EVIDENCE/upgrade-stdout.log" 2>&1
@@ -439,6 +477,17 @@ curl -fsS -H "Authorization: Bearer ${ADMIN_TOKEN}" "${BASE}/auth/me" >/dev/null
        "${BASE}/auth/login" >/dev/null \
   || fail "the admin account did not survive the installer re-run"
 echo "upgrade preserved secrets, data and the admin account"
+
+# The two workers disabled above must come back enabled and running: an
+# upgrade that leaves a previously-disabled worker off is indistinguishable
+# from one that never learned about it.
+for unit in "${CB_WORKER_UNITS[@]}"; do
+  [ "$(systemctl is-enabled "$unit" 2>/dev/null)" = "enabled" ] \
+    || fail "$unit is not enabled after the installer re-run"
+  systemctl is-active --quiet "$unit" \
+    || fail "$unit is not active after the installer re-run"
+done
+echo "upgrade re-enabled and started all ${#CB_WORKER_UNITS[@]} workers"
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "Assert the installed binary contains its application"

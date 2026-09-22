@@ -152,7 +152,7 @@ def test_oobe_vault_key_written_to_file(client, monkeypatch):
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_env = Path(tmpdir) / ".env"
-        monkeypatch.setattr(vs, "_DATA_ENV_PATH", tmp_env)
+        monkeypatch.setattr(vs, "_data_env_path", lambda: tmp_env)
 
         resp = client.post("/api/v1/bootstrap/initialize", json=_bootstrap_payload(client))
         assert resp.status_code == 200
@@ -189,7 +189,7 @@ def test_vault_survives_simulated_restart(client, db, monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
         # Point the data .env somewhere writable *before* bootstrap, so bootstrap's
         # own write lands here and the reload below has something to find.
-        monkeypatch.setattr(vs, "_DATA_ENV_PATH", Path(tmpdir) / ".env")
+        monkeypatch.setattr(vs, "_data_env_path", lambda: Path(tmpdir) / ".env")
 
         # Bootstrap to generate vault key
         resp = client.post("/api/v1/bootstrap/initialize", json=_bootstrap_payload(client))
@@ -211,7 +211,7 @@ def test_vault_survives_simulated_restart(client, db, monkeypatch):
             assert loaded_key is not None, (
                 "load_vault_key() should recover the key from the data .env file"
             )
-            assert vault_service.get_key_source() == str(vs._DATA_ENV_PATH)
+            assert vault_service.get_key_source() == str(vs._data_env_path())
 
             fresh_vault.reinitialize(loaded_key)
             assert fresh_vault.is_initialized
@@ -234,7 +234,7 @@ def test_vault_rotation_reencrypts_smtp_password(client, db, monkeypatch):
     import app.services.vault_service as vs
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        monkeypatch.setattr(vs, "_DATA_ENV_PATH", Path(tmpdir) / ".env")
+        monkeypatch.setattr(vs, "_data_env_path", lambda: Path(tmpdir) / ".env")
 
         from app.db.models import AppSettings
         from app.services import vault_service
@@ -272,7 +272,7 @@ def test_vault_rotation_updates_db_key(client, db, monkeypatch):
     import app.services.vault_service as vs
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        monkeypatch.setattr(vs, "_DATA_ENV_PATH", Path(tmpdir) / ".env")
+        monkeypatch.setattr(vs, "_data_env_path", lambda: Path(tmpdir) / ".env")
 
         from app.db.models import AppSettings
         from app.services import vault_service
@@ -307,7 +307,7 @@ def test_load_vault_key_from_env(db, monkeypatch):
 
     test_key = Fernet.generate_key().decode()
     monkeypatch.setenv("CB_VAULT_KEY", test_key)
-    monkeypatch.setattr(vs, "_DATA_ENV_PATH", Path("/nonexistent/.env"))
+    monkeypatch.setattr(vs, "_data_env_path", lambda: Path("/nonexistent/.env"))
 
     result = load_vault_key(db)
     assert result == test_key
@@ -329,7 +329,7 @@ def test_load_vault_key_from_file(db, monkeypatch):
         tmp_path = Path(f.name)
 
     try:
-        monkeypatch.setattr(vs, "_DATA_ENV_PATH", tmp_path)
+        monkeypatch.setattr(vs, "_data_env_path", lambda: tmp_path)
         result = load_vault_key(db)
         assert result == test_key
         assert str(tmp_path) in vs.get_key_source() or vs.get_key_source() == str(tmp_path)
@@ -363,7 +363,7 @@ def test_load_vault_key_from_db(client, db, monkeypatch):
     monkeypatch.delenv("CB_VAULT_KEY", raising=False)
     with tempfile.TemporaryDirectory() as tmpdir:
         migrated_env = Path(tmpdir) / ".env"
-        monkeypatch.setattr(vs, "_DATA_ENV_PATH", migrated_env)
+        monkeypatch.setattr(vs, "_data_env_path", lambda: migrated_env)
 
         result = load_vault_key(db)
         assert result == legacy_key
@@ -380,7 +380,7 @@ def test_load_vault_key_returns_none_when_nothing_found(db, monkeypatch):
     from app.services.vault_service import load_vault_key
 
     monkeypatch.delenv("CB_VAULT_KEY", raising=False)
-    monkeypatch.setattr(vs, "_DATA_ENV_PATH", Path("/nonexistent/.env"))
+    monkeypatch.setattr(vs, "_data_env_path", lambda: Path("/nonexistent/.env"))
 
     result = load_vault_key(db)
     assert result is None

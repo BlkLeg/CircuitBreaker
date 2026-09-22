@@ -4,8 +4,8 @@
 start and only removes it on a clean exit. A crash loop, a reboot mid-start, or
 a failed upgrade therefore leaves full copies behind with nothing reaping them.
 
-On a native install SIX units run that same bundle as user `breaker`
-(backend + five workers), all into the shared /tmp, and the backend restarts
+On a native install EIGHT units run that same bundle as user `breaker`
+(backend + seven workers), all into the shared /tmp, and the backend restarts
 on failure. Each unit is given its own extraction directory under the app's
 data dir and reaps only that directory, because a shared reap directory would
 let a starting worker delete the backend's live extraction.

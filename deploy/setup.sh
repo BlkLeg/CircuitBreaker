@@ -18,6 +18,25 @@ if [[ -r /opt/circuitbreaker/deploy/lib/ui.sh ]]; then
   source /opt/circuitbreaker/deploy/lib/ui.sh
 fi
 
+# The worker types this build ships, one systemd instance per type. Single
+# source of truth for stage4's enable list and stage8's start loop below, so
+# the two cannot drift the way they did before: `integration` and
+# `monitor_probe_dispatch` were added to app.workers.main.WORKER_MODULES (and
+# to circuitbreaker.target's Wants= and cb's CB_NATIVE_SERVICES) but never to
+# either loop here, so every native install silently ran five of the seven
+# workers the mono image and circuitbreaker.target both expect.
+# tests/build/test_worker_set_matches_runtime.py pins this array against
+# WORKER_MODULES so the two cannot disagree again.
+CB_WORKER_TYPES=(
+  discovery
+  notification
+  telemetry
+  integration
+  monitor_scheduler
+  monitor_poll
+  monitor_probe_dispatch
+)
+
 cb_resolve_env_template() {
   local setup_dir
   setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1348,14 +1367,18 @@ stage4_write_systemd_units() {
   chown breaker:breaker /run/circuitbreaker >> "$LOG_FILE" 2>&1 || true
   chmod 0750 /run/circuitbreaker
 
+  local _worker_units=()
+  local _worker_type
+  for _worker_type in "${CB_WORKER_TYPES[@]}"; do
+    _worker_units+=("circuitbreaker-worker@${_worker_type}")
+  done
+
   systemctl daemon-reload >> "$LOG_FILE" 2>&1
   systemctl enable circuitbreaker.target >> "$LOG_FILE" 2>&1
   systemctl enable circuitbreaker.slice \
     circuitbreaker-postgres circuitbreaker-pgbouncer \
     circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
-    "circuitbreaker-worker@discovery" "circuitbreaker-worker@notification" \
-    "circuitbreaker-worker@telemetry" "circuitbreaker-worker@monitor_scheduler" \
-    "circuitbreaker-worker@monitor_poll" \
+    "${_worker_units[@]}" \
     circuitbreaker-healthcheck.timer \
     nginx >> "$LOG_FILE" 2>&1
   [[ "$DOCKER_AVAILABLE" == "true" ]] && \
@@ -1374,16 +1397,51 @@ stage6_apply_binary() {
   chown root:root /opt/circuitbreaker/bin/circuit-breaker
   cb_ok "Binary ready at /opt/circuitbreaker/bin/circuit-breaker"
 
-  # Grant NET_RAW capability for SNMP/ICMP telemetry
-  cb_step "Granting NET_RAW capability"
+  # NET_RAW reaches this binary through systemd's AmbientCapabilities, never
+  # through a file capability on the binary itself. Any file capability left on
+  # it by an older install is removed here, on every run, including upgrades.
+  #
+  # `setcap cap_net_raw+ep` on this path did three things, all bad, and none of
+  # them was granting a privilege the units did not already have:
+  #
+  #  1. It made every exec of the binary privilege-gaining, so the kernel marked
+  #     the process non-dumpable and /proc/<pid>/exe became unreadable even to
+  #     the user running it. PyInstaller's --onefile child validates its parent
+  #     by reading exactly that, so it died:
+  #       "Security validation failure: could not access /proc entry to
+  #        determine the executable path for originating onefile parent
+  #        process!"
+  #     That killed all five circuitbreaker-worker@ units on archlinux and made
+  #     `circuit-breaker --selftest` — and therefore `cb doctor` and
+  #     `cb diag bundle` — fail for every unprivileged caller, reporting a
+  #     healthy install as a broken binary.
+  #
+  #  2. Exec'ing a file that carries capabilities CLEARS the ambient set. So the
+  #     AmbientCapabilities systemd had just set were discarded at exec, and
+  #     services/discovery_probes.py's _has_ambient_net_raw() — which reads
+  #     CapAmb from /proc/self/status — saw nothing. Its own docstring says it:
+  #     "Ambient caps propagate to nmap subprocesses, but file caps on the
+  #     Python binary do not." The file capability was silently defeating the
+  #     mechanism discovery actually depends on.
+  #
+  #  3. It put a capability-carrying binary on disk for any local user to exec,
+  #     which is strictly more privilege than the units need.
+  #
+  # Raw sockets still work: AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN on
+  # circuitbreaker-backend.service and circuitbreaker-worker@.service put the
+  # capability in the permitted set before exec, an unprivileged file is not a
+  # privilege-gaining exec, and the ambient set therefore survives into the
+  # process and into the nmap children it spawns. nmap keeps its own file
+  # capability below, which is what covers an nmap run outside those units.
+  cb_step "Clearing file capabilities from the binary"
   if command -v setcap &>/dev/null; then
-    if setcap cap_net_raw+ep /opt/circuitbreaker/bin/circuit-breaker >> "$LOG_FILE" 2>&1; then
-      cb_ok "NET_RAW capability granted"
-    else
-      cb_warn "setcap failed — SNMP/ICMP telemetry may not function"
-    fi
+    setcap -r /opt/circuitbreaker/bin/circuit-breaker >> "$LOG_FILE" 2>&1 || true
+  fi
+  if command -v getcap &>/dev/null \
+    && [[ -n "$(getcap /opt/circuitbreaker/bin/circuit-breaker 2>/dev/null)" ]]; then
+    cb_warn "the binary still carries a file capability — workers and --selftest may fail for non-root"
   else
-    cb_warn "setcap not found — install libcap2-bin and re-run"
+    cb_ok "No file capabilities on the binary (NET_RAW arrives ambiently from systemd)"
   fi
 
   # Grant NET_RAW to nmap so active host discovery (ICMP/SYN sweeps, OS
@@ -1478,7 +1536,7 @@ stage8_start_services() {
   # Start workers — warn per-worker rather than aborting a mostly-working install
   cb_step "Starting worker processes"
   local _worker
-  for _worker in discovery notification telemetry monitor_scheduler monitor_poll; do
+  for _worker in "${CB_WORKER_TYPES[@]}"; do
     systemctl start "circuitbreaker-worker@${_worker}" >> "$LOG_FILE" 2>&1 \
       || cb_warn "Worker '${_worker}' failed to start — check: journalctl -u circuitbreaker-worker@${_worker} -n 30"
   done

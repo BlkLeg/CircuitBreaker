@@ -105,19 +105,23 @@ jobs:
       #        with /sbin/init present — nothing to bootstrap beyond the
       #        tools install.sh needs.
       #
-      # 2. --cap-add=NET_ADMIN,NET_RAW. deploy/setup.sh runs
-      #    `setcap cap_net_raw+ep` on the installed binary (for SNMP/ICMP
-      #    telemetry without running the whole process as root), and
-      #    circuitbreaker-backend.service declares
-      #    `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN`. A container whose
-      #    capability bounding set lacks a capability a binary's file
-      #    capabilities request cannot exec that binary at all — the kernel
-      #    returns EPERM on the execve() itself (confirmed locally: `Failed to
-      #    execute /opt/circuitbreaker/bin/circuit-breaker: Operation not
-      #    permitted`, systemd status 203/EXEC), and the AmbientCapabilities=
-      #    line would separately fail to apply. Neither capability is
-      #    privileged enough to need --privileged; both are addable in an
-      #    ordinary rootful (and rootless, with delegation) podman container.
+      # 2. --cap-add=NET_ADMIN,NET_RAW. circuitbreaker-backend.service and
+      #    circuitbreaker-worker@.service declare
+      #    `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` (SNMP/ICMP telemetry
+      #    without running the whole process as root). AmbientCapabilities= can
+      #    only grant what is in the container's capability bounding set, so
+      #    without these the line fails to apply and discovery degrades
+      #    silently. Neither capability is privileged enough to need
+      #    --privileged; both are addable in an ordinary rootful (and rootless,
+      #    with delegation) podman container.
+      #
+      #    deploy/setup.sh deliberately does NOT setcap the application binary,
+      #    and actively strips any file capability an older install left on it.
+      #    A file capability there makes every exec privilege-gaining, which
+      #    marks the process non-dumpable (PyInstaller's onefile child then
+      #    cannot read /proc/<ppid>/exe and dies) and CLEARS the ambient set
+      #    systemd just configured — the only form that reaches the nmap
+      #    children discovery spawns. nmap keeps its own file capability.
       - name: Start a systemd container
         env:
           DISTRO: ${{ matrix.distro }}

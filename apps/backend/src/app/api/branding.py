@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.paths import uploads_dir
 from app.core.rbac import require_role
 from app.core.time import utcnow
 from app.core.upload_validation import (
@@ -27,7 +27,11 @@ router = APIRouter(tags=["branding"])
 public_router = APIRouter(tags=["branding"])
 _logger = logging.getLogger(__name__)
 
-_BRANDING_DIR = Path(settings.uploads_dir) / "branding"
+
+def _branding_dir() -> Path:
+    return uploads_dir() / "branding"
+
+
 _MAX_LOGO_BYTES = 2 * 1024 * 1024  # 2 MB
 _MAX_BG_BYTES = 5 * 1024 * 1024  # 5 MB
 _LOGO_ALLOWED = {".png", ".jpg", ".jpeg"}
@@ -82,8 +86,8 @@ async def upload_login_logo(
     if not verify_image_magic_bytes(data, mime):
         raise HTTPException(status_code=400, detail="Login logo content does not match file type.")
 
-    _BRANDING_DIR.mkdir(parents=True, exist_ok=True)
-    dest = _BRANDING_DIR / f"login-logo{suffix}"
+    _branding_dir().mkdir(parents=True, exist_ok=True)
+    dest = _branding_dir() / f"login-logo{suffix}"
     dest.write_bytes(data)
 
     row = get_or_create_settings(db)
@@ -128,7 +132,7 @@ async def upload_login_bg(
             status_code=400, detail="Login background content does not match file type."
         )
 
-    _BRANDING_DIR.mkdir(parents=True, exist_ok=True)
+    _branding_dir().mkdir(parents=True, exist_ok=True)
 
     # Resize large images to max 1920×1080 with Pillow
     try:
@@ -147,7 +151,7 @@ async def upload_login_bg(
         # If Pillow fails, save the raw upload — it's already validated by extension
         pass
 
-    dest = _BRANDING_DIR / "login-bg.jpg"
+    dest = _branding_dir() / "login-bg.jpg"
     dest.write_bytes(data)
 
     row = get_or_create_settings(db)
@@ -198,7 +202,7 @@ def delete_branding_asset(
 
     # Delete file(s) from disk
     for fname in candidate_files:
-        fpath = _BRANDING_DIR / fname
+        fpath = _branding_dir() / fname
         if fpath.exists():
             fpath.unlink(missing_ok=True)
 

@@ -14,9 +14,8 @@ product works without them.
 
 import logging
 import os
-from pathlib import Path
 
-from app.core.config import settings
+from app.core.paths import data_dir, uploads_dir
 from app.core.startup_validation import validate_startup_secrets
 from app.db.session import get_session_context
 from app.startup.schema import (
@@ -37,13 +36,9 @@ def validate_data_dir_writable() -> None:
     """
     # ── Filesystem write validation ───────────────────────────────────────────
     # Fail fast if /data volume permissions are broken (avoids cryptic runtime errors).
-    _data_dir = Path(os.environ.get("CB_DATA_DIR", "/data"))
-    _test_paths = [
-        _data_dir,
-        _data_dir / "uploads",
-        Path(settings.uploads_dir) if not settings.uploads_dir.startswith("/data") else None,
-    ]
-    for _path in filter(None, _test_paths):
+    _data_dir = data_dir()
+    _test_paths = {_data_dir, uploads_dir()}
+    for _path in _test_paths:
         try:
             _path.mkdir(parents=True, exist_ok=True)
             _test_file = _path / ".write_test"
@@ -190,7 +185,7 @@ def init_vault() -> None:
                     "CB_VAULT_KEY not found in environment, %s, or database. "
                     "Vault is uninitialized — encrypted credentials will be unavailable "
                     "until OOBE completes and a vault key is generated.",
-                    _vault_svc._DATA_ENV_PATH,
+                    _vault_svc._data_env_path(),
                 )
     except Exception as _ve:
         _logger.critical("Vault init failed during startup: %s", _ve, exc_info=True)

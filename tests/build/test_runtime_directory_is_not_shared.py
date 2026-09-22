@@ -95,8 +95,19 @@ def test_none_of_the_three_sharing_units_declares_it_again():
 
 
 def _enabled_workers() -> set[str]:
-    """Worker instances deploy/setup.sh enables."""
-    return set(re.findall(r'"(circuitbreaker-worker@[a-z_]+)"', SETUP.read_text(encoding="utf-8")))
+    """Worker instances deploy/setup.sh enables.
+
+    setup.sh builds the enable and start lists from the single `CB_WORKER_TYPES`
+    array (see `tests/build/test_worker_set_matches_runtime.py`, which pins
+    that array to `app.workers.main.WORKER_MODULES`), rather than repeating the
+    worker names as quoted literals at each call site — the shape that let
+    `integration` and `monitor_probe_dispatch` go unenabled on every native
+    install despite being enabled everywhere else.
+    """
+    text = SETUP.read_text(encoding="utf-8")
+    block = re.search(r"CB_WORKER_TYPES=\((.*?)\)", text, re.DOTALL)
+    assert block, "deploy/setup.sh no longer defines CB_WORKER_TYPES"
+    return {f"circuitbreaker-worker@{name}" for name in block.group(1).split()}
 
 
 def _asserted_workers() -> set[str]:
