@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.paths import uploads_dir
 from app.core.security import require_write_auth
 from app.core.upload_validation import is_active_content_type, verify_image_magic_bytes
 from app.db.session import get_db
@@ -17,7 +17,11 @@ from app.services import docs_service
 
 router = APIRouter(tags=["docs"])
 
-_DOC_UPLOADS_DIR = Path(settings.uploads_dir) / "docs"
+
+def _doc_uploads_dir() -> Path:
+    return uploads_dir() / "docs"
+
+
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 # The four import ceilings are defined in docs_service.py and read THROUGH the
 # module (`docs_service.MAX_IMPORT_ZIP_BYTES`), never imported by name. A
@@ -330,8 +334,8 @@ async def upload_doc_image(
 
     # Resolve the upload directory and verify it stays within the allowed root
     # before writing (guards against path traversal via a crafted doc_id).
-    doc_root = _DOC_UPLOADS_DIR.resolve()
-    doc_dir = (_DOC_UPLOADS_DIR / str(doc_id)).resolve()
+    doc_root = _doc_uploads_dir().resolve()
+    doc_dir = (_doc_uploads_dir() / str(doc_id)).resolve()
     if not doc_dir.is_relative_to(doc_root):
         raise HTTPException(status_code=400, detail="Invalid document ID.")
 

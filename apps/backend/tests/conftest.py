@@ -61,23 +61,28 @@ def pytest_configure(config):
     # shape and fail/cancel. Tests don't need it either way.
     os.environ["CB_AUTO_MIGRATE"] = "false"
 
-    # Upload root must live outside the working tree: Settings.uploads_dir
-    # defaults to the RELATIVE "data/uploads", which resolves against the backend
-    # CWD and deposits real files in the tree. Redirected here, before any app
-    # module is imported, because uploads_dir is read at import time into
-    # module-level constants and a fixture-time monkeypatch would be too late.
+    # Upload root must live outside the working tree: left unset,
+    # `app.core.paths.uploads_dir()` derives the RELATIVE "<data dir>/uploads",
+    # which resolves against the backend CWD and deposits real files in the
+    # tree. Set here, before any app module is imported: acme_service and a
+    # few other modules still read CB_DATA_DIR/UPLOADS_DIR into a module-level
+    # constant at import time, so a fixture-time monkeypatch would be too late
+    # for those, even though the upload-writing routes themselves now resolve
+    # both lazily (see test_import_purity.py) and would tolerate it.
     global _UPLOADS_TMPDIR
     _UPLOADS_TMPDIR = tempfile.mkdtemp(prefix="cb-test-uploads-")
     os.environ["UPLOADS_DIR"] = _UPLOADS_TMPDIR
 
-    # Same problem as UPLOADS_DIR and worse: `vault_service._data_dir()` is
-    # `CB_DATA_DIR or Path.cwd()/"data"`, so an unset CB_DATA_DIR writes a REAL
-    # Fernet key into the tree — gitignored, so invisible to `git status`, and a
-    # later run loads it instead of generating a fresh one. The same variable
-    # also decides where snapshots stage and where certificates and the CVE
-    # database land, so leaving it unset points several paths at real system
-    # locations. Set here, not in a fixture, because these are read at import
-    # time into module-level constants.
+    # Same problem as UPLOADS_DIR and worse: several modules derive a data
+    # directory from `CB_DATA_DIR or Path.cwd()/"data"` (app.core.paths.data_dir
+    # is now the canonical version; a few older call sites — acme_service,
+    # agent_install, db_backup — still compute their own, with different
+    # fallback defaults), so an unset CB_DATA_DIR writes a REAL Fernet key into
+    # the tree — gitignored, so invisible to `git status`, and a later run
+    # loads it instead of generating a fresh one. The same variable also
+    # decides where snapshots stage and where certificates and the CVE
+    # database land. Set here, not in a fixture, because some of these are
+    # still read at import time into module-level constants.
     global _DATA_TMPDIR
     _DATA_TMPDIR = tempfile.mkdtemp(prefix="cb-test-data-")
     os.environ["CB_DATA_DIR"] = _DATA_TMPDIR

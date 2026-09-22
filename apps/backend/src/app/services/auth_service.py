@@ -18,7 +18,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import image_policy as _image_policy
-from app.core.config import settings as _settings
+from app.core.paths import data_dir as _bootstrap_data_dir
+from app.core.paths import uploads_dir as _uploads_dir
 from app.core.rbac import ROLE_DEFAULT_SCOPES
 from app.core.security import create_token, gravatar_hash, hash_password, verify_password
 from app.core.time import utcnow, utcnow_iso
@@ -50,7 +51,11 @@ _DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS = 24
 # the email address is registered (prevents timing-based email enumeration).
 _DUMMY_HASH: str = _bcrypt.hashpw(b"cb-dummy-not-real", _bcrypt.gensalt(rounds=12)).decode()
 
-_PROFILES_DIR = Path(_settings.uploads_dir) / "profiles"
+
+def _profiles_dir() -> Path:
+    return _uploads_dir() / "profiles"
+
+
 _MAX_PHOTO_BYTES = 5 * 1024 * 1024  # 5 MB
 # AGT-10: derived, not restated. These were three independent literals (here,
 # and the Pillow-format map below) that happened to agree; a fifth format added
@@ -70,10 +75,6 @@ _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _MAX_EMAIL_LEN = 254  # RFC 5321 maximum
 _MAX_PASSWORD_LEN = 1024
 _MIN_BOOTSTRAP_TOKEN_LEN = 16
-
-
-def _bootstrap_data_dir() -> Path:
-    return Path(os.environ.get("CB_DATA_DIR") or (Path.cwd() / "data")).expanduser()
 
 
 def _bootstrap_token_file_path() -> Path:
@@ -1211,15 +1212,15 @@ async def update_profile(
 
         # Delete old photo
         if user.profile_photo:
-            old_path = _PROFILES_DIR / user.profile_photo
+            old_path = _profiles_dir() / user.profile_photo
             old_path.unlink(missing_ok=True)
 
         ext = _PILLOW_FORMAT_TO_EXT.get(detected_format or "", "jpg")
         safe_suffix = hashlib.sha256(data).hexdigest()[:12]
         filename = f"{user.id}-{safe_suffix}.{ext}"
-        _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-        out_path = (_PROFILES_DIR / filename).resolve()
-        if not str(out_path).startswith(str(_PROFILES_DIR.resolve())):
+        _profiles_dir().mkdir(parents=True, exist_ok=True)
+        out_path = (_profiles_dir() / filename).resolve()
+        if not str(out_path).startswith(str(_profiles_dir().resolve())):
             raise HTTPException(status_code=400, detail="Invalid profile photo path")
         out_path.write_bytes(data)
         user.profile_photo = filename
@@ -1257,7 +1258,7 @@ def delete_account(db: Session, user_id: int) -> None:
 
     # Clean up profile photo file
     if user.profile_photo:
-        photo_path = _PROFILES_DIR / user.profile_photo
+        photo_path = _profiles_dir() / user.profile_photo
         photo_path.unlink(missing_ok=True)
 
     db.delete(user)
@@ -1299,7 +1300,7 @@ def delete_user_permanent(db: Session, user_id: int, *, actor_id: int, actor_nam
     target_name = user.display_name or user.email
 
     if user.profile_photo:
-        photo_path = _PROFILES_DIR / user.profile_photo
+        photo_path = _profiles_dir() / user.profile_photo
         photo_path.unlink(missing_ok=True)
 
     db.delete(user)

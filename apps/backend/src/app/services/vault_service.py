@@ -24,17 +24,17 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
 
+from app.core.paths import data_dir as _get_data_dir
 from app.core.time import utcnow
 from app.services.credential_vault import get_vault
 
 _logger = logging.getLogger(__name__)
 
 
-def _get_data_dir() -> Path:
-    return Path(os.environ.get("CB_DATA_DIR") or (Path.cwd() / "data")).expanduser()
+def _data_env_path() -> Path:
+    return _get_data_dir() / ".env"
 
 
-_DATA_ENV_PATH = _get_data_dir() / ".env"
 _ENV_KEY_RE = re.compile(r"^CB_VAULT_KEY\s*=\s*(.+)$", re.MULTILINE)
 
 _key_source: str = "none"
@@ -138,20 +138,20 @@ def load_vault_key(db: Session) -> str | None:
         )
 
     # 2. CB_DATA_DIR/.env file
-    if _DATA_ENV_PATH.exists():
+    if _data_env_path().exists():
         try:
-            content = _DATA_ENV_PATH.read_text(encoding="utf-8")
+            content = _data_env_path().read_text(encoding="utf-8")
             m = _ENV_KEY_RE.search(content)
             if m:
                 file_key = m.group(1).strip()
                 if file_key and _is_valid_fernet_key(file_key):
-                    _key_source = str(_DATA_ENV_PATH)
+                    _key_source = str(_data_env_path())
                     _active_key = file_key
                     return file_key
         except OSError as exc:
             _logger.warning(
                 "Could not read vault key from %s (reason: %s)",
-                _DATA_ENV_PATH,
+                _data_env_path(),
                 type(exc).__name__,
             )
 
@@ -166,7 +166,7 @@ def load_vault_key(db: Session) -> str | None:
                 _logger.warning(
                     "Vault key loaded from plaintext database column (CWE-312). "
                     "Attempting automatic migration to %s ...",
-                    _DATA_ENV_PATH,
+                    _data_env_path(),
                 )
                 try:
                     write_vault_key_to_env(db_key)
@@ -174,11 +174,11 @@ def load_vault_key(db: Session) -> str | None:
                     cfg.vault_key = None
                     db.flush()
                     db.commit()
-                    _key_source = str(_DATA_ENV_PATH)
+                    _key_source = str(_data_env_path())
                     _logger.info(
                         "Vault key migrated from database to %s. "
                         "DB column cleared — key is no longer stored in plaintext.",
-                        _DATA_ENV_PATH,
+                        _data_env_path(),
                     )
                 except Exception as migrate_exc:
                     _logger.warning(
@@ -214,10 +214,10 @@ def generate_vault_key() -> str:
 def write_vault_key_to_env(key: str) -> None:
     """Write (or update) CB_VAULT_KEY in CB_DATA_DIR/.env, with 0600 permissions."""
     try:
-        _DATA_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _data_env_path().parent.mkdir(parents=True, exist_ok=True)
 
-        if _DATA_ENV_PATH.exists():
-            content = _DATA_ENV_PATH.read_text(encoding="utf-8")
+        if _data_env_path().exists():
+            content = _data_env_path().read_text(encoding="utf-8")
             if _ENV_KEY_RE.search(content):
                 content = _ENV_KEY_RE.sub(f"CB_VAULT_KEY={key}", content)
             else:
@@ -225,13 +225,13 @@ def write_vault_key_to_env(key: str) -> None:
         else:
             content = f"CB_VAULT_KEY={key}\n"
 
-        _DATA_ENV_PATH.write_text(content, encoding="utf-8")
-        _DATA_ENV_PATH.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-        _logger.info("Vault key written to %s", _DATA_ENV_PATH)
+        _data_env_path().write_text(content, encoding="utf-8")
+        _data_env_path().chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+        _logger.info("Vault key written to %s", _data_env_path())
     except OSError as exc:
         _logger.warning(
             "Could not write vault key to %s (reason: %s) — storing in DB only.",
-            _DATA_ENV_PATH,
+            _data_env_path(),
             type(exc).__name__,
         )
 
@@ -449,7 +449,7 @@ def rotate_vault_key(db: Session) -> None:
     os.environ["CB_VAULT_KEY"] = new_key_str
 
     global _key_source, _active_key
-    _key_source = str(_DATA_ENV_PATH)
+    _key_source = str(_data_env_path())
     _active_key = new_key_str
 
     _logger.info("Vault key rotated successfully.")
@@ -499,7 +499,7 @@ def initialize_vault_key(db: Session) -> None:
     os.environ["CB_VAULT_KEY"] = new_key_str
 
     global _key_source, _active_key
-    _key_source = str(_DATA_ENV_PATH)
+    _key_source = str(_data_env_path())
     _active_key = new_key_str
 
     _logger.info("Vault key initialized successfully.")

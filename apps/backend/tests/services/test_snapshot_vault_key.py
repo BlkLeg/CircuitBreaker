@@ -92,7 +92,7 @@ async def test_snapshot_archives_the_key_the_database_is_encrypted_with(
     data_env = tmp_path / "data" / ".env"
     data_env.parent.mkdir(parents=True)
     data_env.write_text(f"CB_VAULT_KEY={real_key}\n", encoding="utf-8")
-    monkeypatch.setattr(vault_service, "_DATA_ENV_PATH", data_env)
+    monkeypatch.setattr(vault_service, "_data_env_path", lambda: data_env)
     monkeypatch.setenv("CB_VAULT_KEY", stale_key)
 
     monkeypatch.setattr(db_backup, "BACKUP_DIR", tmp_path / "backups")

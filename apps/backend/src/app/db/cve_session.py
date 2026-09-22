@@ -8,7 +8,6 @@ rebuilt without affecting operational data.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,7 @@ from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.paths import data_dir
 from app.core.time import utcnow
 from app.db.cve_models import CVECacheBase, CVECacheSchema
 from app.db.models import CVEEntry
@@ -24,23 +24,24 @@ from app.db.models import CVEEntry
 _logger = logging.getLogger(__name__)
 
 
-def _get_data_dir() -> Path:
-    return Path(os.environ.get("CB_DATA_DIR") or (Path.cwd() / "data")).expanduser()
+def _cve_db_path() -> Path:
+    return data_dir() / "cve.db"
 
 
-_CVE_DB_PATH = _get_data_dir() / "cve.db"
-
-
-def _ensure_dir() -> None:
-    _CVE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-
-_ensure_dir()
-
+# SQLite's DBAPI connects lazily, so `create_engine` itself touches no
+# filesystem — the path is only opened (and its parent only created) when
+# something actually connects, via the `do_connect` listener below. That is
+# what lets this module import cleanly from a cwd it cannot write to; a
+# module-level `mkdir` here previously failed exactly that case.
 cve_engine = create_engine(
-    f"sqlite:///{_CVE_DB_PATH}",
+    f"sqlite:///{_cve_db_path()}",
     connect_args={"check_same_thread": False},
 )
+
+
+@event.listens_for(cve_engine, "do_connect")
+def _ensure_cve_dir(_dialect: Any, _conn_rec: Any, _cargs: Any, _cparams: Any) -> None:
+    _cve_db_path().parent.mkdir(parents=True, exist_ok=True)
 
 
 @event.listens_for(cve_engine, "connect")
@@ -88,7 +89,7 @@ def init_cve_db() -> None:
             )
         elif schema.version < CVE_CACHE_SCHEMA_VERSION:
             raise RuntimeError("CVE cache schema requires an explicit upgrade or rebuild")
-    _logger.info("CVE database initialised at %s", _CVE_DB_PATH)
+    _logger.info("CVE database initialised at %s", _cve_db_path())
 
 
 def _is_existing_table_race(exc: OperationalError) -> bool:

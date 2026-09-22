@@ -16,7 +16,13 @@ imports every worker module and the Alembic environment.
 
 It deliberately touches no database, no Redis, no NATS, no network and no
 filesystem beyond the bundle, so it runs in seconds, in a container with no
-services, and on an air-gapped host.
+services, and on an air-gapped host. That invariant is enforced, not just
+claimed: `apps/backend/tests/test_import_purity.py` runs this from a
+read-only cwd as an unprivileged user, and
+`tests/build/test_import_time_side_effects.py` ratchets every module `app`
+imports against writing at import time — both were added after this exact
+docstring's claim turned out to be false for `app.api.assets`,
+`app.api.static_spa` and `app.db.cve_session`.
 """
 
 from __future__ import annotations
@@ -30,6 +36,21 @@ from app.start import ASGI_TARGET
 from app.workers.main import WORKER_MODULES
 
 ALEMBIC_ENV_MODULE = "app.startup.schema"
+
+#: One representative submodule per package that `scripts/build_native_release.py`
+#: hidden-imports via `collect_submodules` because it loads part of itself
+#: dynamically (`_DYNAMIC_IMPORT_PACKAGES`, same file). `collect_submodules`
+#: puts the files in the bundle at build time; nothing proves they actually
+#: import until something imports one. gh#104: `proxmoxer.backends` was
+#: silently dropped from a PyInstaller build and every Proxmox VE integration
+#: died on connect, with every gate green because none of them imported it.
+#: `tests/build/test_selftest_targets_match_runtime.py` pins this dict's keys
+#: to that tuple, so a package added to one side without the other fails the
+#: build.
+DYNAMIC_IMPORT_PROBES: dict[str, str] = {
+    "proxmoxer": "proxmoxer.backends.https",
+    "apscheduler": "apscheduler.triggers.cron",
+}
 
 
 @dataclass(frozen=True)
@@ -124,6 +145,22 @@ def run_selftest() -> SelfTestResult:
             detail=_describe(exc),
         )
     checked.append(ALEMBIC_ENV_MODULE)
+
+    for package, probe_module in sorted(DYNAMIC_IMPORT_PROBES.items()):
+        try:
+            importlib.import_module(probe_module)
+        except Exception as exc:  # noqa: BLE001
+            return SelfTestResult(
+                ok=False,
+                checked=checked,
+                failure=(
+                    f"could not import {probe_module!r}, a dynamically-loaded "
+                    f"submodule of {package!r} that the build must bundle "
+                    f"explicitly: {exc!r}"
+                ),
+                detail=_describe(exc),
+            )
+        checked.append(probe_module)
 
     return SelfTestResult(ok=True, checked=checked, failure=None)
 

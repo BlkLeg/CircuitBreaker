@@ -301,9 +301,10 @@ def _config_toml_layer(env: Mapping[str, str], path: Path) -> dict[str, str]:
 def _vault_key_env_file(env: Mapping[str, str]) -> Path:
     """The ``$CB_DATA_DIR/.env`` vault_service.load_vault_key() reads second.
 
-    vault_service resolves this once at import time from the environment the
-    process started in, so it cannot be asked about a different one; the path
-    rule (CB_DATA_DIR, else ./data) is the same rule.
+    `vault_service` always resolves this against the real process environment
+    (`os.environ`), so it cannot be asked about a candidate one; this
+    reimplements the same rule (CB_DATA_DIR, else ./data) against whatever
+    `env` mapping the caller — e.g. `cb config validate` — is checking.
     """
     data_dir = Path(env.get("CB_DATA_DIR") or (Path.cwd() / "data")).expanduser()
     return data_dir / ".env"

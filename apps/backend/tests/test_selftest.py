@@ -11,18 +11,24 @@ gate that let v0.4.2 through, wearing a different name.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.startup.selftest import SelfTestResult, format_result, run_selftest
 
 
-def test_selftest_passes_on_a_correct_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_selftest_passes_on_a_correct_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CB_DB_URL", "postgresql://fake:fake@localhost/fake")
+    monkeypatch.chdir(tmp_path)
     result = run_selftest()
     assert result.ok, f"self-test failed on a correct tree: {result.failure}"
     assert result.failure is None
     assert "app.main" in result.checked
     assert "app.workers.discovery" in result.checked
+    # See test_import_purity.py for the subprocess-level version of this
+    # invariant, which conftest's temp-directory redirection cannot mask.
+    assert not list(tmp_path.iterdir()), "resolving self-test targets wrote to the cwd"
 
 
 def test_selftest_fails_when_the_asgi_module_is_unimportable(
@@ -153,6 +159,45 @@ def test_a_successful_selftest_stays_one_line() -> None:
     assert result.ok, result.failure
     assert result.detail is None
     assert "\n" not in format_result(result)
+
+
+# ── Dynamic-import package probes (gh#104) ──────────────────────────────────
+#
+# `scripts/build_native_release.py` hidden-imports `proxmoxer` and
+# `apscheduler` with `collect_submodules` because both pick part of
+# themselves via a runtime string, invisible to PyInstaller's static import
+# graph. `collect_submodules` puts the files in the bundle; it does not prove
+# they import. gh#104 was exactly that: proxmoxer.backends was silently
+# dropped and every Proxmox VE integration died on connect, with no gate
+# ever having imported it.
+
+
+def test_selftest_probes_every_dynamic_import_package_on_a_correct_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CB_DB_URL", "postgresql://fake:fake@localhost/fake")
+    result = run_selftest()
+    assert result.ok, result.failure
+    from app.startup.selftest import DYNAMIC_IMPORT_PROBES
+
+    for probe_module in DYNAMIC_IMPORT_PROBES.values():
+        assert probe_module in result.checked
+
+
+def test_selftest_fails_when_a_dynamic_import_probe_is_unimportable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.startup.selftest as selftest_module
+
+    monkeypatch.setattr(
+        selftest_module,
+        "DYNAMIC_IMPORT_PROBES",
+        {**selftest_module.DYNAMIC_IMPORT_PROBES, "phantom_pkg": "phantom_pkg.no_such_submodule"},
+    )
+    result = selftest_module.run_selftest()
+    assert not result.ok
+    assert result.failure is not None
+    assert "phantom_pkg.no_such_submodule" in result.failure
 
 
 def test_a_malformed_target_has_no_traceback_to_offer(monkeypatch: pytest.MonkeyPatch) -> None:
