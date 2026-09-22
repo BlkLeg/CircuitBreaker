@@ -58,8 +58,10 @@ CB_WORKER_UNITS=(
   circuitbreaker-worker@discovery
   circuitbreaker-worker@notification
   circuitbreaker-worker@telemetry
+  circuitbreaker-worker@integration
   circuitbreaker-worker@monitor_scheduler
   circuitbreaker-worker@monitor_poll
+  circuitbreaker-worker@monitor_probe_dispatch
 )
 
 mkdir -p "$EVIDENCE"
@@ -441,6 +443,15 @@ SECRETS_BEFORE="$(for key in CB_JWT_SECRET CB_VAULT_KEY CB_DB_PASSWORD CB_REDIS_
   env_value "$key"
 done | sha256sum | cut -d' ' -f1)"
 
+# Put this host into the shape every native install had before deploy/setup.sh
+# gained CB_WORKER_TYPES: two of the seven workers never enabled or started.
+# The rerun below is the only place in this journey that exercises the actual
+# upgrade path — a host that has these disabled and re-running install.sh must
+# come back with every worker enabled and running, or the fix only ever
+# applied to a fresh install.
+systemctl disable --now circuitbreaker-worker@integration circuitbreaker-worker@monitor_probe_dispatch \
+  >/dev/null 2>&1 || true
+
 set +e
 bash install.sh --local-bundle "$BUNDLE" --unattended --no-tls \
   > "$EVIDENCE/upgrade-stdout.log" 2>&1
@@ -466,6 +477,17 @@ curl -fsS -H "Authorization: Bearer ${ADMIN_TOKEN}" "${BASE}/auth/me" >/dev/null
        "${BASE}/auth/login" >/dev/null \
   || fail "the admin account did not survive the installer re-run"
 echo "upgrade preserved secrets, data and the admin account"
+
+# The two workers disabled above must come back enabled and running: an
+# upgrade that leaves a previously-disabled worker off is indistinguishable
+# from one that never learned about it.
+for unit in "${CB_WORKER_UNITS[@]}"; do
+  [ "$(systemctl is-enabled "$unit" 2>/dev/null)" = "enabled" ] \
+    || fail "$unit is not enabled after the installer re-run"
+  systemctl is-active --quiet "$unit" \
+    || fail "$unit is not active after the installer re-run"
+done
+echo "upgrade re-enabled and started all ${#CB_WORKER_UNITS[@]} workers"
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "Assert the installed binary contains its application"

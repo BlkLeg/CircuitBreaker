@@ -18,6 +18,25 @@ if [[ -r /opt/circuitbreaker/deploy/lib/ui.sh ]]; then
   source /opt/circuitbreaker/deploy/lib/ui.sh
 fi
 
+# The worker types this build ships, one systemd instance per type. Single
+# source of truth for stage4's enable list and stage8's start loop below, so
+# the two cannot drift the way they did before: `integration` and
+# `monitor_probe_dispatch` were added to app.workers.main.WORKER_MODULES (and
+# to circuitbreaker.target's Wants= and cb's CB_NATIVE_SERVICES) but never to
+# either loop here, so every native install silently ran five of the seven
+# workers the mono image and circuitbreaker.target both expect.
+# tests/build/test_worker_set_matches_runtime.py pins this array against
+# WORKER_MODULES so the two cannot disagree again.
+CB_WORKER_TYPES=(
+  discovery
+  notification
+  telemetry
+  integration
+  monitor_scheduler
+  monitor_poll
+  monitor_probe_dispatch
+)
+
 cb_resolve_env_template() {
   local setup_dir
   setup_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1348,14 +1367,18 @@ stage4_write_systemd_units() {
   chown breaker:breaker /run/circuitbreaker >> "$LOG_FILE" 2>&1 || true
   chmod 0750 /run/circuitbreaker
 
+  local _worker_units=()
+  local _worker_type
+  for _worker_type in "${CB_WORKER_TYPES[@]}"; do
+    _worker_units+=("circuitbreaker-worker@${_worker_type}")
+  done
+
   systemctl daemon-reload >> "$LOG_FILE" 2>&1
   systemctl enable circuitbreaker.target >> "$LOG_FILE" 2>&1
   systemctl enable circuitbreaker.slice \
     circuitbreaker-postgres circuitbreaker-pgbouncer \
     circuitbreaker-redis circuitbreaker-nats circuitbreaker-backend \
-    "circuitbreaker-worker@discovery" "circuitbreaker-worker@notification" \
-    "circuitbreaker-worker@telemetry" "circuitbreaker-worker@monitor_scheduler" \
-    "circuitbreaker-worker@monitor_poll" \
+    "${_worker_units[@]}" \
     circuitbreaker-healthcheck.timer \
     nginx >> "$LOG_FILE" 2>&1
   [[ "$DOCKER_AVAILABLE" == "true" ]] && \
@@ -1513,7 +1536,7 @@ stage8_start_services() {
   # Start workers — warn per-worker rather than aborting a mostly-working install
   cb_step "Starting worker processes"
   local _worker
-  for _worker in discovery notification telemetry monitor_scheduler monitor_poll; do
+  for _worker in "${CB_WORKER_TYPES[@]}"; do
     systemctl start "circuitbreaker-worker@${_worker}" >> "$LOG_FILE" 2>&1 \
       || cb_warn "Worker '${_worker}' failed to start — check: journalctl -u circuitbreaker-worker@${_worker} -n 30"
   done
