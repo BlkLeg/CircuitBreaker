@@ -8,8 +8,11 @@ Type=simple
 ExecStart=/usr/bin/python3 /opt/circuitbreaker/deploy/helper/cb_helperd.py
 Restart=on-failure
 RestartSec=5s
-RuntimeDirectory=circuitbreaker
-RuntimeDirectoryMode=0755
+# No RuntimeDirectory=circuitbreaker here. systemd removes a runtime
+# directory whenever ANY unit declaring it stops, even while the other
+# declarers are running, and this one is shared with the backend, the five
+# workers and cb-helperd. /usr/lib/tmpfiles.d/circuitbreaker.conf owns it
+# instead; see deploy/misc/circuitbreaker.tmpfiles.conf.
 NoNewPrivileges=false
 StandardOutput=journal
 StandardError=journal

@@ -935,11 +935,42 @@ func TestDataFrameSender_AckStallSurvivesContinuousCapEviction(t *testing.T) {
 		t.Fatalf("in-flight window holds %d, want %d", len(sender.inflight), held)
 	}
 
+	// Get the spool genuinely over its cap before anything below depends on a
+	// clock.
+	//
+	// numberedFixture sizes capBytes as widest*held, where widest is the
+	// largest encoded frame in the whole fixture — the high-numbered ones,
+	// which carry more digits than frames 1..held. The frames enqueued above
+	// are therefore narrower than the cap assumes, and the spool starts with
+	// slack: measured at held=64, it takes TWO further enqueues before the
+	// first eviction, not one.
+	//
+	// The loop below enqueues once per iteration but waits for a stall measured
+	// in wall-clock time. That is the whole bug: eviction is counted in
+	// iterations, the stall in milliseconds. On a loaded machine a single 60ms
+	// scheduling gap — this package runs alongside ten other CI jobs — lets the
+	// stall fire after one enqueue, one short of the first eviction, and the
+	// test trips its own "not exercising the race" guard having found a real
+	// stall. Enqueue never consults the stall clock, so establishing the
+	// precondition here is immune to that.
+	next := held + 1
+	for sp.EvictionStats().Frames == 0 {
+		if next >= len(fixture) {
+			t.Fatalf("enqueued the whole fixture without evicting anything; capBytes=%d is not a cap", capBytes)
+		}
+		if err := sp.Enqueue(fixture[next]); err != nil {
+			t.Fatalf("Enqueue(%d) error = %v", next, err)
+		}
+		next++
+	}
+
 	// Now behave like a real agent at the cap with a server that never acks:
 	// the collector keeps producing, every enqueue evicts an in-flight frame,
 	// and the drain ticker keeps running. Nothing here acknowledges anything.
+	//
+	// The deadline starts here, after the precondition holds, so the stall loop
+	// still gets its full budget.
 	deadline := time.Now().Add(6 * ackStallTimeout)
-	next := held + 1
 	for time.Now().Before(deadline) {
 		if next < len(fixture) {
 			if err := sp.Enqueue(fixture[next]); err != nil {

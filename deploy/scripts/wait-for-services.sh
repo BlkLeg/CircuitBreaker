@@ -116,18 +116,41 @@ while ! PGPASSWORD="$CB_DB_PASSWORD" psql -h 127.0.0.1 -p 6432 -U breaker -d cir
   fi
 done
 
-# Docker socket proxy — only check when Docker is enabled
+# Docker socket proxy — only check when Docker is enabled.
+#
+# Unlike every probe above it, this one WARNS and continues. The proxy feeds
+# container telemetry, which is opt-in on top of the core product: the installer
+# itself treats a failed Docker install as a cb_warn and carries on, and none of
+# the topology, device or monitoring features touch it. Nothing about the
+# backend requires it to exist.
+#
+# It used to `exit 1`, which made an optional feature able to kill the whole
+# application at ExecStartPre. That is how a one-line packaging defect — the
+# proxy unit shipped with an unrendered ${CB_DOCKER_BIN} and failed 203/EXEC —
+# presented as "Backend failed to start", pointing the operator at the backend
+# journal, three services away from the cause. The proxy being down is now
+# visible in the backend journal and in `cb doctor` without also being fatal.
+#
+# The 60s budget is unchanged: on a first start `docker run` may still be
+# pulling tecnativa/docker-socket-proxy, and a slow pull that eventually
+# succeeds should still leave container telemetry working.
 if [[ "${DOCKER_PROXY_ENABLED:-false}" == "true" ]]; then
   echo "Waiting for Docker socket proxy..."
   elapsed=0
-  while ! curl -sf http://127.0.0.1:2375/version &>/dev/null; do
+  docker_proxy_ready=false
+  while [[ $elapsed -lt $MAX_WAIT ]]; do
+    if curl -sf http://127.0.0.1:2375/version &>/dev/null; then
+      docker_proxy_ready=true
+      break
+    fi
     sleep $INTERVAL
     elapsed=$((elapsed + INTERVAL))
-    if [[ $elapsed -ge $MAX_WAIT ]]; then
-      echo "FATAL: Docker socket proxy not responding within ${MAX_WAIT}s" >&2
-      echo "Check: journalctl -u circuitbreaker-docker-proxy -n 30" >&2
-      exit 1
-    fi
   done
-  echo "Docker proxy ready (${elapsed}s)"
+  if [[ "$docker_proxy_ready" == "true" ]]; then
+    echo "Docker proxy ready (${elapsed}s)"
+  else
+    echo "WARNING: Docker socket proxy not responding within ${MAX_WAIT}s — starting anyway." >&2
+    echo "  Container telemetry will be unavailable until it recovers; nothing else is affected." >&2
+    echo "  Check: journalctl -u circuitbreaker-docker-proxy -n 30" >&2
+  fi
 fi

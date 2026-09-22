@@ -648,6 +648,12 @@ if [ "$CB_HAS_NATIVE" = "true" ]; then
 
   # Runtime state systemd owns rather than the package: left behind, the next
   # install inherits a vault.env written by a deployment that no longer exists.
+  #
+  # The tmpfiles.d entry goes with it. It is what recreates /run/circuitbreaker
+  # on every boot now that no unit declares it as a RuntimeDirectory, so leaving
+  # it would have an uninstalled product recreating a directory — owned by a
+  # `breaker` account this uninstaller has just deleted — at each boot.
+  sudo rm -f /usr/lib/tmpfiles.d/circuitbreaker.conf >/dev/null 2>&1 || true
   sudo rm -rf /run/circuitbreaker >/dev/null 2>&1 || true
 
   # Config and data, asked for separately and in that order: an operator who

@@ -180,6 +180,8 @@ print(json.dumps(rows, indent=2))
 CB_IDENTITY_FILE=""
 CB_IDENTITY_MODE=""
 CB_IDENTITY_LOADED=0
+# Set to the path a permissions problem hid, when that is why identity is absent.
+CB_IDENTITY_UNREADABLE=""
 CB_IDENTITY_JSON="{}"
 CB_HAS_LEGACY_CONF=0
 CB_MODE=""
@@ -325,7 +327,19 @@ elif [[ -f "$_CONF" ]]; then
     [[ "$CB_MODE" == "compose" ]] && CB_DATA_DIR="/app/data" || CB_DATA_DIR="/data"
   fi
 else
-  _warn "Install identity not found — run 'cb info' for repair guidance. Most commands require identity."
+  # Tell the two failure modes apart before saying anything. An unprivileged
+  # caller cannot traverse /etc/circuitbreaker (root:breaker:0750), so a healthy
+  # install looks byte-for-byte like no install at all — and the advice for the
+  # two is opposite. Reporting MISSING to someone who simply forgot sudo sends
+  # them to re-run the installer over a working deployment.
+  if command -v cb_identity_unreadable_path >/dev/null 2>&1; then
+    CB_IDENTITY_UNREADABLE="$(cb_identity_unreadable_path 2>/dev/null || true)"
+  fi
+  if [[ -n "$CB_IDENTITY_UNREADABLE" ]]; then
+    _warn "Cannot read ${CB_IDENTITY_UNREADABLE} as $(id -un) — install identity is unreadable, not missing. Try: sudo cb ${1:-info}"
+  else
+    _warn "Install identity not found — run 'cb info' for repair guidance. Most commands require identity."
+  fi
 fi
 
 # Apply remaining mode-specific defaults ONLY when identity or legacy conf set a mode.
@@ -448,16 +462,20 @@ cmd_info() {
   local remediation="Re-run the installer for your deployment mode so install-identity.json is written, then run: cb info"
   if [[ "$CB_HAS_LEGACY_CONF" -eq 1 ]]; then
     remediation="Legacy install.conf found at ${_CONF}. Re-run the installer to write install-identity.json (mode=${CB_MODE:-unknown})."
+  elif [[ -n "$CB_IDENTITY_UNREADABLE" ]]; then
+    remediation="Run it with sudo: sudo cb info. ${CB_IDENTITY_UNREADABLE} is not readable by $(id -un); this does not mean the install is missing."
   fi
 
   if [[ "$as_json" -eq 1 ]]; then
     CB_HAS_LEGACY_CONF="$CB_HAS_LEGACY_CONF" CB_CONF="$_CONF" CB_REMEDIATION="$remediation" \
+    CB_UNREADABLE="$CB_IDENTITY_UNREADABLE" \
     python3 -c '
 import json, os
 print(json.dumps({
   "error": "install_identity_missing",
   "legacy_conf": os.environ.get("CB_HAS_LEGACY_CONF") == "1",
   "legacy_conf_path": os.environ.get("CB_CONF", ""),
+  "unreadable_path": os.environ.get("CB_UNREADABLE", ""),
   "remediation": os.environ.get("CB_REMEDIATION", ""),
 }, indent=2))
 '
@@ -469,7 +487,11 @@ print(json.dumps({
   echo -e " ${B}Circuit Breaker — Install Identity${R}"
   echo -e "$LINE"
   echo ""
-  printf "  ${RED}✗${R}  %-30s MISSING\n" "install-identity.json"
+  if [[ -n "$CB_IDENTITY_UNREADABLE" ]]; then
+    printf "  ${Y}!${R}  %-30s UNREADABLE\n" "install-identity.json"
+  else
+    printf "  ${RED}✗${R}  %-30s MISSING\n" "install-identity.json"
+  fi
   echo "     → ${remediation}"
   echo "     Searched: \$CB_IDENTITY_PATH, /etc/circuitbreaker/, /etc/circuit-breaker/, \$CB_DATA_DIR, ~/.circuit-breaker/"
   echo ""
@@ -780,16 +802,30 @@ print(json.dumps({
   }
 
   if [[ -z "$CB_MODE" ]]; then
-    _doctor_add identity present fail critical "install-identity.json not found" \
-      "Re-run the installer so install-identity.json is written, then: cb info" true
+    # Identity decides CB_MODE, and without a mode doctor cannot know which
+    # services to probe, so it stops here. That early return is why an
+    # unprivileged run prints two checks and nothing else — so when the cause is
+    # a directory this user cannot read, say so and name the fix, instead of
+    # reporting a healthy install as broken. See cb_identity_unreadable_path.
+    local identity_detail="install-identity.json not found"
+    local identity_hint="Re-run the installer so install-identity.json is written, then: cb info"
+    if [[ -n "$CB_IDENTITY_UNREADABLE" ]]; then
+      identity_detail="${CB_IDENTITY_UNREADABLE} is not readable by $(id -un)"
+      identity_hint="Re-run with sudo: sudo cb doctor. Identity is unreadable here, which is not the same as absent."
+    fi
+    _doctor_add identity present fail critical "$identity_detail" "$identity_hint" true
     if [[ "$as_json" -eq 0 ]]; then
       echo ""
       echo -e "$LINE"
       echo -e " ${B}Circuit Breaker — Health Check${R}"
       echo -e "$LINE"
       echo ""
-      printf "  ${RED}✗${R}  %-30s FAILED\n" "Install identity"
-      echo "     → Re-run the installer so install-identity.json is written, then: cb info"
+      if [[ -n "$CB_IDENTITY_UNREADABLE" ]]; then
+        printf "  ${Y}!${R}  %-30s UNREADABLE\n" "Install identity"
+      else
+        printf "  ${RED}✗${R}  %-30s FAILED\n" "Install identity"
+      fi
+      echo "     → ${identity_hint}"
     fi
     local bin="${CB_BINARY:-/usr/local/bin/circuit-breaker}"
     [[ -x "$bin" ]] || bin="${CB_NATIVE_BIN:-/opt/circuitbreaker/bin/circuit-breaker}"

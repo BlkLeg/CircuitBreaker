@@ -126,15 +126,64 @@ echo "Running Semgrep..."
 if ! "$SCAN_BIN"/semgrep --version > /dev/null 2>&1; then
     "$SCAN_BIN"/pip install semgrep --quiet
 fi
+
+# Semgrep's engine is OCaml on eio, whose Linux backend is io_uring, and
+# io_uring_queue_init has to lock memory. Where RLIMIT_MEMLOCK is small the
+# engine dies during startup, before it evaluates a single rule:
+#
+#     UnixExit(2): unknown exception Multiple exceptions:
+#     - Unix_error: Cannot allocate memory io_uring_queue_init
+#       Raised by primitive operation at Uring.create in "lib/uring/uring.ml"
+#
+# On the dev hosts here that limit is 8192 KB *and the hard limit equals the
+# soft one*, so it cannot be raised without root. eio ships a portable fallback
+# selected by EIO_BACKEND=posix, which scans the same 1102 files against the
+# same 310 rules, only slower.
+#
+# Retry on the signature rather than guess a memlock threshold: the figure that
+# matters depends on ring size and domain count, so a guess either forces the
+# slow backend on every machine or leaves this failing on the next one. An
+# EIO_BACKEND the caller set is obeyed and never second-guessed.
+_semgrep_scan() {
+    local out="$1"; shift
+    local rc=0
+    "$SCAN_BIN"/semgrep scan "$@" > "$out" 2>&1 || rc=$?
+    if [ $rc -ne 0 ] && [ -z "${EIO_BACKEND:-}" ] && grep -q 'io_uring_queue_init' "$out"; then
+        local memlock
+        memlock="$(ulimit -l 2>/dev/null || echo unknown)"
+        rc=0
+        EIO_BACKEND=posix "$SCAN_BIN"/semgrep scan "$@" > "$out" 2>&1 || rc=$?
+        echo "" >> "$out"
+        echo "NOTE: semgrep's io_uring backend could not initialise (RLIMIT_MEMLOCK = ${memlock} KB);" >> "$out"
+        echo "      re-ran the scan above with EIO_BACKEND=posix. Coverage is unchanged." >> "$out"
+    fi
+    return $rc
+}
+
+_semgrep_out="$(mktemp)"
 if $GATE_MODE; then
-    if ! "$SCAN_BIN"/semgrep scan --config=p/default --error --severity ERROR \
-        apps/backend/src/ apps/frontend/src/ docker/ >> "$REPORT_FILE" 2>&1; then
+    _semgrep_rc=0
+    _semgrep_scan "$_semgrep_out" --config=p/default --error --severity ERROR \
+        apps/backend/src/ apps/frontend/src/ docker/ || _semgrep_rc=$?
+    cat "$_semgrep_out" >> "$REPORT_FILE"
+    # semgrep exits 1 when it found something and >=2 when it could not finish a
+    # scan. Treating those alike is what reported an engine that never started as
+    # "1 scanner(s) reported HIGH/CRIT findings — review security_scan_report.md"
+    # and blocked a push over a memlock limit. Both still fail the gate, because
+    # a scanner that did not run attests nothing; they are simply not the same
+    # problem and do not have the same fix.
+    if [ $_semgrep_rc -eq 1 ]; then
         GATE_FAILURES=$((GATE_FAILURES + 1))
         echo "  ⚠ GATE FAILURE: Semgrep ERROR findings" >> "$REPORT_FILE"
+    elif [ $_semgrep_rc -ne 0 ]; then
+        gate_unavailable Semgrep "SAST across the backend, frontend and docker tree" \
+            "semgrep exited ${_semgrep_rc} without completing a scan — read its section above; this is not a finding in your tree"
     fi
 else
-    "$SCAN_BIN"/semgrep scan --config=p/default apps/backend/src/ apps/frontend/src/ docker/ >> "$REPORT_FILE" 2>&1 || true
+    _semgrep_scan "$_semgrep_out" --config=p/default apps/backend/src/ apps/frontend/src/ docker/ || true
+    cat "$_semgrep_out" >> "$REPORT_FILE"
 fi
+rm -f "$_semgrep_out"
 echo "\`\`\`" >> "$REPORT_FILE"
 
 # ── 3. Gitleaks (Secret Scanning) ───────────────────────────────────────────
@@ -448,7 +497,7 @@ if $GATE_MODE; then
         echo "## ❌ Gate Result: $GATE_FAILURES gate failure(s) — $GATE_FINDINGS finding(s), $GATE_UNAVAILABLE unavailable tool(s)" >> "$REPORT_FILE"
         if [ ${#GATE_MISSING_TOOLS[@]} -gt 0 ]; then
             echo "" >> "$REPORT_FILE"
-            echo "Scanners that could not run (install these; nothing below was found in your tree):" >> "$REPORT_FILE"
+            echo "Scanners that could not run — nothing below was found in your tree:" >> "$REPORT_FILE"
             for _missing in "${GATE_MISSING_TOOLS[@]}"; do
                 echo "  - $_missing" >> "$REPORT_FILE"
             done
@@ -465,7 +514,7 @@ if $GATE_MODE; then
             echo "   $GATE_FINDINGS scanner(s) reported HIGH/CRIT findings — review $REPORT_FILE."
         fi
         if [ $GATE_UNAVAILABLE -gt 0 ]; then
-            echo "   $GATE_UNAVAILABLE scanner(s) could NOT RUN. This is a missing tool, not a vulnerability:"
+            echo "   $GATE_UNAVAILABLE scanner(s) could NOT RUN. This is a broken or missing tool, not a vulnerability:"
             for _missing in "${GATE_MISSING_TOOLS[@]}"; do
                 echo "     - $_missing"
             done

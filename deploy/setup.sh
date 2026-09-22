@@ -1205,7 +1205,8 @@ stage_configure_helper() {
     return 0
   fi
 
-  mkdir -p /run/circuitbreaker
+  # /run/circuitbreaker is created by stage4_write_systemd_units via
+  # tmpfiles.d; do not re-create it here with a different owner or mode.
   local breaker_uid
   breaker_uid="$(id -u breaker)"
 
@@ -1312,9 +1313,40 @@ stage4_write_systemd_units() {
   # circuitbreaker-docker-proxy.service — only written when Docker is present
   # is required by tecnativa/docker-socket-proxy to bind to the Docker socket.
   # Port 2375 is bound to 127.0.0.1 only — never 0.0.0.0 (unauthenticated Docker API).
+  #
+  # Rendered, not copied. The unit names ${CB_DOCKER_BIN} because docker lives in
+  # a different directory per distro, and systemd does not expand variables in
+  # the executable half of ExecStart — a copied unit asks the kernel to run a
+  # program literally called "${CB_DOCKER_BIN}" and dies with 203/EXEC.
   if [[ "$DOCKER_AVAILABLE" == "true" ]]; then
-    cp "/opt/circuitbreaker/deploy/systemd/circuitbreaker-docker-proxy.service" "/etc/systemd/system/circuitbreaker-docker-proxy.service"
+    # Resolve here rather than trusting the value stage0_preflight guessed: on a
+    # fresh install Docker is installed at the *end* of stage2_dependencies,
+    # after that stage's own re-resolution ran, so every earlier lookup fell
+    # back to /usr/bin/docker. This is the first point where docker is known to
+    # exist, which is the only point where asking is worth anything.
+    CB_DOCKER_BIN="$(command -v docker 2>/dev/null || echo /usr/bin/docker)"
+    export CB_DOCKER_BIN
+    cb_render_template "/opt/circuitbreaker/deploy/systemd/circuitbreaker-docker-proxy.service" "/etc/systemd/system/circuitbreaker-docker-proxy.service"
   fi
+
+  # /run/circuitbreaker — owned by tmpfiles, not by any unit's RuntimeDirectory.
+  #
+  # The backend, the five workers and cb-helperd all use this directory, and
+  # systemd removes a runtime directory when any single declaring unit stops.
+  # See deploy/misc/circuitbreaker.tmpfiles.conf for the full reasoning.
+  #
+  # Created directly as well as declared: tmpfiles.d covers every boot from here
+  # on, and the mkdir covers this boot, which is already running and will not
+  # replay tmpfiles.d on its own if systemd-tmpfiles is missing or refuses.
+  mkdir -p /usr/lib/tmpfiles.d
+  install -m 0644 "/opt/circuitbreaker/deploy/misc/circuitbreaker.tmpfiles.conf" \
+    /usr/lib/tmpfiles.d/circuitbreaker.conf
+  if command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /usr/lib/tmpfiles.d/circuitbreaker.conf >> "$LOG_FILE" 2>&1 || true
+  fi
+  mkdir -p /run/circuitbreaker
+  chown breaker:breaker /run/circuitbreaker >> "$LOG_FILE" 2>&1 || true
+  chmod 0750 /run/circuitbreaker
 
   systemctl daemon-reload >> "$LOG_FILE" 2>&1
   systemctl enable circuitbreaker.target >> "$LOG_FILE" 2>&1

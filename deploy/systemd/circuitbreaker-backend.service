@@ -30,8 +30,11 @@ Environment="PYTHONIOENCODING=utf-8"
 # /tmp namespace would hide.
 Environment="TMPDIR=/var/lib/circuitbreaker/run/%N"
 ExecStartPre=/bin/sh -c 'mkdir -p "/var/lib/circuitbreaker/run/%N" && rm -rf "/var/lib/circuitbreaker/run/%N"/_MEI*'
-RuntimeDirectory=circuitbreaker
-RuntimeDirectoryMode=0750
+# No RuntimeDirectory=circuitbreaker here. systemd removes a runtime
+# directory whenever ANY unit declaring it stops, even while the other
+# declarers are running, and this one is shared with the backend, the five
+# workers and cb-helperd. /usr/lib/tmpfiles.d/circuitbreaker.conf owns it
+# instead; see deploy/misc/circuitbreaker.tmpfiles.conf.
 ExecStartPre=/bin/sh -c 'umask 077; grep -E "^CB_VAULT_KEY=" /etc/circuitbreaker/.env > /run/circuitbreaker/vault.env 2>/dev/null || true'
 EnvironmentFile=-/run/circuitbreaker/vault.env
 ExecStartPre=/opt/circuitbreaker/scripts/validate-secrets.sh
