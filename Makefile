@@ -180,7 +180,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-in-release-image build-release build-from-source release-local version-sync release-tag release-retag release-untag agent-signing-key docker-build docker-push sign sbom
+.PHONY: build build-deps build-in-release-image build-release build-from-source release-candidate release-promote version-sync release-untag agent-signing-key docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build

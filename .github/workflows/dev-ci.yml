@@ -658,8 +658,13 @@ jobs:
       arches: '["amd64"]'
 
   # ── Docker Smoke Build ────────────────────────────────────────────────────────
+  # needs artifact-smoke: §5.1 publishes :nightly only after the package gate
+  # AND the compose smoke below. Serialising the image build behind smoke is the
+  # smallest way to enforce that without a second job that cannot see the local
+  # image the compose smoke just proved.
   build-docker:
     name: Build Docker (smoke test)
+    needs: [artifact-smoke]
     runs-on: ubuntu-22.04
     timeout-minutes: 40
     permissions:
@@ -908,9 +913,9 @@ jobs:
           echo "stopped in ${elapsed}s"
           [ "${elapsed}" -lt 30 ] || { echo "::error::container did not exit on SIGTERM; it was killed after ${elapsed}s"; exit 1; }
 
-      # The nightly channel: the image that just passed the compose smoke, on a
-      # push to dev (never a PR — a PR's image has not been merged). amd64 only,
-      # because this job builds one architecture; the packages are the
+      # The nightly channel (§5.1): after artifact-smoke (job needs) AND the
+      # compose smoke above, on a push to dev (never a PR). amd64 only, because
+      # this job builds one architecture; the packages are the
       # dev-packages-amd64 artifact above.
       - name: Publish :nightly
         if: github.event_name == 'push' && github.ref == 'refs/heads/dev'

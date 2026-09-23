@@ -64,3 +64,22 @@ def test_make_targets_dispatch_rather_than_tag() -> None:
     assert "release-candidate:" in MAKEFILE and "release-promote:" in MAKEFILE
     assert "release-tag:" not in MAKEFILE and "release-retag:" not in MAKEFILE and "release-local:" not in MAKEFILE
     assert "gh workflow run release.yml" in MAKEFILE
+
+
+def test_nightly_publish_waits_for_artifact_smoke() -> None:
+    """§5.1: :nightly only after artifact-smoke AND the compose smoke.
+
+    The Publish :nightly step lives in build-docker (after compose assertions);
+    needing artifact-smoke is what stops a green image + red package from
+    moving the nightly tag.
+    """
+    dev = yaml.safe_load((ROOT / ".github" / "workflows" / "dev-ci.yml").read_text(encoding="utf-8"))
+    docker = dev["jobs"]["build-docker"]
+    needs = docker.get("needs")
+    if isinstance(needs, str):
+        needs = [needs]
+    assert "artifact-smoke" in (needs or []), (
+        "build-docker must need artifact-smoke so :nightly cannot publish before the package gate"
+    )
+    names = [str(step.get("name", "")) for step in docker["steps"]]
+    assert "Publish :nightly" in names
