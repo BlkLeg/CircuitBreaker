@@ -9,6 +9,18 @@ verify a backup before upgrading.
 
 ---
 
+## Release channels
+
+Three image/release channels exist; only **stable** is production-supported.
+
+| Channel | How it is produced | What users pull |
+|---|---|---|
+| **stable** | Promote of a soaked candidate (no rebuild). Default for `install.sh` and `:latest`. | `:X`, `:latest` (never for an rc) |
+| **candidate** | Draft GitHub Release + `:<version>-candidate` / `:candidate` tags. Opt in with `install.sh --channel candidate` or `CB_TAG=candidate`. | prereleases and the moving `:candidate` tag |
+| **nightly** | Last green push to `dev` (amd64 image only). Unsupported for production. | `:nightly`, `:dev-<sha>` |
+
+---
+
 ## Check Your Current Version
 
 ```bash
@@ -83,7 +95,9 @@ Then:
 docker compose up -d
 ```
 
-Only `:<version>` and `:latest` tags are published. `CB_IMAGE` overrides the whole image reference if you host your own build.
+Only `:<version>`, `:latest`, `:candidate`, and `:nightly` tags are published
+(see [Release channels](#release-channels)). `CB_IMAGE` overrides the whole
+image reference if you host your own build.
 
 ---
 

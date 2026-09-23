@@ -662,6 +662,9 @@ jobs:
     name: Build Docker (smoke test)
     runs-on: ubuntu-22.04
     timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v5
 
@@ -904,6 +907,22 @@ jobs:
           elapsed="$(( SECONDS - start ))"
           echo "stopped in ${elapsed}s"
           [ "${elapsed}" -lt 30 ] || { echo "::error::container did not exit on SIGTERM; it was killed after ${elapsed}s"; exit 1; }
+
+      # The nightly channel: the image that just passed the compose smoke, on a
+      # push to dev (never a PR — a PR's image has not been merged). amd64 only,
+      # because this job builds one architecture; the packages are the
+      # dev-packages-amd64 artifact above.
+      - name: Publish :nightly
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in $(python3 scripts/release_channel.py --version "$(cat VERSION)" --channel nightly --field tags) "${CB_VERSION}"; do
+            docker tag "circuitbreaker:${CB_VERSION}" "ghcr.io/blkleg/circuitbreaker:${tag}"
+            docker push "ghcr.io/blkleg/circuitbreaker:${tag}"
+          done
 
       # if: always() — the run that most needs its logs is the one that failed
       # before reaching the step that would have collected them.

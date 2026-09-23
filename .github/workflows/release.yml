@@ -1,15 +1,32 @@
 name: Release
 
+# Two channels, one file (docs/superpowers/specs/2026-09-22-installer-and-release-design.md §5).
+#
+#   channel=candidate  build → gate → smoke → journey → image → parity → scan →
+#                      sign → DRAFT release vX + candidate.json. No tag exists.
+#   channel=stable     verify the draft against this ref and the registry,
+#                      retag the candidate's image digest, publish the draft —
+#                      which is the step that creates the tag. No build.
+#
+# A tag pushed by hand runs only tag-verify, which asserts a published release
+# already exists for it: a tag is the result of a release, never its cause.
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
-    # checkov:skip=CKV_GHA_7: Manual release promotion requires the release captain to supply the approved version.
+    # checkov:skip=CKV_GHA_7: the release captain chooses the channel and, for a promote, names the draft.
     inputs:
-      version:
-        description: "Version to release (e.g. 0.1.3, without the v prefix)"
+      channel:
+        description: "candidate: build, gate and stage a draft. stable: promote an existing draft (no build)."
         required: true
+        type: choice
+        options: [candidate, stable]
+      version:
+        description: "stable only: the version whose draft is promoted. Must equal VERSION at this ref."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write    # create GitHub Release, upload assets
@@ -21,6 +38,7 @@ jobs:
   # ── Derive version ────────────────────────────────────────────────────────────
   version:
     name: Derive Version
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     outputs:
       version: ${{ steps.ver.outputs.version }}
@@ -32,12 +50,13 @@ jobs:
       - name: Derive version string
         id: ver
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            # Strip leading 'v' from tag
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ "${{ inputs.channel }}" = "stable" ]; then
+            [ "${{ inputs.version }}" = "${VERSION}" ] \
+              || { echo "::error::inputs.version='${{ inputs.version }}' must equal VERSION='${VERSION}' at this ref"; exit 1; }
           fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       # GOV-09: the git tag is not authoritative, VERSION is. Fail before
       # anything is built if they disagree, rather than shipping artifacts
@@ -52,6 +71,7 @@ jobs:
   # itself passes, which is the claim that matters.
   gate:
     name: Release Gate (Tier 0)
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -95,6 +115,7 @@ jobs:
   # ── Build all packages ────────────────────────────────────────────────────────
   build:
     name: Build Packages
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
     needs: [version, gate]
     uses: ./.github/workflows/build.yml
     with:
@@ -113,19 +134,20 @@ jobs:
   # on a clean host and uninstalled again.
   artifact-smoke:
     name: Artifact Smoke
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
     needs: [version, build]
     uses: ./.github/workflows/artifact-smoke.yml
     with:
       version: ${{ needs.version.outputs.version }}
 
-  # ── Composed agent acceptance (AGT-01) ───────────────────────────────────────
-  # Deliberately absent from `needs`. The composed journey still runs against
-  # this RC (e2e.yml triggers on the same tag push), it just does not hold an
-  # otherwise-green release behind it while the agent has open development.
-  #
-  # This diverges from AGT-01, which asks for it as a required workflow, and the
-  # divergence is recorded in e2e.yml's header. Restoring the gate is one
-  # `uses:` job plus one entry in `needs`.
+  # ── Installer journey (install.sh on real distros) ───────────────────────────
+  installer-journey:
+    name: Installer Journey
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
+    needs: [version, gate]
+    uses: ./.github/workflows/installer-journey.yml
+    with:
+      previous_release: ${{ vars.CB_PREVIOUS_PYINSTALLER_RELEASE }}
 
   # ── Container image, built natively per architecture ─────────────────────────
   # One runner per architecture, never a single emulated
@@ -138,6 +160,7 @@ jobs:
   # those digests addressable, so a half-built release leaves no usable tag.
   image:
     name: Build Image (${{ matrix.arch }})
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
     needs: [version, gate]
     permissions:
       contents: read
@@ -216,6 +239,24 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Export the image's provenance
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "linux/${{ matrix.arch }}" \
+            -f Dockerfile.mono \
+            --target app-build-info \
+            --output type=local,dest=/tmp/image-info .
+          cat /tmp/image-info/build-info.json
+
+      - name: Upload the image's provenance
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-build-info-${{ matrix.arch }}
+          path: /tmp/image-info/build-info.json
+          if-no-files-found: error
+          retention-days: 1
+
       # REL-20: a failed release job must be diagnosable from what was kept.
       # The step above runs only on success, so before this a failed image
       # build left nothing behind but a workflow log that expires with the run.
@@ -237,7 +278,8 @@ jobs:
   # exists. The matrix pushes only untagged blobs nothing can pull by name.
   image-merge:
     name: Merge Image Manifest
-    needs: [version, build, artifact-smoke, image]
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
+    needs: [version, build, artifact-smoke, installer-journey, image]
     permissions:
       contents: read
       packages: write
@@ -271,7 +313,7 @@ jobs:
           IMAGE="ghcr.io/blkleg/circuitbreaker"
           TAG_ARGS=""
           FIRST_TAG=""
-          for tag in $(python3 scripts/release_channel.py --version "${VERSION}" --field tags); do
+          for tag in $(python3 scripts/release_channel.py --version "${VERSION}" --channel candidate --field tags); do
             TAG_ARGS="${TAG_ARGS} -t ${IMAGE}:${tag}"
             [ -n "${FIRST_TAG}" ] || FIRST_TAG="${tag}"
           done
@@ -311,10 +353,50 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # ── Create GitHub Release + push Docker ──────────────────────────────────────
+  # ── Runtime parity: image and package are the same application (D7) ─────────
+  runtime-parity:
+    name: Runtime parity (image == package)
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
+    needs: [version, build, image]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the candidate packages
+        uses: actions/download-artifact@v5
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: dist/release/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image provenance
+        uses: actions/download-artifact@v5
+        with:
+          pattern: image-build-info-*
+          merge-multiple: false
+          path: image-info/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compare runtime provenance (image == package)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            mkdir -p "unpacked-${arch}"
+            tar -xzf "dist/release/circuit-breaker_${VERSION}_linux_${arch}.tar.gz" \
+              -C "unpacked-${arch}" share/build-info.json
+            python3 scripts/ci/assert_runtime_parity.py \
+              "unpacked-${arch}/share/build-info.json" \
+              "image-info/image-build-info-${arch}/build-info.json"
+          done
+
+  # ── Stage a DRAFT GitHub Release (candidate channel) ─────────────────────────
   release:
-    name: Publish Release
-    needs: [version, build, artifact-smoke, image-merge]
+    name: Stage Draft Release
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
+    needs: [version, build, artifact-smoke, installer-journey, image-merge, runtime-parity]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -437,7 +519,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           docker buildx imagetools inspect \
-            "ghcr.io/blkleg/circuitbreaker:${VERSION}" --raw > /tmp/manifest.json
+            "ghcr.io/blkleg/circuitbreaker:${VERSION}-candidate" --raw > /tmp/manifest.json
           python3 - <<'PY'
           import json, sys
           index = json.load(open("/tmp/manifest.json"))
@@ -549,40 +631,168 @@ jobs:
       - name: Remove bundle directory from release artifacts
         run: rm -rf dist/release/bundle
 
-      - name: Create GitHub Release
+      - name: Write candidate.json
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          IMAGE_DIGEST: ${{ needs.image-merge.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          sums = {}
+          for line in Path("dist/release/SHA256SUMS").read_text().splitlines():
+              digest, _, name = line.partition("  ")
+              sums[name.removeprefix("./")] = digest
+          Path("dist/release/candidate.json").write_text(json.dumps({
+              "version": os.environ["VERSION"],
+              "commit": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "channel": "candidate",
+              "image_digest": os.environ["IMAGE_DIGEST"],
+              "assets": sums,
+          }, indent=2) + "\n")
+          PY
+          cat dist/release/candidate.json
+
+      - name: Stage the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          # setup.sh kept as backward-compat alias for install.sh
+          set -euo pipefail
           cp install.sh setup.sh
-
-          # GOV-20: an RC must not become GitHub's "Latest release". The flag
-          # comes from the same tested function that decides the registry tags,
-          # so the two channels can never disagree about what "stable" means.
-          PRERELEASE_FLAG=""
-          if [ "$(python3 scripts/release_channel.py --version "${VERSION}" --field prerelease)" = "true" ]; then
-            PRERELEASE_FLAG="--prerelease"
-            echo "Publishing ${VERSION} as a prerelease"
-          else
-            echo "Publishing ${VERSION} as a stable release"
+          # A previous candidate for this version is replaced, a published
+          # release is not: promoting is the only way a draft becomes visible,
+          # and re-running the candidate must never touch what users can see.
+          if gh release view "v${VERSION}" --json isDraft --jq .isDraft 2>/dev/null | grep -q true; then
+            gh release delete "v${VERSION}" --yes
+          elif gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::v${VERSION} is already published; bump VERSION rather than rebuilding a released version"
+            exit 1
           fi
-
+          # --draft: no tag is created until the draft is published (promote).
+          # --target: the commit the tag will point at, which is this one.
           gh release create "v${VERSION}" \
+            --draft \
+            --target "${GITHUB_SHA}" \
             --title "Circuit Breaker v${VERSION}" \
             --generate-notes \
-            ${PRERELEASE_FLAG} \
             dist/release/* \
             install.sh \
             setup.sh \
             packaging/circuit-breaker-release-key.asc
+          echo "draft v${VERSION} staged at ${GITHUB_SHA}; promote with: make release-promote"
 
-  post-publish:
-    name: Verify the published release
-    needs: [version, release]
+  promote-verify:
+    name: Verify the candidate before promoting
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
+    needs: version
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+      packages: read
+    outputs:
+      image_digest: ${{ steps.candidate.outputs.image_digest }}
+      prerelease: ${{ steps.candidate.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read the draft's candidate.json and hold it to this ref
+        id: candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          [ "$(gh release view "v${VERSION}" --json isDraft --jq .isDraft)" = "true" ] \
+            || { echo "::error::v${VERSION} has no draft to promote (run channel=candidate first, or it is already published)"; exit 1; }
+          gh release download "v${VERSION}" --pattern candidate.json --dir /tmp
+          COMMIT="$(python3 -c 'import json;print(json.load(open("/tmp/candidate.json"))["commit"])')"
+          [ "${COMMIT}" = "${GITHUB_SHA}" ] \
+            || { echo "::error::the draft was built from ${COMMIT}; this promote was dispatched on ${GITHUB_SHA}. Dispatch on the candidate's commit."; exit 1; }
+          DIGEST="$(python3 -c 'import json;print(json.load(open("/tmp/candidate.json"))["image_digest"])')"
+          echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$(python3 scripts/release_channel.py --version "${VERSION}" --field prerelease)" >> "$GITHUB_OUTPUT"
+      - name: Assert the candidate tag still resolves to the recorded digest
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.candidate.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          LIVE="$(docker buildx imagetools inspect "ghcr.io/blkleg/circuitbreaker:${VERSION}-candidate" --format '{{json .Manifest}}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["digest"])')"
+          [ "ghcr.io/blkleg/circuitbreaker@${LIVE}" = "${IMAGE_DIGEST}" ] \
+            || { echo "::error:::${VERSION}-candidate now points at ${LIVE}, not the digest the draft recorded"; exit 1; }
+      - name: Assert the draft's assets still match candidate.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/assets && gh release download "v${VERSION}" --pattern 'SHA256SUMS' --dir /tmp/assets
+          python3 - <<'PY'
+          import json
+          recorded = json.load(open("/tmp/candidate.json"))["assets"]
+          live = {}
+          for line in open("/tmp/assets/SHA256SUMS"):
+              digest, _, name = line.rstrip("\n").partition("  ")
+              live[name.removeprefix("./")] = digest
+          assert live == recorded, "the draft's SHA256SUMS no longer matches candidate.json"
+          print(f"{len(live)} assets verified")
+          PY
+      - name: Assert release readiness
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: python3 scripts/release_checklist.py --version "${VERSION}"
+
+  promote:
+    name: Promote the candidate to stable
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
+    needs: [version, promote-verify]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Retag the candidate's image digest
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          IMAGE_DIGEST: ${{ needs.promote-verify.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          case "${IMAGE_DIGEST}" in
+            *@sha256:*) ;;
+            *) echo "::error::IMAGE_DIGEST must be repo@sha256:...; got ${IMAGE_DIGEST}"; exit 1 ;;
+          esac
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          TAG_ARGS=""
+          for tag in $(python3 scripts/release_channel.py --version "${VERSION}" --channel stable --field tags); do
+            TAG_ARGS="${TAG_ARGS} -t ghcr.io/blkleg/circuitbreaker:${tag}"
+          done
+          echo "retagging ${IMAGE_DIGEST} as:${TAG_ARGS}"
+          # shellcheck disable=SC2086
+          docker buildx imagetools create ${TAG_ARGS} "${IMAGE_DIGEST}"
+      - name: Publish the draft (this creates the tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.promote-verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          FLAG="--prerelease=false"
+          [ "${PRERELEASE}" != "true" ] || FLAG="--prerelease"
+          gh release edit "v${VERSION}" --draft=false ${FLAG} --latest="$([ "${PRERELEASE}" = "true" ] && echo false || echo true)"
+          echo "published v${VERSION}; tag created at ${GITHUB_SHA}"
+
+  post-publish:
+    name: Verify the published release
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
+    needs: [version, promote]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v5
 
@@ -655,4 +865,34 @@ jobs:
           [ -n "${ASSET}" ] \
             || { echo "::error::the amd64 tarball asset install.sh downloads is not attached to the release"; exit 1; }
           echo "release discoverable and asset present: ${ASSET}"
+
+      # The tag was created by the API, and a tag created with GITHUB_TOKEN
+      # fires no `push: tags:` workflow. e2e.yml's tag trigger therefore never
+      # sees a release any more; dispatch it on the tag explicitly.
+      - name: Dispatch the composed agent E2E on the published tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: gh workflow run e2e.yml --ref "v${VERSION}"
+
+  # A hand-pushed tag proves nothing and builds nothing. It is accepted only
+  # when it names a release that promote already published.
+  tag-verify:
+    name: Verify a pushed tag names a published release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: The tag must already be a published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "${GITHUB_REF_NAME} is a published release; nothing to do"
+            exit 0
+          fi
+          echo "::error::${GITHUB_REF_NAME} was pushed by hand. Releases are made with 'make release-candidate' then 'make release-promote'; the promote creates the tag. Delete this tag: git push origin :refs/tags/${GITHUB_REF_NAME}"
+          exit 1
 

@@ -43,6 +43,7 @@ def test_checklist_reports_every_expected_row() -> None:
         "quarantine_register_current",
         "tier_table_matches_evidence",
         "version_parity",
+        "pbs_pin_current",
     }, f"unexpected checklist rows: {sorted(names)}"
 
 
@@ -63,6 +64,25 @@ def test_an_expired_quarantine_fails_the_checklist(tmp_path: Path) -> None:
     rows = {row.name: row for row in evaluate(version="9.9.9", repo_root=fake_root)}
     assert not rows["quarantine_register_current"].satisfied
     assert "QUAR-001" in rows["quarantine_register_current"].detail
+
+
+def test_an_expired_pbs_pin_fails_the_checklist(tmp_path: Path) -> None:
+    """python-build-standalone statically links OpenSSL; a stale pin is a CVE path."""
+    from release_checklist import evaluate
+
+    fake_root = tmp_path / "repo"
+    (fake_root / "specs" / "1.0.0" / "release-control").mkdir(parents=True)
+    (fake_root / "packaging").mkdir(parents=True)
+    (fake_root / "VERSION").write_text("9.9.9\n")
+    (fake_root / "CHANGELOG.md").write_text("## [9.9.9] — 2026-09-20\n\n- entry\n")
+    (fake_root / "specs" / "1.0.0" / "release-control" / "quarantine-register.csv").write_text(
+        "quarantine_id,check,scope,reason,owner,tracking,opened,expiry,notes\n"
+    )
+    (fake_root / "packaging" / "python-build-standalone.pin").write_text(
+        "PBS_RELEASE=20200101\nPBS_PYTHON=3.12.0\n"
+    )
+    rows = {row.name: row for row in evaluate(version="9.9.9", repo_root=fake_root)}
+    assert rows["pbs_pin_current"].satisfied is False
 
 
 def test_a_wrong_candidate_version_fails_version_parity() -> None:
