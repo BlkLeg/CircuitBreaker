@@ -199,15 +199,35 @@ _cb_phase cb_phase_begin preflight "Pre-flight checks"
 # section and left a running deployment behind, reporting success. The
 # installer journey now uninstalls what it installed, which is what makes this
 # checkable rather than merely written down.
-CB_HAS_NATIVE=false
-if [ -d /opt/circuitbreaker ] || [ -f /etc/systemd/system/circuitbreaker-backend.service ]; then
-  CB_HAS_NATIVE=true
-fi
+# The identity file says which layout this is; the filesystem is only a
+# fallback for a host that never wrote one. Since 2026-09-22 both native
+# layouts install /opt/circuitbreaker, so its presence no longer distinguishes
+# them — the unit names still do.
+CB_IDENTITY_MODE_DETECTED=""
+for _lib in /usr/local/lib/circuitbreaker/install-identity.sh /opt/circuitbreaker/deploy/lib/install-identity.sh \
+            "$(dirname -- "$(readlink -f "$0")")/deploy/lib/install-identity.sh"; do
+  if [ -f "$_lib" ]; then
+    # shellcheck source=/dev/null
+    . "$_lib"
+    _identity="$(cb_find_install_identity 2>/dev/null || true)"
+    if [ -n "$_identity" ] && cb_validate_install_identity_file "$_identity"; then
+      CB_IDENTITY_MODE_DETECTED="$(sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' "$_identity" | head -n1)"
+    fi
+    break
+  fi
+done
 
+CB_HAS_NATIVE=false
 CB_HAS_PACKAGE=false
-if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-breaker.service ]; then
-  CB_HAS_PACKAGE=true
-fi
+case "$CB_IDENTITY_MODE_DETECTED" in
+  native|proxmox) CB_HAS_NATIVE=true ;;
+  package)        CB_HAS_PACKAGE=true ;;
+  *)
+    [ -f /etc/systemd/system/circuitbreaker-backend.service ] || [ -f /etc/circuitbreaker/.env ] && CB_HAS_NATIVE=true
+    [ -f /lib/systemd/system/circuit-breaker.service ] || [ -f /etc/systemd/system/circuit-breaker.service ] \
+      || [ -f /etc/circuit-breaker/circuit-breaker.env ] && CB_HAS_PACKAGE=true
+    ;;
+esac
 
 # Docker is a requirement of the docker layout, not of this script. A native
 # install does not need it — install.sh treats container telemetry as optional
@@ -685,7 +705,7 @@ if [ "$CB_HAS_NATIVE" = "true" ]; then
 fi
 
 # ─── Native binary cleanup ──────────────────────────────────────────────────
-if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-breaker.service ]; then
+if [ "$CB_HAS_PACKAGE" = true ]; then
   echo ""
   echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
   echo -e " ${aCOLOUR[1]}Native Binary Cleanup${COLOUR_RESET}"
@@ -711,6 +731,13 @@ if [ -f /usr/local/bin/circuit-breaker ] || [ -f /etc/systemd/system/circuit-bre
   if [ -f /usr/local/bin/circuit-breaker ]; then
     sudo rm -f /usr/local/bin/circuit-breaker
     Show 0 "Binary removed."
+  fi
+
+  # The package layout installs the runtime tree at the same root install.sh
+  # uses; on a package host nothing else owns it.
+  if [ -d /opt/circuitbreaker/python ]; then
+    sudo rm -rf /opt/circuitbreaker
+    Show 0 "Runtime tree removed."
   fi
 
   # Remove share directory

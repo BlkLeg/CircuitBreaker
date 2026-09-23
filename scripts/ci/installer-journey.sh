@@ -495,6 +495,23 @@ section "Assert the installed binary contains its application"
   || fail "the installed binary failed its self-test"
 
 # ─────────────────────────────────────────────────────────────────────────────
+section "Assert the install is on the hermetic runtime"
+/opt/circuitbreaker/python/bin/python3 - <<'PY' || fail "install-identity or build-info do not describe a PBS install"
+import json
+identity = json.load(open("/etc/circuitbreaker/install-identity.json"))
+info = json.load(open("/opt/circuitbreaker/share/build-info.json"))
+assert identity.get("runtime") == "pbs", identity
+assert info.get("runtime") == "pbs", info
+print("runtime pbs, python", info["python"], "glibc floor", info["glibc_floor"])
+PY
+[ -x /opt/circuitbreaker/python/bin/python3 ] || fail "no bundled interpreter after install"
+[ ! -e /opt/circuitbreaker/python.prev ] && [ ! -e /opt/circuitbreaker/.staging ] \
+  || fail "the installer left a rollback copy or staging directory behind after a healthy start"
+if compgen -G "/var/lib/circuitbreaker/run/*/_MEI*" >/dev/null; then
+  fail "PyInstaller extraction directories exist on a PBS install"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 section "Uninstall and assert nothing is left running"
 # uninstall.sh is what the docs tell operators to run, and until this ran it had
 # never been executed against an install.sh deployment. It skipped the whole
