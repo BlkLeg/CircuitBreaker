@@ -74,6 +74,27 @@ def test_fetch_refuses_a_digest_mismatch(tmp_path, monkeypatch):
     assert not list((tmp_path / "cache").glob("*.tar.gz")), "a mismatched download must not be cached"
 
 
+def test_verify_local_wheels_refuses_a_missing_or_mismatched_sidecar(tmp_path):
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    wheel = wheels / "example-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"wheel-bytes")
+    with pytest.raises(SystemExit, match="no .*sha256"):
+        pbs_tree.verify_local_wheels(wheels)
+    sidecar = Path(str(wheel) + ".sha256")
+    sidecar.write_text("0" * 64 + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="digest mismatch"):
+        pbs_tree.verify_local_wheels(wheels)
+    sidecar.write_text(pbs_tree.sha256_file(wheel) + "\n", encoding="utf-8")
+    pbs_tree.verify_local_wheels(wheels)  # matching sidecar is accepted
+
+
+def test_committed_local_wheels_match_their_sidecars():
+    """The packaging/wheels pin is a build input; a drift must fail CI, not only a real build."""
+    assert any(pbs_tree.LOCAL_WHEELS.glob("*.whl")), "expected at least one vendored wheel"
+    pbs_tree.verify_local_wheels(pbs_tree.LOCAL_WHEELS)
+
+
 def test_unpack_rejects_an_archive_without_a_single_python_root(tmp_path):
     bad = tmp_path / "bad.tar.gz"
     with tarfile.open(bad, "w:gz") as tar:

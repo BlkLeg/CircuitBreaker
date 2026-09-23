@@ -46,7 +46,10 @@ PBS_BASE_URL = "https://github.com/astral-sh/python-build-standalone/releases/do
 RUNTIME = "pbs"
 # Local wheels for pure-Python packages PyPI only publishes as sdists. pip's
 # --only-binary=:all: refuses those; vendoring a wheel here (built once, no
-# compiler) keeps the install wheels-only without weakening the gate.
+# compiler) keeps the install wheels-only without weakening the gate. Every
+# ``*.whl`` must have a sibling ``*.whl.sha256`` content digest; install refuses
+# an unhashed or mismatched wheel the same way fetch_interpreter refuses a
+# mismatched PBS archive.
 LOCAL_WHEELS = REPO_ROOT / "packaging" / "wheels"
 # What the digest covers: the interpreter, the launchers and the migration
 # entrypoint. Not share/frontend (a Vite build is not the runtime) and not
@@ -186,6 +189,35 @@ def _run(cmd: list[str], **kwargs: object) -> None:
     subprocess.run(cmd, check=True, **kwargs)  # type: ignore[call-overload]
 
 
+def verify_local_wheels(wheels_dir: Path = LOCAL_WHEELS) -> None:
+    """Refuse any committed wheel whose content does not match its .sha256 sidecar.
+
+    Digests are content hashes of the wheel bytes we committed — the same
+    "never trust an unverified input" rule as PBS pins. A wheel without a
+    sidecar, or with a stale one, fails here rather than being installed.
+    """
+    if not wheels_dir.is_dir():
+        return
+    wheels = sorted(wheels_dir.glob("*.whl"))
+    if not wheels:
+        return
+    for wheel in wheels:
+        sidecar = Path(str(wheel) + ".sha256")
+        if not sidecar.is_file():
+            raise SystemExit(
+                f"vendored wheel {wheel.name} has no {sidecar.name} content digest; "
+                "refuse to install an unpinned build input"
+            )
+        expected = sidecar.read_text(encoding="utf-8").split()[0].strip().lower()
+        actual = sha256_file(wheel)
+        if actual != expected:
+            raise SystemExit(
+                f"vendored wheel digest mismatch for {wheel.name}:\n"
+                f"  expected {expected}\n  actual   {actual}\n"
+                "Refusing to build a tree on an unverified local wheel."
+            )
+
+
 def install_dependencies(tree: Path, requirement_files: tuple[Path, ...]) -> None:
     """pip-install the committed pins with the tree's own interpreter, wheels only.
 
@@ -208,6 +240,7 @@ def install_dependencies(tree: Path, requirement_files: tuple[Path, ...]) -> Non
         args += ["-r", str(path)]
     find_links: list[str] = []
     if LOCAL_WHEELS.is_dir() and any(LOCAL_WHEELS.glob("*.whl")):
+        verify_local_wheels(LOCAL_WHEELS)
         find_links = ["--find-links", str(LOCAL_WHEELS)]
     _run([*pip, "install", "--no-deps", "--only-binary=:all:", "--no-compile", *find_links, *args])
     site = site_packages(tree)
