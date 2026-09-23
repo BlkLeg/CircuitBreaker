@@ -384,10 +384,10 @@ def write_build_info(tree: Path, *, version: str, arch: str, pin: PbsPin, requir
     distro = "unknown"
     os_release = Path("/etc/os-release")
     if os_release.is_file():
-        fields = dict(
-            (line.partition("=")[0], line.partition("=")[2].strip().strip('"'))
+        fields = {
+            line.partition("=")[0]: line.partition("=")[2].strip().strip('"')
             for line in os_release.read_text(encoding="utf-8").splitlines() if "=" in line
-        )
+        }
         distro = f"{fields.get('ID', 'unknown')}-{fields.get('VERSION_ID', '')}".rstrip("-")
     in_ci = os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
     info = {
