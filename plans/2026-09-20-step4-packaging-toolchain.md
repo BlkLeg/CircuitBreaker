@@ -358,7 +358,7 @@ Task 3a if the rule selected `onedir`. Task 3b if it selected `pbs`. Do not exec
 - Modify: `deploy/systemd/circuitbreaker-backend.service`, `deploy/systemd/circuitbreaker-worker@.service`
 - Modify: `install.sh` (`stage0_install_bundle`) and `deploy/setup.sh` (`stage6_apply_binary`)
 - Modify: `specs/1.0.0/slices/agt-3-pyinstaller-containment.md`
-- Modify: `tests/build/test_agt11_extraction_dirs.py` (confirm the filename with `ls tests/build | grep -i agt` first)
+- Create: `tests/build/test_no_runtime_extraction.py` (replaces `tests/build/test_agt11_extraction_dirs.py`)
 
 - [ ] **Step 1: Write the failing test**
 

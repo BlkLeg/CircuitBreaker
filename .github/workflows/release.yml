@@ -628,16 +628,12 @@ jobs:
           cd published
           mkdir -p unpacked
           tar -xzf "circuit-breaker_${VERSION}_linux_amd64.tar.gz" -C unpacked
-          if [ -f "unpacked/circuit-breaker" ]; then
+          if [ -x "unpacked/bin/circuit-breaker" ]; then
             BUNDLE="unpacked"
           else
             BUNDLE="$(find unpacked -maxdepth 1 -mindepth 1 -type d | head -1)"
           fi
-          if [ -x "${BUNDLE}/circuit-breaker" ]; then
-            "${BUNDLE}/circuit-breaker" --selftest
-          else
-            "${BUNDLE}/bin/circuit-breaker" --selftest
-          fi
+          "${BUNDLE}/bin/circuit-breaker" --selftest
 
       # install.sh resolves a release through the GitHub API. A release that is
       # published but not yet discoverable, or discoverable under an unexpected

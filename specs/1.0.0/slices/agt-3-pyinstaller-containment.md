@@ -1,5 +1,7 @@
 # AGT-3 — PyInstaller Runtime Containment
 
+**Status (2026-09-22):** closed — see AGT-11
+
 **Requirement:** AGT-11
 **Priority:** P0
 **Issue:** #101

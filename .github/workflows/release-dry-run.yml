@@ -450,12 +450,12 @@ jobs:
           cd dist/release
           mkdir -p unpacked
           tar -xzf "circuit-breaker_${VERSION}_linux_amd64.tar.gz" -C unpacked
-          if [ -x "unpacked/circuit-breaker" ]; then
+          if [ -x "unpacked/bin/circuit-breaker" ]; then
             BUNDLE=unpacked
           else
             BUNDLE="$(find unpacked -maxdepth 1 -mindepth 1 -type d | head -1)"
           fi
-          "${BUNDLE}/circuit-breaker" --selftest
+          "${BUNDLE}/bin/circuit-breaker" --selftest
 
       - name: Upload the staged asset listing
         if: always()

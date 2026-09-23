@@ -58,7 +58,6 @@ jobs:
           set -euo pipefail
           python3 -m venv .venv
           .venv/bin/pip install -r apps/backend/requirements.txt
-          .venv/bin/pip install pyinstaller
           cd apps/frontend && npm ci && npm run build && cd -
           .venv/bin/python scripts/build_native_release.py --version "$(cat VERSION)"
           ls -lh dist/native/

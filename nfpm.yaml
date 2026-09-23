@@ -12,42 +12,55 @@ section: "admin"
 priority: "optional"
 
 contents:
-  # Binary
-  - src: dist/native/bundle/circuit-breaker
-    dst: /usr/local/bin/circuit-breaker
+  # The application tree, whole, at the same root install.sh uses. One layout
+  # for both native paths; the unit's ExecStart stays /usr/local/bin/circuit-breaker
+  # through the symlink below, so an upgrade from the PyInstaller package
+  # changes no unit file — dpkg and rpm both replace a regular file with a
+  # symlink of the same path in place.
+  - src: dist/native/bundle/python/
+    dst: /opt/circuitbreaker/python/
+    type: tree
+  - src: dist/native/bundle/bin/circuit-breaker
+    dst: /opt/circuitbreaker/bin/circuit-breaker
     file_info:
       mode: 0755
+  - src: dist/native/bundle/bin/cb-python
+    dst: /opt/circuitbreaker/bin/cb-python
+    file_info:
+      mode: 0755
+  - src: /opt/circuitbreaker/bin/circuit-breaker
+    dst: /usr/local/bin/circuit-breaker
+    type: symlink
+  - src: dist/native/bundle/share/
+    dst: /opt/circuitbreaker/share/
+    type: tree
+  - src: dist/native/bundle/agent-binaries/
+    dst: /opt/circuitbreaker/agent-binaries/
+    type: tree
 
   - src: cb
     dst: /usr/local/bin/cb
     file_info:
       mode: 0755
 
-  # Frontend static files
-  - src: dist/native/bundle/share/frontend/
-    dst: /usr/local/share/circuit-breaker/frontend/
-    type: tree
-
-  # Backend migrations + alembic config
-  - src: dist/native/bundle/share/backend/
-    dst: /usr/local/share/circuit-breaker/backend/
-    type: tree
-
-  # VERSION file
-  - src: dist/native/bundle/share/VERSION
+  # The historical package paths, kept as symlinks so an env file written by an
+  # older postinstall.sh (STATIC_DIR=/usr/local/share/circuit-breaker/frontend
+  # and friends) keeps resolving after the upgrade.
+  - src: /opt/circuitbreaker/share/frontend
+    dst: /usr/local/share/circuit-breaker/frontend
+    type: symlink
+  - src: /opt/circuitbreaker/share/backend
+    dst: /usr/local/share/circuit-breaker/backend
+    type: symlink
+  - src: /opt/circuitbreaker/share/VERSION
     dst: /usr/local/share/circuit-breaker/VERSION
-
-  # Build provenance, shipped inside the package so a verification tier reads it
-  # from the artifact under test rather than from the directory it was found in.
-  # A PyInstaller bundle inherits its build host's glibc floor, so a local build
-  # and the released one are different artifacts (ADR 0005 Phase 3, F8).
-  - src: dist/native/bundle/share/build-info.json
+    type: symlink
+  - src: /opt/circuitbreaker/share/build-info.json
     dst: /usr/local/share/circuit-breaker/build-info.json
-
-  # Agent binaries + manifest (for the in-app "install agent" command)
-  - src: dist/native/bundle/agent-binaries/
-    dst: /usr/local/share/circuit-breaker/agent-binaries/
-    type: tree
+    type: symlink
+  - src: /opt/circuitbreaker/agent-binaries
+    dst: /usr/local/share/circuit-breaker/agent-binaries
+    type: symlink
 
   # Default config template
   - src: packaging/config.toml.default

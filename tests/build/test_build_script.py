@@ -19,14 +19,19 @@ def tmp_bundle(tmp_path):
     """Minimal bundle dir that satisfies packaging functions."""
     bundle = tmp_path / "bundle"
     bundle.mkdir()
-    binary = bundle / "circuit-breaker"
+    bin_dir = bundle / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / "circuit-breaker"
     binary.write_bytes(b"\x7fELF")  # fake ELF
     binary.chmod(0o755)
+    python_bin = bundle / "python" / "bin"
+    python_bin.mkdir(parents=True)
+    (python_bin / "python3.12").write_bytes(b"\x7fELF")
+    (python_bin / "python3.12").chmod(0o755)
     share = bundle / "share" / "frontend"
     share.mkdir(parents=True)
     (share / "index.html").write_text("<html/>")
     return bundle
-
 
 class TestCreateLinuxPackagesIncludesApk:
     def test_apk_format_is_in_nfpm_loop(self, tmp_path, tmp_bundle):

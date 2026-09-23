@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--packaging",
         choices=["onefile", "onedir", "pbs"],
-        default="onefile",
+        default="pbs",
         help=(
             "'pbs' builds the hermetic python-build-standalone tree that every "
             "wrapper (tarball, deb/rpm/apk/Arch, AppImage, the mono image) ships. "
@@ -1000,40 +1000,22 @@ def create_appimage(
         print("appimagetool not found — skipping AppImage. Install: https://appimage.github.io/appimagetool/")
         return None
 
-    # AppImage still expects a single binary at the bundle root (onefile layout).
-    # A PBS tree ships bin/circuit-breaker instead; packaging that layout is a
-    # later cutover task, so skip rather than fail the whole build.
-    root_binary = bundle_dir / "circuit-breaker"
-    if not root_binary.is_file():
-        print("  AppImage: skipping (no onefile binary at bundle root; PBS layout not yet supported)")
-        return None
-
     appdir = output_dir / "CircuitBreaker.AppDir"
     if appdir.exists():
         shutil.rmtree(appdir)
 
-    bin_dir = appdir / "usr" / "bin"
-    share_dir = appdir / "usr" / "share" / "circuit-breaker"
-    bin_dir.mkdir(parents=True)
-    share_dir.mkdir(parents=True)
-
-    shutil.copy2(root_binary, bin_dir / "circuit-breaker")
-    (bin_dir / "circuit-breaker").chmod(0o755)
-
-    src_share = bundle_dir / "share"
-    if src_share.exists():
-        shutil.copytree(src_share, share_dir, dirs_exist_ok=True)
-
-    agent_binaries_src = bundle_dir / "agent-binaries"
-    if agent_binaries_src.exists():
-        agent_binaries_dst = appdir / "usr" / "share" / "circuit-breaker" / "agent-binaries"
-        shutil.copytree(agent_binaries_src, agent_binaries_dst, dirs_exist_ok=True)
-
+    app_root = appdir / "usr" / "lib" / "circuitbreaker"
+    app_root.parent.mkdir(parents=True)
+    for name in ("python", "bin", "share", "agent-binaries"):
+        source = bundle_dir / name
+        if source.exists():
+            shutil.copytree(source, app_root / name, symlinks=True)
     apprun = appdir / "AppRun"
     apprun.write_text(
         '#!/bin/sh\n'
-        'export CB_AGENT_BINARIES_DIR="$(dirname "$(readlink -f "$0")")/usr/share/circuit-breaker/agent-binaries"\n'
-        'exec "$(dirname "$(readlink -f "$0")")/usr/bin/circuit-breaker" "$@"\n'
+        'here="$(dirname "$(readlink -f "$0")")"\n'
+        'export CB_AGENT_BINARIES_DIR="$here/usr/lib/circuitbreaker/agent-binaries"\n'
+        'exec "$here/usr/lib/circuitbreaker/bin/circuit-breaker" "$@"\n'
     )
     apprun.chmod(0o755)
 
