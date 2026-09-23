@@ -233,10 +233,11 @@ before it stops the services. Two things about it are worth knowing before you n
   sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${CB_DATA_DIR}/backups/pre-upgrade-<stamp>.sql
   ```
 
-  That path works on both layouts (packages place the tree at the same root).
-  On a deb/rpm host prefer `sudo circuit-breaker-rollback <file>` — it calls
-  the same restore script with the package unit name, role and environment
-  file. See [Distribution packages](#distribution-packages-deb-rpm) above.
+  That path is the `install.sh` layout. On a deb/rpm host the restore script is at
+  `/usr/local/share/circuit-breaker/deploy/scripts/restore.sh` and expects a
+  different unit name, role and environment file — run
+  `sudo circuit-breaker-rollback <file>` there, which supplies them.
+  See [Distribution packages](#distribution-packages-deb-rpm) above.
 
   Note that a bare dump restores the **database only** — no `uploads/`, no `CB_VAULT_KEY` rewrite, no
   nginx site config. That is the right shape for rolling back an upgrade, where those are unchanged.
