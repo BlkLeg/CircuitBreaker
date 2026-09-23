@@ -1229,8 +1229,10 @@ def main() -> int:
     write_metadata(output_dir, manifest, archive_path)
     print(archive_path)
 
-    # Generate Linux packages
-    if target_os == "linux":
+    # nfpm / AppImage / Arch wrap the PBS tree layout. --packaging onefile still
+    # stages a tarball (journey --previous leg) but must not run those wrappers
+    # against a PyInstaller bundle.
+    if target_os == "linux" and args.packaging == "pbs":
         create_linux_packages(bundle_dir, version, target_arch, output_dir)
         create_appimage(bundle_dir, version, target_arch, output_dir)
         create_arch_package(bundle_dir, version, target_arch, output_dir, archive_path)

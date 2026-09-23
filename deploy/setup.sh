@@ -1417,10 +1417,15 @@ cb_activate_runtime_tree() {
 
 # Undo cb_activate_runtime_tree. Called when the activated tree fails its
 # self-test, before cb_fail, so a host that was working keeps working.
+# PyInstaller → PBS has no python.prev (the previous layout had no tree); drop
+# the failed activation and restore the onefile launcher from *.prev instead.
 cb_rollback_runtime_tree() {
   if [[ -d /opt/circuitbreaker/python.prev ]]; then
     rm -rf /opt/circuitbreaker/python
     mv /opt/circuitbreaker/python.prev /opt/circuitbreaker/python
+  else
+    rm -rf /opt/circuitbreaker/python
+    rm -f /opt/circuitbreaker/bin/cb-python
   fi
   if [[ -e /opt/circuitbreaker/bin/circuit-breaker.prev ]]; then
     mv -f /opt/circuitbreaker/bin/circuit-breaker.prev /opt/circuitbreaker/bin/circuit-breaker

@@ -306,6 +306,22 @@ class TestPbsStaging:
         assert manifest["binary"] == "bin/circuit-breaker" and manifest["runtime"] == "pbs"
 
 
+def test_linux_package_wrappers_run_only_for_pbs() -> None:
+    """--packaging onefile still makes a tarball; nfpm/AppImage/Arch need the PBS tree."""
+    source = BUILD_SCRIPT.read_text(encoding="utf-8")
+    main_match = re.search(r"def main\(\) -> int:.*?(?=\nif __name__)", source, re.DOTALL)
+    assert main_match, "main() not found"
+    body = main_match.group(0)
+    assert 'target_os == "linux" and args.packaging == "pbs"' in body, (
+        "create_linux_packages / create_appimage / create_arch_package must be "
+        "gated on packaging==pbs so onefile journey builds do not wrap a "
+        "PyInstaller layout"
+    )
+    assert "create_linux_packages(" in body
+    assert "create_appimage(" in body
+    assert "create_arch_package(" in body
+
+
 def test_build_runs_the_selftest_before_staging_the_bundle() -> None:
     """Cheapest disproof first.
 

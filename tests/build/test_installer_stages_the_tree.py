@@ -53,6 +53,18 @@ def test_activation_keeps_a_rollback_copy_until_health() -> None:
     assert "rm -rf" in finalise and "python.prev" in finalise and "_MEI" in finalise
 
 
+def test_rollback_drops_failed_pbs_tree_when_python_prev_absent() -> None:
+    """PyInstaller → PBS: no prior tree, so rollback must remove the failed activation."""
+    body = _function(SETUP, "cb_rollback_runtime_tree")
+    assert "python.prev" in body
+    # else branch (no python.prev): drop activated tree and PBS-only cb-python.
+    assert re.search(
+        r"else\s*\n\s*rm -rf /opt/circuitbreaker/python\s*\n\s*rm -f /opt/circuitbreaker/bin/cb-python",
+        body,
+    ), body
+    assert "circuit-breaker.prev" in body
+
+
 def test_identity_records_the_runtime() -> None:
     body = _function(SETUP, "stage9_write_install_identity")
     assert "runtime=pbs" in body or 'runtime="$runtime"' in body
