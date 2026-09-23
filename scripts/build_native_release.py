@@ -28,6 +28,9 @@ VERSION_FILE = REPO_ROOT / "VERSION"
 DOCS_SEED_FILE = REPO_ROOT / "DocsPage.md"
 AGENT_ROOT = REPO_ROOT / "apps" / "agent"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pbs_tree  # noqa: E402  — sibling module; stdlib-only so the Docker stage can run it alone
+
 
 def detect_target() -> tuple[str, str]:
     system = platform.system().lower()
@@ -69,12 +72,10 @@ def parse_args() -> argparse.Namespace:
         choices=["onefile", "onedir", "pbs"],
         default="onefile",
         help=(
-            "PyInstaller packaging mode. 'onefile' (default) is today's single "
-            "self-extracting executable that re-extracts itself on every "
-            "process start. 'onedir' emits a directory with the binary and its "
-            "dependencies alongside it, so no extraction happens at run time. "
-            "'pbs' (python-build-standalone) is not implemented yet: it is "
-            "gated on the benchmark this flag exists to support."
+            "'pbs' builds the hermetic python-build-standalone tree that every "
+            "wrapper (tarball, deb/rpm/apk/Arch, AppImage, the mono image) ships. "
+            "'onefile' is the retired PyInstaller path, kept for one release cycle "
+            "as an emergency rollback; 'onedir' is PyInstaller's directory mode."
         ),
     )
     parser.add_argument(
@@ -395,11 +396,7 @@ def assert_binary_contains_application(binary_path: Path) -> None:
 
 def build_binary(target_os: str, work_dir: Path, packaging_mode: str = "onefile") -> Path:
     if packaging_mode == "pbs":
-        raise SystemExit(
-            "--packaging pbs is not implemented yet. It lands with Task 3b of "
-            "plans/2026-09-20-step4-packaging-toolchain.md, which is executed "
-            "only if the benchmark's decision rule selects it."
-        )
+        raise SystemExit("build_binary is the PyInstaller path; --packaging pbs is assembled by pbs_tree.build_tree")
 
     dist_dir = work_dir / "pyinstaller-dist"
     build_dir = work_dir / "pyinstaller-build"
@@ -517,6 +514,31 @@ CB_DB_URL=postgresql://circuitbreaker:changeme@127.0.0.1:5432/circuitbreaker
 def _write_readme(bundle_dir: Path, version: str, target_os: str, binary: str) -> None:
     """Generate a quick-start README.txt placed at the archive root."""
     run_prefix = "./" if target_os != "windows" else ""
+    if binary.startswith("bin/"):
+        contents_lines = (
+            f"  python/                 — bundled CPython (python-build-standalone) and site-packages\n"
+            f"  bin/circuit-breaker     — launcher\n"
+            f"  README.txt              — This file\n"
+            f"  .env.example            — Environment variable template\n"
+            f"  manifest.json           — Build metadata (version, arch, checksums)\n"
+            f"  share/VERSION           — Version string\n"
+            f"  share/frontend/         — Pre-built web UI assets\n"
+            f"  share/backend/alembic.ini — Database migration config\n"
+            f"  share/backend/migrations/ — Database migration scripts\n"
+            f"  share/config.toml.default — Sample configuration file\n"
+        )
+    else:
+        contents_lines = (
+            f"  {binary}                  — Application binary\n"
+            f"  README.txt                — This file\n"
+            f"  .env.example              — Environment variable template\n"
+            f"  manifest.json             — Build metadata (version, arch, checksums)\n"
+            f"  share/VERSION             — Version string\n"
+            f"  share/frontend/           — Pre-built web UI assets\n"
+            f"  share/backend/alembic.ini — Database migration config\n"
+            f"  share/backend/migrations/ — Database migration scripts\n"
+            f"  share/config.toml.default — Sample configuration file\n"
+        )
     text = f"""\
 Circuit Breaker {version} — Quick Start
 {'=' * 42}
@@ -562,16 +584,7 @@ Prerequisites
 
 Archive contents
 -----------------
-  {binary}                  — Application binary
-  README.txt                — This file
-  .env.example              — Environment variable template
-  manifest.json             — Build metadata (version, arch, checksums)
-  share/VERSION             — Version string
-  share/frontend/           — Pre-built web UI assets
-  share/backend/alembic.ini — Database migration config
-  share/backend/migrations/ — Database migration scripts
-  share/config.toml.default — Sample configuration file
-
+{contents_lines}
 Full documentation
 -------------------
   https://github.com/BlkLeg/circuitbreaker
@@ -641,6 +654,7 @@ def stage_bundle(
     frontend_dir: Path,
     work_dir: Path,
     packaging_mode: str = "onefile",
+    tree: Path | None = None,
 ) -> tuple[Path, dict[str, object]]:
     bundle_dir = work_dir / f"bundle-{target_os}-{target_arch}"
     if bundle_dir.exists():
@@ -651,37 +665,41 @@ def stage_bundle(
     bundle_dir.mkdir(parents=True, exist_ok=True)
     backend_share.mkdir(parents=True, exist_ok=True)
 
-    if packaging_mode == "onedir":
-        # PyInstaller's onedir output is binary_path's parent directory: the
-        # executable plus _internal/ beside it. Both must land at the bundle
-        # root together — the executable cannot run with _internal/ missing —
-        # so the whole directory is copied rather than just the binary file.
-        for item in binary_path.parent.iterdir():
-            destination = bundle_dir / item.name
-            if item.is_dir():
-                shutil.copytree(item, destination, dirs_exist_ok=True)
-            else:
-                shutil.copy2(item, destination)
+    if packaging_mode == "pbs":
+        if tree is None:
+            raise SystemExit("stage_bundle(packaging_mode='pbs') needs the tree from pbs_tree.build_tree")
+        # The tree already carries python/, bin/, share/{VERSION,build-info.json,
+        # backend/,frontend/} and agent-binaries/. Copied whole, symlinks
+        # preserved (python/bin/python3 -> python3.12), and nothing below may
+        # rewrite share/build-info.json: its runtime_digest is what the mono
+        # image is held equal to.
+        shutil.rmtree(bundle_dir)
+        shutil.copytree(tree, bundle_dir, symlinks=True)
+        share_dir.mkdir(exist_ok=True)
     else:
-        shutil.copy2(binary_path, bundle_dir / binary_path.name)
-    shutil.copy2(VERSION_FILE, share_dir / "VERSION")
-    _write_build_info(share_dir, version, target_os, target_arch)
+        if packaging_mode == "onedir":
+            for item in binary_path.parent.iterdir():
+                destination = bundle_dir / item.name
+                if item.is_dir():
+                    shutil.copytree(item, destination, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, destination)
+        else:
+            shutil.copy2(binary_path, bundle_dir / binary_path.name)
+        shutil.copy2(VERSION_FILE, share_dir / "VERSION")
+        _write_build_info(share_dir, version, target_os, target_arch)
+        shutil.copy2(BACKEND_ROOT / "alembic.ini", backend_share / "alembic.ini")
+        shutil.copytree(
+            BACKEND_ROOT / "migrations",
+            backend_share / "migrations",
+            dirs_exist_ok=True,
+            ignore=_NO_BYTECODE,
+        )
+        shutil.copytree(frontend_dir, frontend_share, dirs_exist_ok=True)
     shutil.copy2(DOCS_SEED_FILE, share_dir / "DocsPage.md")
-    shutil.copy2(BACKEND_ROOT / "alembic.ini", backend_share / "alembic.ini")
-    # ignore=_NO_BYTECODE: the build host's __pycache__ is not the target's.
-    # 131 of the v0.4.3 tarball's members were .pyc files compiled by whatever
-    # interpreter happened to run this script — stale on any host with a
-    # different Python, and read by nothing: Alembic imports the .py sources.
-    shutil.copytree(
-        BACKEND_ROOT / "migrations",
-        backend_share / "migrations",
-        dirs_exist_ok=True,
-        ignore=_NO_BYTECODE,
-    )
-    shutil.copytree(frontend_dir, frontend_share, dirs_exist_ok=True)
 
     agent_binaries_src = work_dir / "agent-dist"
-    if agent_binaries_src.exists():
+    if agent_binaries_src.exists() and not (bundle_dir / "agent-binaries").exists():
         shutil.copytree(agent_binaries_src, bundle_dir / "agent-binaries", dirs_exist_ok=True)
 
     # Bundle config.toml template if present
@@ -736,7 +754,8 @@ def stage_bundle(
         "os": target_os,
         "arch": target_arch,
         "archive": archive_name(version, target_os, target_arch),
-        "binary": binary_path.name,
+        "binary": "bin/circuit-breaker" if packaging_mode == "pbs" else binary_path.name,
+        "runtime": "pbs" if packaging_mode == "pbs" else "pyinstaller",
         "share_dir": "share",
         "resources": {
             "version": "share/VERSION",
@@ -753,7 +772,7 @@ def stage_bundle(
     }
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    _write_readme(bundle_dir, version, target_os, binary_path.name)
+    _write_readme(bundle_dir, version, target_os, str(manifest["binary"]))
     _write_env_example(bundle_dir)
 
     return bundle_dir, manifest
@@ -901,11 +920,14 @@ def create_linux_packages(
     arch_map = {"amd64": "amd64", "arm64": "arm64"}
     goarch = arch_map.get(target_arch, target_arch)
 
-    # Symlink bundle contents to where nfpm.yaml expects them
+    # Symlink bundle contents to where nfpm.yaml expects them.
+    # symlinks=True is load-bearing for --packaging pbs: the tree's
+    # python/bin/python3 -> python3.12 (and friends) must stay symlinks so
+    # runtime_digest of dist/native/bundle matches the tree that wrote it.
     dist_bundle = REPO_ROOT / "dist" / "native" / "bundle"
     if dist_bundle.exists():
         shutil.rmtree(dist_bundle)
-    shutil.copytree(bundle_dir, dist_bundle)
+    shutil.copytree(bundle_dir, dist_bundle, symlinks=True)
 
     env = {
         **os.environ,
@@ -978,6 +1000,14 @@ def create_appimage(
         print("appimagetool not found — skipping AppImage. Install: https://appimage.github.io/appimagetool/")
         return None
 
+    # AppImage still expects a single binary at the bundle root (onefile layout).
+    # A PBS tree ships bin/circuit-breaker instead; packaging that layout is a
+    # later cutover task, so skip rather than fail the whole build.
+    root_binary = bundle_dir / "circuit-breaker"
+    if not root_binary.is_file():
+        print("  AppImage: skipping (no onefile binary at bundle root; PBS layout not yet supported)")
+        return None
+
     appdir = output_dir / "CircuitBreaker.AppDir"
     if appdir.exists():
         shutil.rmtree(appdir)
@@ -987,7 +1017,7 @@ def create_appimage(
     bin_dir.mkdir(parents=True)
     share_dir.mkdir(parents=True)
 
-    shutil.copy2(bundle_dir / "circuit-breaker", bin_dir / "circuit-breaker")
+    shutil.copy2(root_binary, bin_dir / "circuit-breaker")
     (bin_dir / "circuit-breaker").chmod(0o755)
 
     src_share = bundle_dir / "share"
@@ -1177,20 +1207,42 @@ def main() -> int:
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    ensure_pyinstaller_available()
     if target_os == "linux":
         ensure_go_available()
         build_agent_binaries(version, work_dir)
-    binary_path = build_binary(target_os, work_dir, args.packaging)
-    bundle_dir, manifest = stage_bundle(
-        binary_path=binary_path,
-        version=version,
-        target_os=target_os,
-        target_arch=target_arch,
-        frontend_dir=frontend_dir,
-        work_dir=work_dir,
-        packaging_mode=args.packaging,
-    )
+    if args.packaging == "pbs":
+        if target_os != "linux":
+            raise SystemExit("--packaging pbs targets Linux only; python-build-standalone pins exist for linux/amd64 and linux/arm64")
+        tree = pbs_tree.build_tree(
+            arch=target_arch,
+            version=version,
+            output=work_dir / "app",
+            cache_dir=REPO_ROOT / "build" / "pbs-cache",
+            frontend_dist=frontend_dir,
+            agent_dist=work_dir / "agent-dist",
+        )
+        bundle_dir, manifest = stage_bundle(
+            binary_path=tree / "bin" / "circuit-breaker",
+            version=version,
+            target_os=target_os,
+            target_arch=target_arch,
+            frontend_dir=frontend_dir,
+            work_dir=work_dir,
+            packaging_mode="pbs",
+            tree=tree,
+        )
+    else:
+        ensure_pyinstaller_available()
+        binary_path = build_binary(target_os, work_dir, args.packaging)
+        bundle_dir, manifest = stage_bundle(
+            binary_path=binary_path,
+            version=version,
+            target_os=target_os,
+            target_arch=target_arch,
+            frontend_dir=frontend_dir,
+            work_dir=work_dir,
+            packaging_mode=args.packaging,
+        )
     archive_path = create_archive(bundle_dir, version, target_os, target_arch, output_dir)
     write_metadata(output_dir, manifest, archive_path)
     print(archive_path)

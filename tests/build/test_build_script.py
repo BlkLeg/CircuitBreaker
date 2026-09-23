@@ -276,6 +276,31 @@ class TestAsgiTargetHiddenImport:
         with pytest.raises(SystemExit, match="ASGI"):
             br._collect_asgi_target_hidden_imports()
 
+
+class TestPbsStaging:
+    def test_pbs_bundle_is_the_tree_plus_installer_files(self, tmp_path, monkeypatch):
+        tree = tmp_path / "tree"
+        for rel in ("python/bin/python3.12", "bin/circuit-breaker", "share/VERSION",
+                    "share/build-info.json", "share/backend/alembic.ini", "share/frontend/index.html",
+                    "agent-binaries/manifest.json"):
+            (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tree / rel).write_text(rel)
+        (tree / "python" / "bin" / "python3").symlink_to("python3.12")
+        (tree / "share" / "build-info.json").write_text('{"runtime_digest": "abc"}')
+        monkeypatch.setattr(br, "_write_build_info", lambda *a, **k: pytest.fail("pbs staging must not rewrite build-info.json"))
+        bundle, manifest = br.stage_bundle(
+            binary_path=tree / "bin" / "circuit-breaker", version=br.VERSION_FILE.read_text().strip(),
+            target_os="linux", target_arch="amd64", frontend_dir=tree / "share" / "frontend",
+            work_dir=tmp_path / "work", packaging_mode="pbs", tree=tree,
+        )
+        assert (bundle / "python" / "bin" / "python3").is_symlink()
+        assert (bundle / "bin" / "circuit-breaker").is_file()
+        assert not (bundle / "circuit-breaker").exists(), "no onefile at the bundle root"
+        assert (bundle / "share" / "build-info.json").read_text() == '{"runtime_digest": "abc"}'
+        assert (bundle / "deploy" / "setup.sh").is_file() and (bundle / "install.sh").is_file()
+        assert manifest["binary"] == "bin/circuit-breaker" and manifest["runtime"] == "pbs"
+
+
 def test_build_runs_the_selftest_before_staging_the_bundle() -> None:
     """Cheapest disproof first.
 
