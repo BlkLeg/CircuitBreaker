@@ -2326,9 +2326,31 @@ run_upgrade() {
 
   cb_phase_begin apply_bundle "Installing new version"
 
-  # Stop services after backup
-  cb_step "Stopping services"
-  systemctl stop circuitbreaker.target >> "$LOG_FILE" 2>&1 || true
+  # Stop services after backup.
+  #
+  # `systemctl stop circuitbreaker.target` alone is not enough: the target's
+  # member units are pulled in with Wants= (a start-time-only dependency), and
+  # before this fix only circuitbreaker-worker@.service also carried the
+  # PartOf=circuitbreaker.target that makes a target stop propagate to it.
+  # Confirmed live: without that, `systemctl stop circuitbreaker.target`
+  # leaves circuitbreaker-backend running, unchanged, indefinitely — the
+  # runtime tree gets replaced underneath a live interpreter, and a later
+  # `systemctl start circuitbreaker-backend` is a silent no-op against an
+  # already-active unit, so the new code never actually takes effect until
+  # something else (a crash, a reboot) finally cycles the process.
+  #
+  # deploy/systemd/circuitbreaker-*.service now all carry that PartOf=, so
+  # stopping the target is correct for every upgrade from here on — except
+  # the one that installs that fix: the units on disk at this exact line are
+  # whatever the PREVIOUS install wrote, which may predate it. Stopping each
+  # unit by name works regardless of which unit files are currently active,
+  # so this line does not rely on the fix it ships having already taken effect.
+  local _worker_type
+  for _worker_type in "${CB_WORKER_TYPES[@]}"; do
+    systemctl stop "circuitbreaker-worker@${_worker_type}" >> "$LOG_FILE" 2>&1 || true
+  done
+  systemctl stop circuitbreaker.target circuitbreaker-backend circuitbreaker-pgbouncer \
+    circuitbreaker-redis circuitbreaker-nats circuitbreaker-postgres >> "$LOG_FILE" 2>&1 || true
   sleep 2
   cb_ok "Services stopped"
   

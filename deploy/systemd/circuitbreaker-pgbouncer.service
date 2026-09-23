@@ -2,6 +2,8 @@
 Description=Circuit Breaker pgbouncer
 After=circuitbreaker-postgres.service
 Requires=circuitbreaker-postgres.service
+# See circuitbreaker-backend.service for why this matters.
+PartOf=circuitbreaker.target
 
 [Service]
 Type=simple

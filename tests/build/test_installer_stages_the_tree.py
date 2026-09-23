@@ -44,6 +44,47 @@ def test_setup_activates_after_stop_and_finalises_after_readyz() -> None:
     assert start.index("/api/v1/readyz") < start.index("cb_finalise_runtime_tree")
     upgrade = _function(SETUP, "run_upgrade")
     assert upgrade.index("systemctl stop circuitbreaker.target") < upgrade.index("stage6_apply_binary")
+    # `systemctl stop circuitbreaker.target` alone does not stop a unit that
+    # was pulled in with Wants= (a start-time-only dependency) rather than
+    # PartOf= — confirmed live, where circuitbreaker-backend kept running,
+    # unchanged, through a "stopped" target while its runtime tree was
+    # replaced underneath it. Every backing service this upgrade is about to
+    # swap files under must therefore also be named explicitly here, so the
+    # stop works regardless of whether the *currently installed* unit files
+    # (which may predate any circuitbreaker.target-level fix) carry PartOf=.
+    stop_step = upgrade[: upgrade.index("stage6_apply_binary")]
+    for unit in (
+        "circuitbreaker-backend",
+        "circuitbreaker-pgbouncer",
+        "circuitbreaker-redis",
+        "circuitbreaker-nats",
+        "circuitbreaker-postgres",
+    ):
+        assert unit in stop_step, f"run_upgrade's stop step does not name {unit} explicitly"
+
+
+def test_target_member_units_propagate_a_target_stop() -> None:
+    """Wants= only pulls a unit in at start; PartOf= is what makes
+    `systemctl stop/restart circuitbreaker.target` (run_upgrade, the
+    installer journey, and the "Manual start" hint install.sh prints on
+    failure) actually stop the unit too. Confirmed live: without PartOf=,
+    circuitbreaker-backend survived a target stop untouched while its files
+    were swapped underneath it — every CB-owned service the target lists
+    must carry it, matching the precedent circuitbreaker-worker@.service
+    already set.
+    """
+    target = (ROOT / "deploy" / "systemd" / "circuitbreaker.target").read_text(encoding="utf-8")
+    # Only CB-owned `.service` entries: this excludes nginx.service (a system
+    # package unit we ship no file for) and circuitbreaker-healthcheck.timer
+    # (a .timer, not a .service — it already cascades via its own
+    # Requires=circuitbreaker-backend.service rather than needing PartOf=).
+    owned_services = set(re.findall(r"^Wants=(circuitbreaker-[\w@.]+)\.service$", target, re.M))
+    assert owned_services, "expected at least the backend and worker units in circuitbreaker.target's Wants="
+    for name in owned_services:
+        unit_file = "circuitbreaker-worker@.service" if name.startswith("circuitbreaker-worker@") else f"{name}.service"
+        path = ROOT / "deploy" / "systemd" / unit_file
+        body = path.read_text(encoding="utf-8")
+        assert "PartOf=circuitbreaker.target" in body, f"{unit_file} is a member of circuitbreaker.target but lacks PartOf=circuitbreaker.target"
 
 
 def test_activation_keeps_a_rollback_copy_until_health() -> None:

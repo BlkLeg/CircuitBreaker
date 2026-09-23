@@ -2,6 +2,10 @@
 Description=Circuit Breaker PostgreSQL 15
 After=network.target
 Before=circuitbreaker-pgbouncer.service
+# See circuitbreaker-backend.service for why this matters: circuitbreaker.target's
+# member services only had Wants= (start-time pull, no stop propagation), so
+# `systemctl stop circuitbreaker.target` never actually stopped this unit.
+PartOf=circuitbreaker.target
 
 [Service]
 Type=notify

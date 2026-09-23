@@ -4,6 +4,8 @@ Documentation=https://github.com/Tecnativa/docker-socket-proxy
 After=docker.service
 Requires=docker.service
 Before=circuitbreaker-backend.service
+# See circuitbreaker-backend.service for why this matters.
+PartOf=circuitbreaker.target
 
 [Service]
 Type=simple

@@ -2,6 +2,14 @@
 Description=Circuit Breaker Backend API
 After=circuitbreaker-pgbouncer.service circuitbreaker-redis.service circuitbreaker-nats.service
 Requires=circuitbreaker-pgbouncer.service circuitbreaker-redis.service circuitbreaker-nats.service
+# Without this, `systemctl stop/restart circuitbreaker.target` — what
+# run_upgrade and the installer journey both use to quiesce the stack before
+# swapping the runtime tree — only stops the target unit itself; Wants= is a
+# start-time pull, not a stop propagation. Confirmed live: without PartOf=,
+# the backend process survives an "upgrade" untouched while its files are
+# replaced underneath it, and a failed --selftest's rollback restores files
+# a live process was never actually separated from in the first place.
+PartOf=circuitbreaker.target
 
 [Service]
 Type=exec
