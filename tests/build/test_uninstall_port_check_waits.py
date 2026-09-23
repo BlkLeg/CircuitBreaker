@@ -43,12 +43,17 @@ def _port_check_block() -> str:
     return text[start:end]
 
 
-def _run(tmp_path: Path, answers: int) -> subprocess.CompletedProcess[str]:
+def _run(tmp_path: Path, answers: int, wait: int = 3) -> subprocess.CompletedProcess[str]:
     """Run the block with a curl stub that answers `answers` times then stops.
 
     answers=0  -> port already closed
     answers=3  -> closes a few seconds after uninstall (the real reload window)
     answers=-1 -> never closes (a genuine leak)
+
+    `wait` is the check's deadline (CB_JOURNEY_UNINSTALL_WAIT). It only bounds
+    how long a genuine leak (answers=-1) takes to fail; a port that actually
+    closes exits the retry loop the moment the stub says so, regardless of
+    `wait`, so raising it costs nothing on the passing paths.
     """
     stub_dir = tmp_path / "bin"
     stub_dir.mkdir()
@@ -79,9 +84,9 @@ def _run(tmp_path: Path, answers: int) -> subprocess.CompletedProcess[str]:
             fail() { printf '::error::%s\\n' "$1" >&2; exit 1; }
             # Shorten the real 30s budget; the leak path is about the deadline
             # being enforced, not about how long it is.
-            CB_JOURNEY_UNINSTALL_WAIT=3
             """
         )
+        + f"CB_JOURNEY_UNINSTALL_WAIT={wait}\n"
         + _port_check_block()
     )
     return subprocess.run(
@@ -100,8 +105,17 @@ def test_a_port_that_is_already_closed_passes_immediately(tmp_path):
 
 
 def test_a_port_that_closes_during_the_nginx_reload_window_passes(tmp_path):
-    """This is the case that failed debian12 on one run and passed on the next."""
-    result = _run(tmp_path, answers=3)
+    """This is the case that failed debian12 on one run and passed on the next.
+
+    wait=8, not the default 3: 3 "still open" answers need 3 real
+    `sleep 1`s to elapse before the port closes, which leaves under 100ms of
+    margin against a 3s deadline — this test failed exactly that way on a
+    loaded release runner (1 run in 20 under 2x CPU oversubscription; 0 in 40
+    once the deadline moved to 8). The retry loop exits the moment the stub
+    reports closed regardless of `wait`, so the wider deadline does not slow
+    this test down; it only gives the real-time race somewhere to land.
+    """
+    result = _run(tmp_path, answers=3, wait=8)
     assert result.returncode == 0, (
         "the check must tolerate nginx taking a moment to drop its listening "
         "socket after `systemctl reload` returns:\n" + result.stderr
