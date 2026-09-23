@@ -21,7 +21,7 @@ layout and the package layout.
 ## Rollback
 
 Uninstall is destructive, not a rollback. To undo an upgrade instead, see
-[Upgrading — Rollback](upgrading.md#rollback) (`python.prev` during health,
+[Upgrading — Rollback](upgrading.md#rollback-procedures) (`python.prev` during health,
 then `restore.sh` / `circuit-breaker-rollback`).
 
 ## Release channels

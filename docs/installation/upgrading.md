@@ -32,8 +32,9 @@ During a native upgrade the previous interpreter is renamed to
 `/readyz` returns 200. After health succeeds those copies are deleted. If the
 upgrade fails before that, the installer puts the previous tree back; if you
 need a database rollback after a completed upgrade, restore the pre-upgrade
-dump and reinstall the previous release (see [Rollback](#rollback) below).
-Package hosts use `circuit-breaker-rollback`.
+dump and reinstall the previous release (see
+[Rollback procedures](#rollback-procedures) below). Package hosts use
+`circuit-breaker-rollback`.
 
 ## Release channels
 
@@ -140,7 +141,7 @@ Or check **Settings → About** in the UI.
 
 ---
 
-## Rollback
+## Rollback procedures
 
 ### Native / Proxmox LXC
 
@@ -161,9 +162,9 @@ is what keeps Alembic from migrating the restored schema forward again.
 
 ### Distribution packages (deb / rpm)
 
-A package install is not the `install.sh` layout and does not share its paths, so the
-`/opt/circuitbreaker/...` command below does not exist on these hosts. Use the wrapper the package
-ships instead:
+Packages install the same hermetic tree under `/opt/circuitbreaker/`. Prefer the
+wrapper the package ships — it supplies the package unit name, role and
+environment file:
 
 ```bash
 sudo circuit-breaker-rollback
@@ -232,10 +233,10 @@ before it stops the services. Two things about it are worth knowing before you n
   sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${CB_DATA_DIR}/backups/pre-upgrade-<stamp>.sql
   ```
 
-  That path is the `install.sh` layout. On a deb/rpm host the same script is at
-  `/usr/local/share/circuit-breaker/deploy/scripts/restore.sh` and expects a different unit name,
-  role and environment file — run `sudo circuit-breaker-rollback <file>` there, which supplies them.
-  See [Distribution packages](#distribution-packages-deb-rpm) above.
+  That path works on both layouts (packages place the tree at the same root).
+  On a deb/rpm host prefer `sudo circuit-breaker-rollback <file>` — it calls
+  the same restore script with the package unit name, role and environment
+  file. See [Distribution packages](#distribution-packages-deb-rpm) above.
 
   Note that a bare dump restores the **database only** — no `uploads/`, no `CB_VAULT_KEY` rewrite, no
   nginx site config. That is the right shape for rolling back an upgrade, where those are unchanged.

@@ -20,7 +20,7 @@ Verify checksums and signatures as before, then optionally cross-check the
 
 If an upgrade fails health checks, `python.prev` is kept until `/readyz`
 succeeds; restore with `restore.sh` / `circuit-breaker-rollback` as in
-[Upgrading — Rollback](upgrading.md#rollback).
+[Upgrading — Rollback](upgrading.md#rollback-procedures).
 
 ## Release channels
 

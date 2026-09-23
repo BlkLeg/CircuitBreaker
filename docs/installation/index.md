@@ -32,7 +32,7 @@ operator steps for the hermetic cutover.
 that, restore the pre-upgrade dump with
 `/opt/circuitbreaker/deploy/scripts/restore.sh` (or `circuit-breaker-rollback`
 on package hosts) and reinstall the previous release. Details:
-[Upgrading — Rollback](upgrading.md#rollback).
+[Upgrading — Rollback](upgrading.md#rollback-procedures).
 
 ## Release channels
 

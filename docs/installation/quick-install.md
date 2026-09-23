@@ -33,7 +33,7 @@ sudo /opt/circuitbreaker/deploy/scripts/restore.sh /var/lib/circuitbreaker/backu
 ```
 
 On package hosts use `sudo circuit-breaker-rollback` instead. Full detail:
-[Upgrading — Rollback](upgrading.md#rollback).
+[Upgrading — Rollback](upgrading.md#rollback-procedures).
 
 ## Release channels
 
