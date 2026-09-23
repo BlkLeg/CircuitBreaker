@@ -259,6 +259,9 @@ def prune_tree(tree: Path) -> None:
     direct_url.json: records the source path of a local install; it differs
     between the native build and the Docker stage and would break the digest
     parity the two are held to.
+    RECORD entries for deleted console scripts: pip hashes the shebang it
+    wrote (the absolute build-host interpreter path), so the RECORD itself
+    differs between native and Docker even after the scripts are gone.
     """
     site = site_packages(tree)
     for pattern in (
@@ -273,6 +276,14 @@ def prune_tree(tree: Path) -> None:
     for path in list(bin_dir.iterdir()):
         if not path.name.startswith("python"):
             path.unlink()
+    # Drop RECORD rows that pointed at the deleted console scripts — their
+    # sha256 was of a host-path shebang and would break runtime_digest parity.
+    for record in site.glob("*.dist-info/RECORD"):
+        kept = [
+            line for line in record.read_text(encoding="utf-8").splitlines()
+            if not line.split(",", 1)[0].startswith("../../../bin/")
+        ]
+        record.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
     lib = site.parent
     for rel in ("test", "idlelib", "ensurepip", "tkinter", "turtledemo"):
         shutil.rmtree(lib / rel, ignore_errors=True)
@@ -288,10 +299,25 @@ def compile_bytecode(tree: Path) -> None:
     unchecked-hash pycs embed the source hash rather than an mtime, which is
     what makes two builds of the same inputs byte-identical and what lets the
     service run under ProtectSystem=strict without ever wanting to write one.
+    -s strips the absolute tree prefix from co_filename: without it the
+    marshaled path is the build directory and native vs Docker digests diverge.
+    -B / PYTHONDONTWRITEBYTECODE: compileall itself imports stdlib modules; if
+    those imports write .pyc they bypass -s and leave host-absolute co_filenames
+    (observed as ~75 non-deterministic files between two local builds).
+    -f forces a rewrite after prune_tree wiped __pycache__, so a stale absolute
+    pyc cannot survive as "up to date".
+    -j 1 (not 0): parallel workers accumulate interned strings differently per
+    process, so marshal FLAG_REF layouts for the same code object diverge
+    between builds even when co_* fields compare equal.
     """
     python = str(tree / "python" / "bin" / "python3")
-    _run([python, "-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash",
-          str(tree / "python" / "lib")])
+    root = str(tree.resolve())
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    _run(
+        [python, "-B", "-m", "compileall", "-f", "-q", "-j", "1",
+         "--invalidation-mode", "unchecked-hash", "-s", root, str(tree / "python" / "lib")],
+        env=env,
+    )
 
 
 def write_launchers(tree: Path) -> None:

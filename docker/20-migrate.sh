@@ -2,9 +2,9 @@
 set -euo pipefail
 
 DATA_DIR="${CB_DATA_DIR:-/data}"
-APP_DIR="/app/backend"
+APP_DIR="/opt/circuitbreaker"
 export CB_DATA_DIR="${DATA_DIR}"
-export CB_ALEMBIC_INI="${CB_ALEMBIC_INI:-${APP_DIR}/alembic.ini}"
+export CB_ALEMBIC_INI="${CB_ALEMBIC_INI:-${APP_DIR}/share/backend/alembic.ini}"
 export ALEMBIC_CONFIG="${ALEMBIC_CONFIG:-${CB_ALEMBIC_INI}}"
 
 if [ ! -f "${CB_ALEMBIC_INI}" ]; then
@@ -12,8 +12,8 @@ if [ ! -f "${CB_ALEMBIC_INI}" ]; then
   exit 1
 fi
 
-if [ ! -d "${APP_DIR}/migrations" ]; then
-  echo "[migrate] ERROR: Alembic migrations directory missing at ${APP_DIR}/migrations." >&2
+if [ ! -d "${APP_DIR}/share/backend/migrations" ]; then
+  echo "[migrate] ERROR: Alembic migrations directory missing at ${APP_DIR}/share/backend/migrations." >&2
   exit 1
 fi
 
@@ -106,7 +106,7 @@ PY
 fi
 
 echo "[migrate] Running Alembic migrations from ${APP_DIR}..."
-if ! ( cd "${APP_DIR}" && alembic -c "${CB_ALEMBIC_INI}" upgrade head ); then
+if ! ( cd "${APP_DIR}" && /opt/circuitbreaker/bin/cb-python -m alembic -c "${CB_ALEMBIC_INI}" upgrade head ); then
   echo "[migrate] If the error was 'Can't locate revision identified by ...', the database has a revision that this image does not have." >&2
   echo "[migrate] Rebuild the image so it includes the latest migrations, then start again:" >&2
   echo "[migrate]   docker compose -f docker/docker-compose.yml build --no-cache && docker compose -f docker/docker-compose.yml up -d" >&2

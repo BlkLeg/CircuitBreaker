@@ -677,6 +677,20 @@ jobs:
             -t "circuitbreaker:${CB_VERSION}" \
             .
 
+      - name: Export the image's provenance
+        run: |
+          set -euo pipefail
+          docker buildx build -f Dockerfile.mono --target app-build-info \
+            --output type=local,dest=/tmp/image-info .
+          cat /tmp/image-info/build-info.json
+      - name: Upload the image's provenance
+        uses: actions/upload-artifact@v7
+        with:
+          name: dev-image-build-info-amd64
+          path: /tmp/image-info/build-info.json
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Verify agent binaries are baked into the image
         env:
           CB_VERSION: ${{ steps.ver.outputs.version }}
@@ -923,6 +937,37 @@ jobs:
           docker compose -f docker-compose.yml down -v --remove-orphans || true
           shred -u .env 2>/dev/null || rm -f .env
           sudo rm -rf "${RUNNER_TEMP}/cb-smoke-data" || true
+
+  # ── The image and the package are the same application ─────────────────────
+  # D7 of the 2026-09-22 design: the mono image rebuilds the tree from the same
+  # pins the native build uses, and this is where "the same" is asserted rather
+  # than assumed. A pin edited in one place, a requirement file the image does
+  # not copy, or a pruning difference all fail here, before a release.
+  runtime-parity:
+    name: Runtime parity (image == package)
+    needs: [build-native, build-docker]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: dev-packages-amd64
+          path: dist/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: dev-image-build-info-amd64
+          path: image-info/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compare provenance
+        env:
+          VERSION: ${{ needs.build-native.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p unpacked
+          tar -xzf "dist/circuit-breaker_${VERSION}_linux_amd64.tar.gz" -C unpacked share/build-info.json
+          python3 scripts/ci/assert_runtime_parity.py unpacked/share/build-info.json image-info/build-info.json
 
   # ── Browser E2E ──────────────────────────────────────────────────────────────
   # Ported from ci.yml, verbatim apart from this comment. It was main-only, so
