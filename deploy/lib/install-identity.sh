@@ -89,6 +89,9 @@ if not str(data.get("version") or "").strip():
     sys.exit(1)
 if not str(data.get("installed_at") or "").strip():
     sys.exit(1)
+runtime = data.get("runtime")
+if runtime is not None and runtime not in ("pyinstaller", "pbs"):
+    sys.exit(1)
 sys.exit(0)
 PY
     return $?
@@ -106,7 +109,7 @@ write_install_identity() {
   shift
   local mode="" version="" config_path="" data_dir="" env_file=""
   local container_name="" compose_file="" cli_path="" health_url=""
-  local service_names_csv="" installed_at=""
+  local runtime="" service_names_csv="" installed_at=""
   local key value
   local tmp dir
 
@@ -123,6 +126,7 @@ write_install_identity() {
       compose_file) compose_file="$value" ;;
       cli_path) cli_path="$value" ;;
       health_url) health_url="$value" ;;
+      runtime) runtime="$value" ;;
       service_names) service_names_csv="$value" ;;
       installed_at) installed_at="$value" ;;
       *)
@@ -143,6 +147,13 @@ write_install_identity() {
       return 1
       ;;
   esac
+  case "$runtime" in
+    ""|pyinstaller|pbs) ;;
+    *)
+      echo "write_install_identity: invalid runtime '$runtime' (expected pyinstaller or pbs)" >&2
+      return 1
+      ;;
+  esac
 
   if [[ -z "$installed_at" ]]; then
     installed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -156,6 +167,7 @@ write_install_identity() {
     MODE="$mode" VERSION="$version" CONFIG_PATH="$config_path" \
     DATA_DIR="$data_dir" ENV_FILE="$env_file" CONTAINER_NAME="$container_name" \
     COMPOSE_FILE="$compose_file" CLI_PATH="$cli_path" HEALTH_URL="$health_url" \
+    RUNTIME="$runtime" \
     SERVICE_NAMES="$service_names_csv" INSTALLED_AT="$installed_at" \
     SCHEMA_VERSION="$CB_IDENTITY_SCHEMA_VERSION" \
     python3 - "$tmp" <<'PY'
@@ -175,6 +187,7 @@ optional = {
     "compose_file": "COMPOSE_FILE",
     "cli_path": "CLI_PATH",
     "health_url": "HEALTH_URL",
+    "runtime": "RUNTIME",
 }
 for field, env_name in optional.items():
     value = (os.environ.get(env_name) or "").strip()
@@ -201,6 +214,7 @@ PY
       [[ -n "$compose_file" ]] && printf '  "compose_file": "%s",\n' "$compose_file"
       [[ -n "$cli_path" ]] && printf '  "cli_path": "%s",\n' "$cli_path"
       [[ -n "$health_url" ]] && printf '  "health_url": "%s",\n' "$health_url"
+      [[ -n "$runtime" ]] && printf '  "runtime": "%s",\n' "$runtime"
       printf '  "installed_at": "%s"\n' "$installed_at"
       printf '}\n'
     } >"$tmp"
