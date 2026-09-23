@@ -12,6 +12,36 @@ workflow, treat it as beta or development guidance until the matching acceptance
 
 ---
 
+## What changed for operators
+
+Native installs (quick-install and packages) place a **hermetic runtime** under
+`/opt/circuitbreaker/`: a pinned Python interpreter plus the application. The
+`circuit-breaker` command is a launcher into that tree; on package hosts
+`/usr/local/bin/circuit-breaker` is a symlink. The mono Docker image is built
+from the same pins and must share the same `runtime_digest`.
+
+## What to do
+
+Install and upgrade as before — [Quick Install](quick-install.md),
+`install.sh --upgrade` / `cb update`, or your package manager. No new
+operator steps for the hermetic cutover.
+
+## Rollback
+
+`python.prev` exists only until `/readyz` succeeds after an upgrade. After
+that, restore the pre-upgrade dump with
+`/opt/circuitbreaker/deploy/scripts/restore.sh` (or `circuit-breaker-rollback`
+on package hosts) and reinstall the previous release. Details:
+[Upgrading — Rollback](upgrading.md#rollback).
+
+## Release channels
+
+`install.sh --channel stable|candidate`, and Docker tags `:candidate` /
+`:nightly`, select which published artifacts you pull. Only **stable** is
+production-supported. See [Upgrading — Release channels](upgrading.md#release-channels).
+
+---
+
 ## System Requirements
 
 | Requirement | Minimum | Enforced how |

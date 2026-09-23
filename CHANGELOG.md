@@ -28,6 +28,11 @@ release gate was green, because the only thing any of them executed was
 before the application is ever imported. The artifact was signed, attested,
 SBOM'd, scanned and version-parity-checked, and empty.
 
+This unreleased cut also replaces that PyInstaller onefile with a hermetic
+python-build-standalone tree shared by the tarball, packages and mono image,
+adds stage/activate/rollback for upgrades, and publishes through
+nightly → candidate → stable channels (tag last).
+
 ### Fixed
 
 - The native binary contains the application again. Verified by archive
@@ -50,6 +55,15 @@ SBOM'd, scanned and version-parity-checked, and empty.
 
 ### Added
 
+- Hermetic native runtime: a pinned python-build-standalone tree under
+  `/opt/circuitbreaker/` (own interpreter, wheels, launcher). Packages symlink
+  `/usr/local/bin/circuit-breaker` into that tree; the mono image rebuilds from
+  the same pins and must share `runtime_digest`.
+- Installer stage → activate → verify → finalise, with `python.prev` held until
+  `/readyz` succeeds; `install.sh --channel stable|candidate`; uninstall via
+  install-identity on both layouts.
+- Release channels: `:nightly` from green `dev`, draft `candidate`, and
+  `stable` promote that retags the same digest (tag created last).
 - `circuit-breaker --selftest` resolves the ASGI target the way uvicorn does
   and imports every worker module and the migration entrypoint. It needs no
   database, broker or network. The build refuses to stage a binary that fails

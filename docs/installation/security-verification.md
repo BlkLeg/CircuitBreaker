@@ -2,6 +2,32 @@
 
 Run after installation or upgrades to confirm artifact provenance, non-root operation, and security hardening.
 
+## What changed for operators
+
+Native installs ship a hermetic runtime under `/opt/circuitbreaker/` (own
+Python, application, wheels). `circuit-breaker` is a launcher;
+`/usr/local/bin/circuit-breaker` on package hosts is a symlink into that tree.
+Provenance for the tree lives in `share/build-info.json` alongside the usual
+checksums and signatures.
+
+## What to do
+
+Verify checksums and signatures as before, then optionally cross-check the
+`build-info.json` fields below. Upgrades need no extra verification steps —
+`install.sh --upgrade` / `cb update` still verify the bundle they fetch.
+
+## Rollback
+
+If an upgrade fails health checks, `python.prev` is kept until `/readyz`
+succeeds; restore with `restore.sh` / `circuit-breaker-rollback` as in
+[Upgrading — Rollback](upgrading.md#rollback).
+
+## Release channels
+
+`--channel candidate` and the `:candidate` / `:nightly` image tags are opt-in;
+stable remains the default. Draft candidates are not fetched by unauthenticated
+`install.sh`.
+
 ## Artifact Verification
 
 Every release ships checksums, GPG signatures, SBOMs, and a cosign signature on the container image.
@@ -18,6 +44,29 @@ sha256sum -c SHA256SUMS
 ```
 
 Each individual artifact also has its own detached `.asc` signature.
+
+### `build-info.json` (hermetic runtime)
+
+After install, `/opt/circuitbreaker/share/build-info.json` (also linked from
+`/usr/local/share/circuit-breaker/build-info.json` on package hosts) records
+what the tree was built from. Operators can check:
+
+| Field | What to compare |
+|---|---|
+| `runtime` | Must be `"pbs"` for a hermetic install (legacy PyInstaller installs omit it or differ). |
+| `pbs_release` | The python-build-standalone release tag the build pinned. |
+| `pbs_sha256` | Must match the distributor's `.sha256` sidecar for that PBS asset (the pin file records the same digests). |
+| `runtime_digest` | Must match the published mono image's `build-info.json` for the same version/arch — CI asserts this with `scripts/ci/assert_runtime_parity.py`. |
+
+```bash
+python3 -m json.tool /opt/circuitbreaker/share/build-info.json
+```
+
+Inside a running mono container:
+
+```bash
+docker compose exec circuitbreaker cat /opt/circuitbreaker/share/build-info.json
+```
 
 ### Container image
 
