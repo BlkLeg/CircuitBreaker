@@ -1513,9 +1513,16 @@ stage0_download_bundle() {
   tar -xzf "$CB_BUNDLE_TARBALL" -C /tmp/cb-bundle --no-same-owner --no-same-permissions \
     || cb_fail "Bundle extraction failed" "Tarball may be corrupted: $CB_BUNDLE_TARBALL — re-run to re-download"
   CB_BUNDLE_DIR="/tmp/cb-bundle"
-  if [[ ! -x "${CB_BUNDLE_DIR}/bin/circuit-breaker" || ! -x "${CB_BUNDLE_DIR}/python/bin/python3" ]]; then
-    cb_fail "Bundle is missing the application runtime (bin/circuit-breaker and python/)" \
-      "This installer needs a bundle built with --packaging pbs (every release from v$(cat "${CB_BUNDLE_DIR}/share/VERSION" 2>/dev/null || echo 0.5.0) on). Check the release assets for v${CB_VERSION:-unknown}"
+  # PBS is the release layout. PyInstaller onefile (root-level binary, no
+  # python/) stays installable for one cycle so the journey can prove the
+  # upgrade every existing native host will perform; Task 8 removes it.
+  if [[ -x "${CB_BUNDLE_DIR}/bin/circuit-breaker" && -x "${CB_BUNDLE_DIR}/python/bin/python3" ]]; then
+    :
+  elif [[ -f "${CB_BUNDLE_DIR}/circuit-breaker" ]]; then
+    :
+  else
+    cb_fail "Bundle is missing the application runtime" \
+      "Expected either bin/circuit-breaker + python/bin/python3 (PBS) or a root-level circuit-breaker binary (PyInstaller). Check the release assets for v${CB_VERSION:-unknown}"
   fi
   cb_ok "Bundle extracted"
 }
@@ -1530,21 +1537,34 @@ stage0_install_bundle() {
   mkdir -p /opt/circuitbreaker/deploy
   mkdir -p /opt/circuitbreaker/scripts
 
-  # Stage the runtime, never overwrite it here. On an upgrade the old services
-  # are still running at this point — run_upgrade stops them later — and
-  # replacing python/ underneath a live interpreter is the same class of fault
-  # as the binary swap this used to do. cb_activate_runtime_tree (deploy/setup.sh)
-  # moves the staged tree into place after the stop and keeps the previous one
-  # as python.prev until /readyz answers.
-  cb_step "Staging application runtime"
-  rm -rf /opt/circuitbreaker/.staging
-  mkdir -p /opt/circuitbreaker/.staging
-  cp -a "${CB_BUNDLE_DIR}/python" /opt/circuitbreaker/.staging/python \
-    || cb_fail "Failed to stage the runtime" "Check disk space: df -h /opt"
-  cp -a "${CB_BUNDLE_DIR}/bin" /opt/circuitbreaker/.staging/bin \
-    || cb_fail "Failed to stage the launcher" "Check disk space: df -h /opt"
-  chown -R root:root /opt/circuitbreaker/.staging
-  cb_ok "Runtime staged ($(du -sh /opt/circuitbreaker/.staging/python | cut -f1))"
+  if [[ -x "${CB_BUNDLE_DIR}/python/bin/python3" ]]; then
+    # Stage the PBS runtime, never overwrite it here. On an upgrade the old
+    # services are still running at this point — run_upgrade stops them later —
+    # and replacing python/ underneath a live interpreter is the same class of
+    # fault as the binary swap this used to do. cb_activate_runtime_tree
+    # (deploy/setup.sh) moves the staged tree into place after the stop and
+    # keeps the previous one as python.prev until /readyz answers.
+    cb_step "Staging application runtime"
+    rm -rf /opt/circuitbreaker/.staging
+    mkdir -p /opt/circuitbreaker/.staging
+    cp -a "${CB_BUNDLE_DIR}/python" /opt/circuitbreaker/.staging/python \
+      || cb_fail "Failed to stage the runtime" "Check disk space: df -h /opt"
+    cp -a "${CB_BUNDLE_DIR}/bin" /opt/circuitbreaker/.staging/bin \
+      || cb_fail "Failed to stage the launcher" "Check disk space: df -h /opt"
+    chown -R root:root /opt/circuitbreaker/.staging
+    cb_ok "Runtime staged ($(du -sh /opt/circuitbreaker/.staging/python | cut -f1))"
+  else
+    # PyInstaller onefile: binary lands at the live path immediately. There is
+    # no python/ tree to stage, and the upgrade journey's --previous leg relies
+    # on this layout as the starting state.
+    cb_step "Installing binary"
+    rm -rf /opt/circuitbreaker/.staging
+    cp -f "${CB_BUNDLE_DIR}/circuit-breaker" /opt/circuitbreaker/bin/circuit-breaker \
+      || cb_fail "Failed to install binary" "Check disk space: df -h /opt"
+    chmod 755 /opt/circuitbreaker/bin/circuit-breaker
+    chown root:root /opt/circuitbreaker/bin/circuit-breaker
+    cb_ok "Binary installed to /opt/circuitbreaker/bin/"
+  fi
 
   # Copy share assets (frontend, backend/migrations, VERSION, etc.)
   cb_step "Installing application assets"

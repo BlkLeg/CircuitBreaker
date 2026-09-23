@@ -16,12 +16,32 @@ on:
       - 'scripts/ci/installer-journey.sh'
       - '.github/workflows/installer-journey.yml'
   workflow_dispatch:
+    inputs:
+      previous_release:
+        description: >-
+          Tag of the release to upgrade FROM in the upgrade leg (e.g. v0.4.3).
+          Empty builds the previous bundle in this job with --packaging onefile,
+          which is only possible while PyInstaller is still in the tree (Task 8
+          of the 2026-09-22 plan pins a tag here when it removes it).
+        required: false
+        type: string
+        default: ""
   # Called by release-dry-run.yml, so a release candidate can be put through
   # the whole install matrix before a tag exists. The pull_request trigger
   # above is path-filtered, which is right for day-to-day work and wrong for a
   # release: a candidate whose installer inputs did not change still has to be
   # installed before it ships.
   workflow_call:
+    inputs:
+      previous_release:
+        description: >-
+          Tag of the release to upgrade FROM in the upgrade leg (e.g. v0.4.3).
+          Empty builds the previous bundle in this job with --packaging onefile,
+          which is only possible while PyInstaller is still in the tree (Task 8
+          of the 2026-09-22 plan pins a tag here when it removes it).
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -53,14 +73,26 @@ jobs:
       - name: Install build dependencies
         run: bash scripts/install-build-deps.sh
 
-      - name: Build the candidate bundle
+      - name: Build the candidate bundle (and the previous one)
+        env:
+          PREVIOUS_RELEASE: ${{ inputs.previous_release }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           python3 -m venv .venv
           .venv/bin/pip install -r apps/backend/requirements.txt
           cd apps/frontend && npm ci && npm run build && cd -
           .venv/bin/python scripts/build_native_release.py --version "$(cat VERSION)"
-          ls -lh dist/native/
+          mkdir -p previous
+          if [ -n "${PREVIOUS_RELEASE}" ]; then
+            gh release download "${PREVIOUS_RELEASE}" --repo "${GITHUB_REPOSITORY}" \
+              --pattern 'circuit-breaker_*_linux_amd64.tar.gz' --dir previous
+          else
+            .venv/bin/pip install pyinstaller
+            .venv/bin/python scripts/build_native_release.py --version "$(cat VERSION)" \
+              --packaging onefile --output-dir previous
+          fi
+          ls -lh dist/native/ previous/
 
       # systemd as PID 1, which install.sh needs and a default runner container
       # does not have. podman rather than docker because it runs systemd inside
@@ -228,14 +260,17 @@ jobs:
         run: |
           set -euo pipefail
           BUNDLE="$(ls dist/native/circuit-breaker_*_linux_amd64.tar.gz | head -1)"
+          PREVIOUS="$(ls previous/circuit-breaker_*_linux_amd64.tar.gz | head -1)"
           sudo podman exec cb-journey bash -c "
             set -euo pipefail
             mkdir -p /candidate
             cp '/workspace/${BUNDLE}' /candidate/
+            cp '/workspace/${PREVIOUS}' /candidate/previous.tar.gz
             cp /workspace/install.sh /candidate/
             cd /candidate
             bash /workspace/scripts/ci/installer-journey.sh \
-              \"/candidate/\$(basename '${BUNDLE}')\"
+              \"/candidate/\$(basename '${BUNDLE}')\" \
+              --previous /candidate/previous.tar.gz
           "
 
       - name: Collect evidence

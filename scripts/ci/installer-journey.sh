@@ -13,10 +13,19 @@
 # One file, run identically in CI and locally, because a journey that only
 # exists as workflow YAML cannot be reproduced when it fails.
 #
-# Usage: installer-journey.sh <bundle.tar.gz>
+# Usage: installer-journey.sh <bundle.tar.gz> [--previous <bundle.tar.gz>]
 set -euo pipefail
 
-BUNDLE="${1:?usage: installer-journey.sh <bundle.tar.gz>}"
+usage() { echo "usage: $0 <bundle.tar.gz> [--previous <bundle.tar.gz>]" >&2; exit 2; }
+BUNDLE="${1:-}"; [ -n "$BUNDLE" ] || usage
+shift
+PREVIOUS=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --previous) [ $# -ge 2 ] || usage; PREVIOUS="$2"; shift 2 ;;
+    *) usage ;;
+  esac
+done
 # 8088 is nginx's front port (install.sh:40 CB_PORT), and nginx proxies
 # `location /api/` to the backend on 127.0.0.1:8000
 # (deploy/systemd/circuitbreaker-backend.service:39 forces --port 8000).
@@ -110,6 +119,9 @@ fail() {
   exit 1
 }
 
+[ -f "$BUNDLE" ] || fail "no bundle at $BUNDLE"
+[ -z "$PREVIOUS" ] || [ -f "$PREVIOUS" ] || fail "no previous bundle at $PREVIOUS"
+
 # The value of one key in .env, without sourcing the file. Sourcing would run
 # whatever is in there, and this script reads it while asserting things about
 # how it was rendered.
@@ -126,6 +138,34 @@ wait_for_ready() {
   echo "$code"
   return 1
 }
+
+if [ -n "$PREVIOUS" ]; then
+  # ───────────────────────────────────────────────────────────────────────────
+  section "Install the PREVIOUS release first (upgrade leg)"
+  # The upgrade every existing native host will perform: the PyInstaller
+  # binary at /opt/circuitbreaker/bin/circuit-breaker, replaced in place by the
+  # runtime tree. Everything the fresh-install path asserts below is asserted
+  # again after the upgrade; this block only establishes the starting state.
+  set +e
+  bash install.sh --local-bundle "$PREVIOUS" --unattended --no-tls \
+    > "$EVIDENCE/previous-install-stdout.log" 2>&1
+  PREV_RC=$?
+  set -e
+  cat "$EVIDENCE/previous-install-stdout.log"
+  [ "$PREV_RC" -eq 0 ] || fail "installing the previous release exited $PREV_RC"
+  READY_CODE="$(wait_for_ready "$READY_BUDGET")" \
+    || fail "the previous release never became ready (last /readyz was $READY_CODE)"
+  # jq, not python3: Arch base images ship no Python (see bootstrap status
+  # below). Absent runtime and "pyinstaller" are both a valid pre-PBS host.
+  PREV_RUNTIME="$(jq -r '.runtime // empty' /etc/circuitbreaker/install-identity.json 2>/dev/null || true)"
+  case "$PREV_RUNTIME" in
+    ""|pyinstaller) ;;
+    *) fail "the previous release does not look like a PyInstaller install (runtime=${PREV_RUNTIME})" ;;
+  esac
+  [ ! -d /opt/circuitbreaker/python ] || fail "the previous bundle already carries a runtime tree; this is not an upgrade test"
+  PREVIOUS_VERSION="$(cat /opt/circuitbreaker/share/VERSION)"
+  echo "previous release ${PREVIOUS_VERSION} installed and ready; upgrading"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "Install from the staged bundle"
@@ -144,21 +184,45 @@ set -e
 cat "$EVIDENCE/install-stdout.log"
 [ "$INSTALL_RC" -eq 0 ] || fail "install.sh exited $INSTALL_RC"
 
+if [ -n "$PREVIOUS" ]; then
+  # cb_step lines go to the install log, not the captured stdout (plain mode
+  # only prints phase begin/end on the terminal). Phases below are stdout.
+  grep -qF "Activating application runtime" /var/lib/circuitbreaker/logs/install.log \
+    || fail "the upgrade never activated the runtime tree"
+  [ -x /opt/circuitbreaker/bin/circuit-breaker.prev ] && fail "rollback copy left behind after a healthy upgrade" || true
+  [ "$(cat /opt/circuitbreaker/share/VERSION)" != "$PREVIOUS_VERSION" ] || [ "$PREVIOUS_VERSION" = "$(cat /workspace/VERSION 2>/dev/null || echo)" ] \
+    || fail "share/VERSION still reports the previous release after the upgrade"
+fi
+
 section "Assert the installer reported every phase"
 # --unattended selects the renderer's plain mode, which prints one timestamped
 # line per phase transition. The final phase is the one that proves the run
 # reached the end rather than exiting early with status 0 from a subshell.
-for phase in \
-  "Pre-flight checks" \
-  "Downloading bundle" \
-  "Installing files" \
-  "System dependencies" \
-  "Preparing database" \
-  "Services and networking" \
-  "Starting Circuit Breaker"; do
-  grep -qF "$phase" "$EVIDENCE/install-stdout.log" \
-    || fail "installer never reported the phase: $phase"
-done
+if [ -n "$PREVIOUS" ]; then
+  for phase in \
+    "Pre-flight checks" \
+    "Creating pre-upgrade backup" \
+    "Installing new version" \
+    "Applying configuration and migrations" \
+    "Restarting Circuit Breaker"; do
+    grep -qF "$phase" "$EVIDENCE/install-stdout.log" \
+      || fail "installer never reported the phase: $phase"
+  done
+  grep -qF "Activating application runtime" /var/lib/circuitbreaker/logs/install.log \
+    || fail "installer never reported the phase: Activating application runtime"
+else
+  for phase in \
+    "Pre-flight checks" \
+    "Downloading bundle" \
+    "Installing files" \
+    "System dependencies" \
+    "Preparing database" \
+    "Services and networking" \
+    "Starting Circuit Breaker"; do
+    grep -qF "$phase" "$EVIDENCE/install-stdout.log" \
+      || fail "installer never reported the phase: $phase"
+  done
+fi
 
 section "Wait for /livez"
 for _ in $(seq 1 60); do

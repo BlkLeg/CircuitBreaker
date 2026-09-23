@@ -21,13 +21,16 @@ def test_install_checks_for_the_tree_not_a_root_binary() -> None:
     body = _function(INSTALL, "stage0_download_bundle")
     assert '"${CB_BUNDLE_DIR}/bin/circuit-breaker"' in body
     assert '"${CB_BUNDLE_DIR}/python/bin/python3"' in body
-    assert '"${CB_BUNDLE_DIR}/circuit-breaker"' not in body
+    # PyInstaller onefile stays installable for the upgrade journey until Task 8.
+    assert '"${CB_BUNDLE_DIR}/circuit-breaker"' in body
 
 
 def test_install_stages_rather_than_overwrites_the_runtime() -> None:
     body = _function(INSTALL, "stage0_install_bundle")
     assert "/opt/circuitbreaker/.staging" in body
-    assert "cp -f \"${CB_BUNDLE_DIR}/circuit-breaker\" /opt/circuitbreaker/bin/circuit-breaker" not in body
+    # PBS stages; the PyInstaller branch still copies the root binary so
+    # --previous can establish a pre-PBS host.
+    assert "cp -f \"${CB_BUNDLE_DIR}/circuit-breaker\" /opt/circuitbreaker/bin/circuit-breaker" in body
     assert "/opt/circuitbreaker/python" not in body.replace("/opt/circuitbreaker/.staging", ""), (
         "the live python/ directory is only ever touched by cb_activate_runtime_tree, after services stop"
     )
@@ -51,7 +54,10 @@ def test_activation_keeps_a_rollback_copy_until_health() -> None:
 
 
 def test_identity_records_the_runtime() -> None:
-    assert "runtime=pbs" in _function(SETUP, "stage9_write_install_identity")
+    body = _function(SETUP, "stage9_write_install_identity")
+    assert "runtime=pbs" in body or 'runtime="$runtime"' in body
+    assert "runtime=pyinstaller" in body or 'runtime="$runtime"' in body
+    assert "/opt/circuitbreaker/python/bin/python3" in body
 
 
 def test_channel_flag_exists_and_defaults_to_stable() -> None:

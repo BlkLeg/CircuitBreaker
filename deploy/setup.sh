@@ -1437,7 +1437,16 @@ cb_finalise_runtime_tree() {
 stage6_apply_binary() {
   cb_section "Application Runtime"
 
-  cb_activate_runtime_tree
+  if [[ -d /opt/circuitbreaker/.staging ]]; then
+    cb_activate_runtime_tree
+  else
+    # Fresh PyInstaller install already placed the binary at
+    # /opt/circuitbreaker/bin/circuit-breaker; there is nothing to activate.
+    [[ -x /opt/circuitbreaker/bin/circuit-breaker ]] \
+      || cb_fail "No application binary at /opt/circuitbreaker/bin/circuit-breaker" \
+                 "The files phase did not complete — re-run the installer"
+    cb_ok "Binary already installed (PyInstaller layout)"
+  fi
 
   cb_step "Setting binary permissions"
   chmod 755 /opt/circuitbreaker/bin/circuit-breaker
@@ -1693,9 +1702,13 @@ stage9_write_install_identity() {
   # shellcheck source=/dev/null
   source "$identity_lib"
   local services="circuitbreaker-postgres,circuitbreaker-pgbouncer,circuitbreaker-redis,circuitbreaker-nats,circuitbreaker-backend,nginx"
+  local runtime=pyinstaller
+  if [[ -x /opt/circuitbreaker/python/bin/python3 ]]; then
+    runtime=pbs
+  fi
   if write_install_identity /etc/circuitbreaker/install-identity.json \
     mode=native \
-    runtime=pbs \
+    runtime="$runtime" \
     version="$version" \
     config_path=/etc/circuitbreaker/.env \
     data_dir="${CB_DATA_DIR:-/var/lib/circuitbreaker}" \
