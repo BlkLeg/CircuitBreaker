@@ -41,9 +41,13 @@ cb_find_install_identity() {
 # Returns 1 when nothing is in the way, which means the identity really is not
 # installed.
 #
-# /etc/circuitbreaker is root:breaker:0750. An unprivileged caller gets EACCES
-# on the directory, so `[[ -f ... ]]` on the file inside it is false for exactly
-# the same reason it would be false on a host with no install at all. The two
+# /etc/circuitbreaker is root:breaker:0755 by default (world-traversable, so
+# install-identity.json — 0644, no secrets — is readable without sudo), but a
+# host can still end up with a tighter mode: an admin who hardens it further,
+# a restrictive umask on a hand-rolled install, an NFS-mounted /etc with its
+# own ACLs. When that happens, an unprivileged caller gets EACCES on the
+# directory, so `[[ -f ... ]]` on the file inside it is false for exactly the
+# same reason it would be false on a host with no install at all. The two
 # cases need opposite advice — "run it with sudo" versus "run the installer" —
 # and the search alone cannot tell them apart. The directory itself is still
 # stattable, because /etc is world-executable, so this can.

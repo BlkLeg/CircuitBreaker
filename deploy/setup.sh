@@ -168,9 +168,9 @@ stage1_bootstrap() {
 
   # Create directory structure
   cb_step "Creating directory structure"
-  echo "    Application: /opt/circuitbreaker"
-  echo "    Data: ${CB_DATA_DIR}"
-  echo "    Config: /etc/circuitbreaker"
+  cb_detail "Application: /opt/circuitbreaker"
+  cb_detail "Data: ${CB_DATA_DIR}"
+  cb_detail "Config: /etc/circuitbreaker"
   
   declare -A DIRS=(
     ["/opt/circuitbreaker"]="root:root:755"
@@ -196,7 +196,17 @@ stage1_bootstrap() {
     ["${CB_DATA_DIR}/tmp"]="breaker:breaker:700"
     ["${CB_DATA_DIR}/logs"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/backups"]="breaker:breaker:755"
-    ["/etc/circuitbreaker"]="root:breaker:750"
+    # World-traversable on purpose: install-identity.json (0644, no secrets —
+    # see deploy/lib/install-identity.sh) lives here, and `cb info`/`cb
+    # status`/`cb doctor` read it to report on the install at all. At 0750
+    # this directory itself blocked that traversal for the operator who ran
+    # the installer, forcing `sudo cb <anything>` even to check whether the
+    # app was up — unworkable for a homelab tool nobody wants to sudo into
+    # for routine use. The files that actually hold secrets (.env,
+    # docker-proxy.env, helper.conf) are unaffected: each is 0640 root:breaker
+    # in its own right, so a directory listing does not make them readable —
+    # `stat`/`ls` show the name, not the contents.
+    ["/etc/circuitbreaker"]="root:breaker:755"
     ["/etc/nats"]="root:root:755"
     ["/etc/pgbouncer"]="root:root:755"
   )
@@ -636,7 +646,7 @@ stage3_configure_postgres() {
   mkdir -p "${CB_DATA_DIR}/postgres"
   chown postgres:postgres "${CB_DATA_DIR}/postgres"
   chmod 700 "${CB_DATA_DIR}/postgres"
-  echo "    Data directory: ${CB_DATA_DIR}/postgres (postgres:postgres 700)"
+  cb_detail "Data directory: ${CB_DATA_DIR}/postgres (postgres:postgres 700)"
   cb_ok "PostgreSQL data directory created"
   
   # Initialize database
@@ -737,7 +747,7 @@ stage3_configure_pgbouncer() {
   # Compute MD5 hash - CRITICAL: format is md5(password+username)
   cb_step "Configuring pgbouncer connection pooler"
   export pgbouncer_hash=$(echo -n "${CB_DB_PASSWORD}breaker" | md5sum | cut -d' ' -f1)
-  echo "    Pool port: 6432, Backend: PostgreSQL 5432"
+  cb_detail "Pool port: 6432, Backend: PostgreSQL 5432"
   
   mkdir -p /etc/pgbouncer
   
@@ -857,12 +867,12 @@ stage3_configure_redis() {
   mkdir -p "${CB_DATA_DIR}/redis"
   chown "${CB_REDIS_USER}:${CB_REDIS_USER}" "${CB_DATA_DIR}/redis"
   chmod 755 "${CB_DATA_DIR}/redis"
-  echo "    Redis data: ${CB_DATA_DIR}/redis (${CB_REDIS_USER}:${CB_REDIS_USER})"
+  cb_detail "Redis data: ${CB_DATA_DIR}/redis (${CB_REDIS_USER}:${CB_REDIS_USER})"
 
   cb_render_template "/opt/circuitbreaker/deploy/config/redis.conf" "/etc/redis/redis.conf"
   chown "${CB_REDIS_USER}:${CB_REDIS_USER}" /etc/redis/redis.conf
   chmod 640 /etc/redis/redis.conf
-  echo "    Port: 6379, Max memory: 256MB, Policy: allkeys-lru"
+  cb_detail "Port: 6379, Max memory: 256MB, Policy: allkeys-lru"
   cb_ok "Configuration written"
   
   # Start Redis
@@ -919,7 +929,7 @@ stage3_configure_nats() {
   
   chown breaker:breaker /etc/nats/nats.conf
   chmod 640 /etc/nats/nats.conf
-  echo "    Port: 4222, Store: ${CB_DATA_DIR}/nats"
+  cb_detail "Port: 4222, Store: ${CB_DATA_DIR}/nats"
   cb_ok "Configuration written"
   
   # Start NATS
@@ -1246,8 +1256,8 @@ EOF
 write_wait_for_services_script() {
   cb_section "Creating Service Health Check Script"
   cb_step "Writing wait-for-services.sh"
-  echo "    Location: /opt/circuitbreaker/scripts/wait-for-services.sh"
-  echo "    Purpose: Pre-start verification for backend API"
+  cb_detail "Location: /opt/circuitbreaker/scripts/wait-for-services.sh"
+  cb_detail "Purpose: Pre-start verification for backend API"
   
   mkdir -p /opt/circuitbreaker/scripts
   
@@ -1280,8 +1290,8 @@ write_service_scripts() {
 stage4_write_systemd_units() {
   cb_section "Writing systemd Service Units"
   cb_step "Creating systemd unit files"
-  echo "    All services will log to systemd journal"
-  echo "    View with: journalctl -u circuitbreaker-<service>"
+  cb_detail "All services will log to systemd journal"
+  cb_detail "View with: journalctl -u circuitbreaker-<service>"
 
   # Detect Redis user for templating (Arch uses 'redis', Debian uses 'redis', some RHEL might use '_redis').
   # Self-heal: the redis-server binary can be present while its postinst
@@ -1570,8 +1580,8 @@ stage8_start_services() {
 stage9_install_cb_cli() {
   cb_section "Installing Management CLI"
   cb_step "Installing cb command-line tool"
-  echo "    Location: /usr/local/bin/cb"
-  echo "    Commands: info, status, doctor, logs, restart, backup, update, version, uninstall"
+  cb_detail "Location: /usr/local/bin/cb"
+  cb_detail "Commands: info, status, doctor, logs, restart, backup, update, version, uninstall"
 
   # Canonical CLI is the repo-root `cb`. Bundles stage it under deploy/cli/cb
   # (same file, or a thin wrapper); prefer the shared implementation when both
@@ -1603,7 +1613,7 @@ stage9_install_cb_cli() {
     if cp /opt/circuitbreaker/uninstall.sh /usr/local/bin/uninstall-circuit-breaker \
       && chmod 755 /usr/local/bin/uninstall-circuit-breaker \
       && chown root:root /usr/local/bin/uninstall-circuit-breaker; then
-      echo "    Uninstaller: /usr/local/bin/uninstall-circuit-breaker (or: cb uninstall)"
+      cb_detail "Uninstaller: /usr/local/bin/uninstall-circuit-breaker (or: cb uninstall)"
     else
       cb_warn "Uninstaller could not be installed — remove with: bash uninstall.sh"
     fi
@@ -1664,7 +1674,17 @@ stage10_final_output() {
   source /etc/circuitbreaker/.env
   local detected_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
   local version=$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null || echo "unknown")
-  
+
+  # cb_section routes through cb_detail, which only reaches the screen in
+  # --verbose mode — right for the sub-narration it is used for everywhere
+  # else in this file, but wrong here: in the two modes most installs
+  # actually run in (plain, tty), the single line that says the install
+  # SUCCEEDED never printed at all, and the operator was left to infer
+  # success from the absence of an error. Print it unconditionally, in every
+  # mode, before the quieter section label.
+  echo ""
+  echo -e "  ${GREEN}${BOLD}✓  SUCCESS — Circuit Breaker is running!${RESET}"
+
   cb_section "Circuit Breaker is running!"
   echo ""
   
@@ -1826,7 +1846,7 @@ cb_airgap_find_pg_bin_dir() {
 # loop once per dependency.
 cb_airgap_verify_dependencies() {
   cb_section "Verifying Dependencies (air-gap)"
-  echo "    Air-gap mode: nothing will be installed or downloaded."
+  cb_detail "Air-gap mode: nothing will be installed or downloaded."
 
   local missing=()
   local tool
@@ -1853,6 +1873,12 @@ cb_airgap_verify_dependencies() {
 
   if (( ${#missing[@]} > 0 )); then
     cb_warn "Air-gap install needs these already present, and they are not:"
+    # cb_warn's tty branch redraws the live bar on its way out, so the raw
+    # `echo` lines below need the region torn down again right here — not
+    # once at cb_fail's own teardown, by which point cb_warn already
+    # re-armed it and these lines would corrupt the blind two-line rewind
+    # exactly like the mid-phase echoes this whole function used to have.
+    declare -f cb_ui_teardown >/dev/null 2>&1 && cb_ui_teardown
     for tool in "${missing[@]}"; do
       case "$tool" in
         postgresql-15)
@@ -1875,8 +1901,8 @@ cb_airgap_verify_dependencies() {
             "Install the packages above from your local mirror or media, then re-run"
   fi
 
-  echo "    PostgreSQL: $PG_BIN_DIR"
-  echo "    NATS: $(command -v nats-server)"
+  cb_detail "PostgreSQL: $PG_BIN_DIR"
+  cb_detail "NATS: $(command -v nats-server)"
 
   # Container telemetry is optional everywhere. In air-gap it additionally
   # requires the proxy image to be on the host already, because pulling it is an
@@ -1885,7 +1911,7 @@ cb_airgap_verify_dependencies() {
   if command -v docker &>/dev/null \
      && docker image inspect tecnativa/docker-socket-proxy:latest &>/dev/null; then
     DOCKER_AVAILABLE=true
-    echo "    Docker: present, docker-socket-proxy image already local"
+    cb_detail "Docker: present, docker-socket-proxy image already local"
   else
     DOCKER_AVAILABLE=false
     cb_warn "Container telemetry disabled — air-gap needs Docker plus a preloaded"
@@ -2048,7 +2074,7 @@ stage2_dependencies() {
     cb_fail "PostgreSQL 15 verification failed" "Check: $PG_BIN_DIR/pg_ctl --version"
   fi
   local pg_version=$("$PG_BIN_DIR/pg_ctl" --version | grep -oP '\d+\.\d+' | head -1)
-  echo "    Binary path: $PG_BIN_DIR"
+  cb_detail "Binary path: $PG_BIN_DIR"
   cb_ok "PostgreSQL ${pg_version} installed"
 
   # Group 4: pgbouncer, Redis, Nginx
@@ -2159,7 +2185,7 @@ stage2_dependencies() {
   if ! /usr/local/bin/nats-server --version &>/dev/null; then
     cb_fail "NATS Server verification failed" "Check: /usr/local/bin/nats-server --version"
   fi
-  echo "    Install path: /usr/local/bin/nats-server"
+  cb_detail "Install path: /usr/local/bin/nats-server"
   cb_ok "NATS Server ${nats_version} installed"
 
   # Docker detection — enables container telemetry proxy when Docker is present
@@ -2244,6 +2270,16 @@ run_upgrade() {
     # The path is /opt/circuitbreaker/deploy/scripts/restore.sh because that is where
     # the bundle puts it (scripts/build_native_release.py copies deploy/scripts into the
     # release tarball, mode intact) — the same layout this upgrade just installed.
+    #
+    # This must stay visible in every mode, not just --verbose: it is the only
+    # place the rollback command is ever shown, and an operator recovering from
+    # a failed upgrade a few phases from now needs it on screen, not buried in
+    # a log they have to know to go find. Printed as raw output, so the live
+    # region has to be torn down first — the same discipline cb_header,
+    # stage10_final_output and uninstall.sh's closing banner already follow;
+    # see the comment on _cb_live_clear for why the renderer can't protect
+    # itself from an unguarded raw echo landing mid-phase.
+    declare -f cb_ui_teardown >/dev/null 2>&1 && cb_ui_teardown
     echo "    Roll back with: sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${backup_file}"
   else
     cb_warn "Database not running - skipping backup"

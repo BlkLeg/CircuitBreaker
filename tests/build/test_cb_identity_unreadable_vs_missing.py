@@ -1,9 +1,15 @@
 """An install the caller cannot read is not an install that is missing.
 
-`/etc/circuitbreaker` is root:breaker:0750 (deploy/setup.sh's DIRS table), and
-the identity file inside it is 0644. An unprivileged caller therefore gets
-EACCES on the *directory*, so every `[[ -f ... ]]` against the file is false —
-byte-for-byte indistinguishable from a host that has never been installed.
+`/etc/circuitbreaker` defaults to root:breaker:0755 (deploy/setup.sh's DIRS
+table) precisely so an unprivileged caller CAN traverse it and read the
+identity file (0644) without sudo — see the comment on that table entry. But
+the directory can still end up tighter than that on some hosts (manual
+hardening, a restrictive umask, an NFS mount's own ACLs), and when it does, an
+unprivileged caller gets EACCES on the *directory*, so every `[[ -f ... ]]`
+against the file is false — byte-for-byte indistinguishable from a host that
+has never been installed. This is what the tests below simulate directly,
+with a synthetic 0o000 directory rather than depending on the real installer's
+default.
 
 `cb doctor` used to report that as:
 

@@ -86,6 +86,13 @@ _CB_OPEN_TICKS_DONE=0
 _CB_DONE_WEIGHT=0
 _CB_LAST_ETA=-1
 _CB_ETA_TEXT=""
+# Seconds a whole flow is expected to take, real-world, or 0 when no such
+# number has been measured for the live table. Set by cb_ui_use_weights'
+# optional second argument alongside the weights themselves — see the
+# comment on _cb_update_eta for why this exists and why the two flows
+# without a measured number (upgrade, uninstall) simply leave it at 0
+# rather than carry a guessed value.
+_CB_REFERENCE_SECONDS=0
 
 # Phase weights, as percentages of a whole flow. They must sum to 100 and every
 # key used at runtime must appear here; tests/build/test_installer_phase_model.py
@@ -122,17 +129,27 @@ declare -gA CB_PHASE_WEIGHTS_UNINSTALL=(
   [preflight]=10 [stop]=30 [remove]=40 [cleanup]=20
 )
 
+# A real measured median for a cold fresh install, in seconds — see the
+# comment on _cb_update_eta for what this anchors and why. Upgrade and
+# uninstall have no equivalent constant yet: nobody has timed a representative
+# run of either, and a guessed number would just trade one wrong ETA for
+# another. Those two flows fall back to the elapsed-rate estimate instead
+# (cb_ui_use_weights leaves _CB_REFERENCE_SECONDS at 0 when called without a
+# second argument).
+CB_REFERENCE_SECONDS_INSTALL=120
+
 # The live table. cb_ui_use_weights swaps it; the renderer only ever reads this.
 declare -gA CB_PHASE_WEIGHTS=()
 
 cb_ui_use_weights() {
-  local table="$1" key
+  local table="$1" reference_seconds="${2:-0}" key
   local -n _source="$table"
   CB_PHASE_WEIGHTS=()
   for key in "${!_source[@]}"; do
     CB_PHASE_WEIGHTS["$key"]="${_source[$key]}"
   done
-  _cb_log "ui: weights=${table}"
+  _CB_REFERENCE_SECONDS="$reference_seconds"
+  _cb_log "ui: weights=${table} reference_seconds=${reference_seconds}"
 }
 
 declare -ga CB_PHASE_ORDER=(preflight bundle files deps database services start)
@@ -269,7 +286,7 @@ _cb_human_duration() {
 # and _cb_render_eta below is left as a pure printer of the text it leaves in
 # _CB_ETA_TEXT.
 _cb_update_eta() {
-  local pct elapsed remaining open_weight open_elapsed projected_total expected_phase
+  local pct elapsed remaining open_weight open_elapsed projected_total expected_phase expected_elapsed
   pct="$(_cb_overall_percent)"
   elapsed=$(( $(date +%s) - _CB_START_EPOCH ))
 
@@ -287,17 +304,25 @@ _cb_update_eta() {
   if [[ -n "${_CB_OPEN_PHASE}" ]]; then
     open_weight="${CB_PHASE_WEIGHTS[${_CB_OPEN_PHASE}]:-0}"
     open_elapsed=$(( $(date +%s) - _CB_OPEN_START ))
-    # The budget a phase "should" take, projected from a whole-run estimate
-    # rather than from elapsed-so-far. Budgeting off raw `elapsed` collapses
-    # for the phase currently open: elapsed is almost entirely that phase's
-    # own time, so "elapsed * open_weight / 100" is roughly open_elapsed
-    # itself and the overrun ratio trips almost immediately regardless of the
-    # phase's actual weight. Projecting the total run length from the rate
-    # observed so far (elapsed * 100 / pct) and taking this phase's share of
-    # THAT projected total gives a budget that reflects the whole flow, not
-    # just what has happened inside this one phase.
-    projected_total=$(( (elapsed * 100) / pct ))
-    expected_phase=$(( (projected_total * open_weight) / 100 + 1 ))
+    if (( _CB_REFERENCE_SECONDS > 0 )); then
+      # A real measured total exists for this flow — read the phase's budget
+      # straight off it instead of extrapolating one from the rate observed
+      # so far. See the comment on the "remaining" calculation below for why
+      # that extrapolation is the wrong tool once an actual number is known.
+      expected_phase=$(( (_CB_REFERENCE_SECONDS * open_weight) / 100 + 1 ))
+    else
+      # The budget a phase "should" take, projected from a whole-run estimate
+      # rather than from elapsed-so-far. Budgeting off raw `elapsed` collapses
+      # for the phase currently open: elapsed is almost entirely that phase's
+      # own time, so "elapsed * open_weight / 100" is roughly open_elapsed
+      # itself and the overrun ratio trips almost immediately regardless of
+      # the phase's actual weight. Projecting the total run length from the
+      # rate observed so far (elapsed * 100 / pct) and taking this phase's
+      # share of THAT projected total gives a budget that reflects the whole
+      # flow, not just what has happened inside this one phase.
+      projected_total=$(( (elapsed * 100) / pct ))
+      expected_phase=$(( (projected_total * open_weight) / 100 + 1 ))
+    fi
     # An absolute floor alongside the relative one: a low-weight phase has a
     # small expected_phase, so the 2x ratio alone can still trip within a
     # couple of seconds of ordinary noise. Nothing is reported "taking longer
@@ -308,7 +333,35 @@ _cb_update_eta() {
     fi
   fi
 
-  remaining=$(( (elapsed * (100 - pct)) / pct ))
+  if (( _CB_REFERENCE_SECONDS > 0 )); then
+    # Anchored to a real measured total instead of extrapolated from
+    # elapsed/pct. That extrapolation assumes the rate observed so far holds
+    # for whatever has not run yet — true only if every phase costs the same
+    # seconds per weight-point, which they don't: preflight/bundle/files
+    # finish in seconds while deps alone is 45% of the flow, so any early
+    # sample is dominated by the fast administrative phases and always
+    # lowballs the total (observed: 20% done at 6 elapsed seconds projected a
+    # 30-second install that in fact takes roughly two minutes). Anchoring
+    # "remaining" to the measured total sidesteps that: it is just the
+    # unfinished share of a number that came from a stopwatch, not from
+    # whichever phase happened to finish first.
+    #
+    # A host running uniformly slower than the reference — not one stuck
+    # phase, which the overrun check above already covers — is caught
+    # separately here: once actual elapsed time has drifted past double what
+    # the reference implies for this much progress, fall through to the same
+    # non-numeric "taking longer than expected" rather than keep counting
+    # down a number the run has already disproven.
+    expected_elapsed=$(( (_CB_REFERENCE_SECONDS * pct) / 100 ))
+    if (( elapsed >= 30 )) && (( expected_elapsed > 0 )) && (( elapsed > expected_elapsed * 2 )); then
+      _CB_ETA_TEXT='taking longer than expected'
+      return 0
+    fi
+    remaining=$(( (_CB_REFERENCE_SECONDS * (100 - pct)) / 100 ))
+  else
+    remaining=$(( (elapsed * (100 - pct)) / pct ))
+  fi
+
   if (( _CB_LAST_ETA >= 0 )) && (( remaining > _CB_LAST_ETA )); then
     remaining="${_CB_LAST_ETA}"
   fi
@@ -1209,7 +1262,12 @@ EOF
     host_ip="localhost"
   fi
 
+  # cb_ok routes through cb_detail, which only prints in --verbose mode — the
+  # Docker deploy path never calls cb_ui_init at all (it returns before the
+  # native flow reaches it), so this success line was invisible on every
+  # plain/default run regardless of mode. Print it unconditionally instead.
   echo ""
+  echo -e "  ${GREEN}${BOLD}✓  SUCCESS — Docker deployment complete!${RESET}"
   cb_ok "Docker deployment complete"
   echo -e "  ${BOLD}Install directory:${RESET} ${install_dir}"
   echo -e "  ${BOLD}Access URLs:${RESET} https://${host_ip}/ or http://${host_ip}/"
@@ -1766,7 +1824,7 @@ main() {
   if [[ "${UPGRADE_MODE}" == "true" ]]; then
     cb_ui_use_weights CB_PHASE_WEIGHTS_UPGRADE
   else
-    cb_ui_use_weights CB_PHASE_WEIGHTS_INSTALL
+    cb_ui_use_weights CB_PHASE_WEIGHTS_INSTALL "${CB_REFERENCE_SECONDS_INSTALL}"
   fi
 
   cb_phase_begin preflight "Pre-flight checks"
