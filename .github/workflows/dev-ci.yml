@@ -667,6 +667,10 @@ jobs:
     needs: [artifact-smoke]
     runs-on: ubuntu-22.04
     timeout-minutes: 40
+    # packages: write is only exercised by "Push the dev image" below, and
+    # only on a real push to dev — a pull-request run never reaches it (see
+    # that step's `if:`), so a PR from a fork never needs, and never gets,
+    # write access to this repo's GHCR namespace.
     permissions:
       contents: read
       packages: write
@@ -950,6 +954,32 @@ jobs:
           path: artifacts/diagnostics/
           if-no-files-found: warn
           retention-days: 14
+
+      # Published only after the compose smoke above has already started this
+      # exact image, migrated, reached /readyz and survived a restart — the
+      # same bar release.yml holds a candidate to, just without that
+      # pipeline's channel/draft/sign/SBOM machinery, none of which exists on
+      # dev. `:dev` always points at the newest pushed commit; `:dev-<sha>`
+      # is what a VM test can pin to and diff against later. This is the
+      # "so I can test features before merging properly" ask: `docker pull
+      # ghcr.io/blkleg/circuitbreaker:dev` from any host, no scp required.
+      #
+      # `if: github.event_name == 'push'`: a pull_request run builds and
+      # smoke-tests the same way (so a PR's Dockerfile/entrypoint changes are
+      # still caught), but only a real push to `dev` — a merged commit —
+      # publishes, matching this job's `packages: write` comment above.
+      - name: Push the dev image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMAGE="ghcr.io/blkleg/circuitbreaker"
+          docker tag "circuitbreaker:${CB_VERSION}" "${IMAGE}:${CB_VERSION}"
+          docker tag "circuitbreaker:${CB_VERSION}" "${IMAGE}:dev"
+          docker push "${IMAGE}:${CB_VERSION}"
+          docker push "${IMAGE}:dev"
 
       # The .env holds four live secrets. They are ephemeral and single-run, but
       # the workspace is not guaranteed to be discarded before another step

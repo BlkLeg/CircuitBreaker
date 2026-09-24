@@ -128,6 +128,52 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.
 
 ---
 
+## Testing a Dev Build
+
+Every push to `dev` that passes lint, tests and the security gate builds and
+smoke-tests both install paths without needing a merge to `main` first:
+
+**Docker Compose** — `dev-ci.yml` publishes a rolling `ghcr.io/blkleg/circuitbreaker:dev`
+image after the compose smoke passes. Point the installer at the `dev` branch
+and that image with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/dev/install.sh | bash -s -- --docker --version dev
+```
+
+Or by hand, the same way the [Manual Setup](docker-compose.md#manual-setup-without-the-install-script)
+section does it for a release, just from `dev` instead of `main`:
+
+```bash
+mkdir -p ~/cb-dev && cd ~/cb-dev
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/dev/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/dev/.env.example -o .env
+# edit .env: set CB_DB_PASSWORD, CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN, and CB_TAG=dev
+docker compose up -d
+```
+
+**Native (`.deb`/tarball)** — `dev-ci.yml` also builds the native amd64
+packages and runs the same install-and-boot gate release candidates get
+(`artifact-smoke.yml`), but it does not publish a rolling channel the way the
+Docker image does — GitHub only retains the build for 3 days as a workflow
+artifact. Grab the latest one with the [GitHub CLI](https://cli.github.com/)
+and hand it to `--local-bundle`, the flag the installer journey suite itself
+uses (see `CLAUDE.md`):
+
+```bash
+gh run download --repo BlkLeg/CircuitBreaker \
+  -n dev-packages-amd64 \
+  -R "$(gh run list --repo BlkLeg/CircuitBreaker --workflow dev-ci.yml --branch dev --json databaseId --jq '.[0].databaseId')" \
+  --dir ./dev-packages
+bash install.sh --local-bundle ./dev-packages/circuit-breaker_*_linux_amd64.tar.gz --unattended --no-tls
+```
+
+This is the same tarball path `curl | bash` installs from a release — it just
+comes from a workflow artifact instead of a GitHub Release, so nothing about
+`install.sh` itself needs to know it is a pre-release build.
+
+---
+
 ## Next Step
 
 Open Circuit Breaker in your browser and complete the **[First-Run Setup](first-run.md)** wizard to create your admin account.

@@ -262,6 +262,26 @@ def test_a_leading_v_on_the_version_is_not_doubled(home):
     assert "CB_TAG=1.2.3" in (home / ".circuitbreaker" / ".env").read_text()
 
 
+def test_dev_pins_the_assets_to_the_dev_branch_not_a_vdev_tag(home):
+    """--version dev names dev-ci.yml's rolling :dev image, not a release tag.
+
+    Before this, `ref="v${version}"` applied to every non-empty version
+    unconditionally, so `--version dev` looked for assets at
+    .../BlkLeg/CircuitBreaker/vdev/... -- a ref that never exists -- instead of
+    the dev branch that actually built the image being pinned to.
+    """
+    stage(home, version="dev")
+    urls = fetched(home)
+    assert urls, "stage_docker_deploy fetched nothing"
+    assert all("/BlkLeg/CircuitBreaker/dev/" in url for url in urls), urls
+
+
+def test_dev_pins_the_image_tag_to_dev(home):
+    stage(home, version="dev")
+    body = (home / ".circuitbreaker" / ".env").read_text()
+    assert "CB_TAG=dev" in body, body
+
+
 def test_a_preserved_env_warns_that_the_pin_was_not_applied(home):
     """Silently leaving CB_TAG unset is the drift this finding is about."""
     install_dir = home / ".circuitbreaker"

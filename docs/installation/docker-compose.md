@@ -136,6 +136,10 @@ This bind-mounts `/var/run/docker.sock` into the container read-write. The overr
 
 ## Manual Setup (without the install script)
 
+To test a pre-release build instead of the latest release, swap `main` for
+`dev` in the two `curl` commands below and set `CB_TAG=dev` in `.env` — see
+[Testing a Dev Build](quick-install.md#testing-a-dev-build).
+
 ```bash
 # 1. Create install directory
 mkdir -p ~/.circuitbreaker && cd ~/.circuitbreaker

@@ -15,7 +15,7 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
-## [0.4.3] — unreleased
+## [0.4.4] — unreleased
 
 Fixes the defect that made 0.4.2 unusable, and closes the gap in the release
 pipeline that let it ship.
