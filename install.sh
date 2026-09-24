@@ -577,6 +577,7 @@ CB_CERT_TYPE="self-signed"
 CB_EMAIL=""
 CB_VERSION=""
 CB_LOCAL_BUNDLE=""
+CB_CHANNEL="${CB_CHANNEL:-stable}"
 # Air-gap mode. Seeded from the environment so `CB_AIRGAP=true bash install.sh`
 # and `--airgap` mean the same thing, and so the variable that governs the
 # running application also governs the installer that writes its config.
@@ -1377,39 +1378,25 @@ stage0_bootstrap_preflight() {
 }
 
 
-# Choose the release a default install (no --version) should fetch.
+# Choose the release a default install (no --version) should fetch, from the
+# /releases list JSON on stdin (newest first, as the API returns it).
 #
-# Reads the /releases list JSON on stdin -- newest first, as the API returns
-# it -- and prints the chosen release object, or nothing if there is none.
+# Not /releases/latest: that endpoint answers with whatever carries the
+# "Latest release" badge, which v1.0.0-rc.2 held for months because the flag
+# was set before release.yml learned --prerelease. Picking from the list keeps
+# the choice independent of that metadata.
 #
-# This deliberately does not ask /releases/latest. That endpoint answers with
-# whatever carries the "Latest release" badge, and v1.0.0-rc.1 and rc.2 were
-# published before release.yml learned to pass --prerelease (GOV-20), so both
-# are recorded as stable and rc.2 still holds the badge. A default install
-# therefore fetched the rc.2 bundle: it reported its version as 1.0.0-rc.2,
-# and it predates the gh#104 PyInstaller fix, so every Proxmox connection
-# failed with "No module named 'proxmoxer.backends'". Picking from the list
-# here makes the choice independent of that stale metadata.
-#
-# The rule is the newest non-draft release, release candidates included; the
-# caller warns loudly when the winner is one. Preferring stable unconditionally
-# would install v0.3.4 for the whole 1.0.0-rc window -- a pre-1.0 build months
-# older than the one README.md documents, which is the same "user silently gets
-# an ancient build" failure this selection exists to prevent.
-#
-# KNOWN LIMITATION, stated plainly rather than wished away: this rule prefers
-# the newest release including candidates, permanently, not just before GA.
-# Once v1.0.0 is stable, publishing v1.0.1-rc.1 makes that candidate the newest
-# release and a default `curl | bash` fetches it again. Closing that properly
-# needs a real per-channel ordering, and doing it here would mean a semver
-# comparator written in bash -- avoiding exactly that is why the signed update
-# manifest is designed the way it is. The manifest publishes ordered per-channel
-# release lists, which turns "the newest stable" into a list lookup instead of a
-# version comparison. Resolve this when that lands; do not hand-roll it here.
-# tests/build/test_install_release_selection.py pins the current behaviour,
-# including the post-GA shape, so a future change to this rule is deliberate.
+# CB_CHANNEL decides the rule. stable — the default — takes the newest release
+# that is not a prerelease, so a `curl | bash` never silently installs a
+# candidate. candidate takes the newest release of either kind, which was the
+# only rule before --channel existed. Drafts are never eligible: they are not
+# visible to an unauthenticated client anyway (release captains soak a draft
+# candidate with `gh release download` and --local-bundle).
 cb_pick_release() {
-  jq '[.[] | select(.draft == false)] | first // empty' 2>/dev/null || true
+  case "${CB_CHANNEL:-stable}" in
+    candidate) jq '[.[] | select(.draft == false)] | first // empty' 2>/dev/null || true ;;
+    *)         jq '[.[] | select(.draft == false and .prerelease == false)] | first // empty' 2>/dev/null || true ;;
+  esac
 }
 
 # Verify a downloaded bundle against the release's SHA256SUMS asset.
@@ -1513,12 +1500,16 @@ stage0_download_bundle() {
         || cb_fail "Failed to fetch the release list" "Check internet connectivity or specify --version <version>"
       release_json=$(printf '%s' "$releases_json" | cb_pick_release)
       if [[ -z "$release_json" ]] || [[ "$release_json" == "null" ]]; then
+        if [[ "${CB_CHANNEL:-stable}" == "stable" ]] \
+          && [[ -n "$releases_json" ]] \
+          && [[ "$(printf '%s' "$releases_json" | jq 'if type == "array" then length else 0 end' 2>/dev/null || echo 0)" -gt 0 ]]; then
+          cb_fail "No stable release is published yet" \
+            "Use --channel candidate to install the newest prerelease, or --version <version>"
+        fi
         cb_fail "No installable release found" "Check https://github.com/${CB_GITHUB_REPO}/releases or specify --version <version>"
       fi
-      if [[ "$(printf '%s' "$release_json" | jq -r '.prerelease')" == "true" ]]; then
-        # Not "no stable release yet": see cb_pick_release's known limitation.
-        # The newest release wins whether or not a stable one exists, so this
-        # message must not claim there is none.
+      if [[ "${CB_CHANNEL:-stable}" == "candidate" ]] \
+        && [[ "$(printf '%s' "$release_json" | jq -r '.prerelease')" == "true" ]]; then
         cb_warn "Installing release candidate $(printf '%s' "$release_json" | jq -r '.tag_name') - the newest published release. Use --version <version> to pick a specific one."
       fi
     fi
@@ -1592,8 +1583,16 @@ stage0_download_bundle() {
   tar -xzf "$CB_BUNDLE_TARBALL" -C /tmp/cb-bundle --no-same-owner --no-same-permissions \
     || cb_fail "Bundle extraction failed" "Tarball may be corrupted: $CB_BUNDLE_TARBALL — re-run to re-download"
   CB_BUNDLE_DIR="/tmp/cb-bundle"
-  if [[ ! -f "${CB_BUNDLE_DIR}/circuit-breaker" ]]; then
-    cb_fail "Bundle is missing the circuit-breaker binary" "Bundle layout unexpected — check release assets for v${CB_VERSION:-unknown}"
+  # PBS is the release layout. PyInstaller onefile (root-level binary, no
+  # python/) stays installable for one cycle so the journey can prove the
+  # upgrade every existing native host will perform; Task 8 removes it.
+  if [[ -x "${CB_BUNDLE_DIR}/bin/circuit-breaker" && -x "${CB_BUNDLE_DIR}/python/bin/python3" ]]; then
+    :
+  elif [[ -f "${CB_BUNDLE_DIR}/circuit-breaker" ]]; then
+    :
+  else
+    cb_fail "Bundle is missing the application runtime" \
+      "Expected either bin/circuit-breaker + python/bin/python3 (PBS) or a root-level circuit-breaker binary (PyInstaller). Check the release assets for v${CB_VERSION:-unknown}"
   fi
   cb_ok "Bundle extracted"
 }
@@ -1608,13 +1607,34 @@ stage0_install_bundle() {
   mkdir -p /opt/circuitbreaker/deploy
   mkdir -p /opt/circuitbreaker/scripts
 
-  # Copy binary
-  cb_step "Installing binary"
-  cp -f "${CB_BUNDLE_DIR}/circuit-breaker" /opt/circuitbreaker/bin/circuit-breaker \
-    || cb_fail "Failed to install binary" "Check disk space: df -h /opt"
-  chmod 755 /opt/circuitbreaker/bin/circuit-breaker
-  chown root:root /opt/circuitbreaker/bin/circuit-breaker
-  cb_ok "Binary installed to /opt/circuitbreaker/bin/"
+  if [[ -x "${CB_BUNDLE_DIR}/python/bin/python3" ]]; then
+    # Stage the PBS runtime, never overwrite it here. On an upgrade the old
+    # services are still running at this point — run_upgrade stops them later —
+    # and replacing python/ underneath a live interpreter is the same class of
+    # fault as the binary swap this used to do. cb_activate_runtime_tree
+    # (deploy/setup.sh) moves the staged tree into place after the stop and
+    # keeps the previous one as python.prev until /readyz answers.
+    cb_step "Staging application runtime"
+    rm -rf /opt/circuitbreaker/.staging
+    mkdir -p /opt/circuitbreaker/.staging
+    cp -a "${CB_BUNDLE_DIR}/python" /opt/circuitbreaker/.staging/python \
+      || cb_fail "Failed to stage the runtime" "Check disk space: df -h /opt"
+    cp -a "${CB_BUNDLE_DIR}/bin" /opt/circuitbreaker/.staging/bin \
+      || cb_fail "Failed to stage the launcher" "Check disk space: df -h /opt"
+    chown -R root:root /opt/circuitbreaker/.staging
+    cb_ok "Runtime staged ($(du -sh /opt/circuitbreaker/.staging/python | cut -f1))"
+  else
+    # PyInstaller onefile: binary lands at the live path immediately. There is
+    # no python/ tree to stage, and the upgrade journey's --previous leg relies
+    # on this layout as the starting state.
+    cb_step "Installing binary"
+    rm -rf /opt/circuitbreaker/.staging
+    cp -f "${CB_BUNDLE_DIR}/circuit-breaker" /opt/circuitbreaker/bin/circuit-breaker \
+      || cb_fail "Failed to install binary" "Check disk space: df -h /opt"
+    chmod 755 /opt/circuitbreaker/bin/circuit-breaker
+    chown root:root /opt/circuitbreaker/bin/circuit-breaker
+    cb_ok "Binary installed to /opt/circuitbreaker/bin/"
+  fi
 
   # Copy share assets (frontend, backend/migrations, VERSION, etc.)
   cb_step "Installing application assets"
@@ -1677,6 +1697,10 @@ show_help() {
   echo "  --version <version>    Install specific version (default: latest)."
   echo "                         With --docker, 'dev' pins to the dev branch"
   echo "                         and the :dev image instead of a release tag."
+  echo "  --channel stable|candidate   Which published releases a default install may pick."
+  echo "                               stable (default): the newest release that is not a"
+  echo "                               prerelease. candidate: the newest release including"
+  echo "                               prereleases. Ignored with --version or --local-bundle."
   echo "  --local-bundle <path>  Use a pre-downloaded bundle tarball"
   echo "  --unattended           Skip all prompts, use defaults (for Proxmox LXC)"
   echo "  --verbose              Print every step instead of a progress bar."
@@ -1730,6 +1754,10 @@ while [[ $# -gt 0 ]]; do
       CB_VERSION="$2"
       shift 2
       ;;
+    --channel)
+      CB_CHANNEL="$2"
+      shift 2
+      ;;
     --local-bundle)
       CB_LOCAL_BUNDLE="$2"
       shift 2
@@ -1772,6 +1800,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+case "$CB_CHANNEL" in
+  stable|candidate) ;;
+  *)
+    echo "Unknown --channel: $CB_CHANNEL (stable or candidate)"
+    exit 1
+    ;;
+esac
 
 # Air-gap mode promises no outbound request, and resolving a release from the
 # GitHub API is one. Checked here, before anything is created, so an operator who

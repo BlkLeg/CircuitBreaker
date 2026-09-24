@@ -20,13 +20,9 @@ package() {
     local srcname="circuit-breaker_${pkgver}_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
     cd "${srcdir}/${srcname}" 2>/dev/null || cd "${srcdir}"
 
-    install -Dm755 circuit-breaker "${pkgdir}/usr/local/bin/circuit-breaker"
-
-    install -d "${pkgdir}/usr/local/share/circuit-breaker"
-    cp -r share/ "${pkgdir}/usr/local/share/circuit-breaker/"
-
-    install -d "${pkgdir}/usr/local/share/circuit-breaker/agent-binaries"
-    cp -r agent-binaries/. "${pkgdir}/usr/local/share/circuit-breaker/agent-binaries/"
+    install -d "${pkgdir}/opt/circuitbreaker" "${pkgdir}/usr/local/bin"
+    cp -a python bin share agent-binaries "${pkgdir}/opt/circuitbreaker/"
+    ln -s /opt/circuitbreaker/bin/circuit-breaker "${pkgdir}/usr/local/bin/circuit-breaker"
 
     install -d "${pkgdir}/var/lib/circuit-breaker"
     install -d "${pkgdir}/var/log/circuit-breaker"

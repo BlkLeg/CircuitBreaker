@@ -27,45 +27,24 @@ Environment="CB_TOPOLOGY_MODE=worker"
 #
 # /opt/circuitbreaker/bin/circuit-breaker USED TO carry cap_net_raw=ep, granted
 # by `setcap` in stage6_apply_binary. stage6_apply_binary now does the
-# opposite — `setcap -r` on every run, including upgrades — because exec'ing a
-# file whose capabilities are not already in the process's permitted set is a
-# privilege-gaining exec, so the kernel marks the process non-dumpable and
-# /proc/<pid>/exe becomes unreadable *even to the user running it*.
-# PyInstaller's --onefile child validates its parent by reading exactly that,
-# and died:
-#
-#     [PYI-NNNN:ERROR] Security validation failure: could not access /proc
-#     entry to determine the executable path for originating onefile parent
-#     process!
-#
-# Verified independently of this binary: /usr/bin/mtr-packet carries the same
-# cap_net_raw=ep, and readlink /proc/<its pid>/exe returns EACCES to its own
-# user while an uncapped process in the same shell reads fine.
-#
+# opposite — `setcap -r` on every run, including upgrades — because a file
+# capability on the launcher clears the ambient set the nmap children need.
 # The backend never hit this because its AmbientCapabilities already put
-# CAP_NET_RAW in its permitted set, so the exec gains nothing and the process
-# stays dumpable. The workers had no such line, so every worker exec was
-# privilege-gaining — and all five exited at startup, taking discovery,
-# telemetry, notifications and monitoring with them while the API stayed
-# healthy and every foreground check passed.
+# CAP_NET_RAW in its permitted set. The workers had no such line, so every
+# worker exec cleared the ambient set the discovery and telemetry children
+# need — and all five exited at startup, taking discovery, telemetry,
+# notifications and monitoring with them while the API stayed healthy and
+# every foreground check passed.
 #
 # These are also the capabilities the discovery and telemetry workers need in
 # their own right: they are what does the ICMP and SNMP probing.
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
 
-# AGT-11: the PyInstaller --onefile bundle extracts the whole application into
-# $TMPDIR/_MEI<random> on every start and only removes it on a clean exit, so a
-# crash loop or a kill mid-start leaves full copies behind. Eight units run this
-# same bundle as `breaker` on a native install, so each gets its own directory
-# (%N) and reaps only that one — a shared directory would let a starting worker
-# delete the backend's live extraction. The sweep is never a bare /tmp/_MEI*,
-# which could hit another application's live bundle.
-#
-# PrivateTmp= is deliberately not used: discovery reads the host's real
-# /tmp/dnsmasq.leases and /tmp/dhcp.leases by absolute path, which a private
-# /tmp namespace would hide.
+# Each unit gets its own scratch directory under the data dir rather than the
+# shared /tmp. PrivateTmp= is deliberately not used: discovery reads the host's
+# real /tmp/dnsmasq.leases and /tmp/dhcp.leases by absolute path.
 Environment="TMPDIR=/var/lib/circuitbreaker/run/%N"
-ExecStartPre=/bin/sh -c 'mkdir -p "/var/lib/circuitbreaker/run/%N" && rm -rf "/var/lib/circuitbreaker/run/%N"/_MEI*'
+ExecStartPre=/bin/mkdir -p /var/lib/circuitbreaker/run/%N
 ExecStart=/opt/circuitbreaker/bin/circuit-breaker --worker-type %i
 Restart=on-failure
 RestartSec=10s

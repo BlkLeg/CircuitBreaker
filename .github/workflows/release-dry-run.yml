@@ -146,6 +146,24 @@ jobs:
             .
           ls -lh "/tmp/image-${{ matrix.arch }}.tar"
 
+      - name: Export the image's provenance
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform "linux/${{ matrix.arch }}" \
+            -f Dockerfile.mono \
+            --target app-build-info \
+            --output type=local,dest=/tmp/image-info .
+          cat /tmp/image-info/build-info.json
+
+      - name: Upload the image's provenance
+        uses: actions/upload-artifact@v7
+        with:
+          name: dry-run-image-build-info-${{ matrix.arch }}
+          path: /tmp/image-info/build-info.json
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Shred the staged signing key
         if: always()
         run: shred -u /tmp/agent-signing-key 2>/dev/null || rm -f /tmp/agent-signing-key
@@ -170,7 +188,9 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           path: /tmp/images
-          pattern: dry-run-image-*
+          # Exact per-arch OCI names — not dry-run-image-*, which also matches
+          # dry-run-image-build-info-* (D7 provenance uploads from the image job).
+          pattern: dry-run-image-a?d64
           merge-multiple: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -368,7 +388,7 @@ jobs:
   # ── What post-publish would check, against staged assets ──────────────────
   staged-publication:
     name: Verify the staged release
-    needs: [version, build, artifact-smoke]
+    needs: [version, build, artifact-smoke, image]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -379,6 +399,14 @@ jobs:
           pattern: packages-*
           merge-multiple: true
           path: dist/release/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download image provenance
+        uses: actions/download-artifact@v5
+        with:
+          pattern: dry-run-image-build-info-*
+          merge-multiple: false
+          path: image-info/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       # The same command release.yml runs before attaching anything.
@@ -450,12 +478,26 @@ jobs:
           cd dist/release
           mkdir -p unpacked
           tar -xzf "circuit-breaker_${VERSION}_linux_amd64.tar.gz" -C unpacked
-          if [ -x "unpacked/circuit-breaker" ]; then
+          if [ -x "unpacked/bin/circuit-breaker" ]; then
             BUNDLE=unpacked
           else
             BUNDLE="$(find unpacked -maxdepth 1 -mindepth 1 -type d | head -1)"
           fi
-          "${BUNDLE}/circuit-breaker" --selftest
+          "${BUNDLE}/bin/circuit-breaker" --selftest
+
+      - name: Compare runtime provenance (image == package)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            mkdir -p "unpacked-${arch}"
+            tar -xzf "dist/release/circuit-breaker_${VERSION}_linux_${arch}.tar.gz" \
+              -C "unpacked-${arch}" share/build-info.json
+            python3 scripts/ci/assert_runtime_parity.py \
+              "unpacked-${arch}/share/build-info.json" \
+              "image-info/dry-run-image-build-info-${arch}/build-info.json"
+          done
 
       - name: Upload the staged asset listing
         if: always()

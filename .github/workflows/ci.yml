@@ -725,3 +725,14 @@ jobs:
       # build_native_release.py refuses any other value, so this is the version
       # the candidate actually carries.
       version: ${{ needs.candidate-build.outputs.version }}
+
+  # The installer journey has to have run for a change before release.yml may
+  # depend on it (tests/build/test_release_paths_run_before_the_tag.py). Its own
+  # pull_request trigger is path-filtered, which is right for day-to-day work
+  # and wrong for a merge to main: a change to the backend that breaks --selftest
+  # inside the tree touches no installer path, and would otherwise first be
+  # installed by the release.
+  candidate-installer-journey:
+    name: Installer Journey
+    needs: candidate-build
+    uses: ./.github/workflows/installer-journey.yml

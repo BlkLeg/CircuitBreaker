@@ -47,9 +47,12 @@ SMOKE_JOB = "artifact-smoke"
 # inferred: "publishes" is a judgement about what a step does, and encoding it
 # here is what lets the test say so in its failure message.
 PUBLISHING_JOBS = {
-    "release": "creates the GitHub Release and uploads every asset",
-    "image-merge": "creates the registry tags that make the pushed digests pullable",
+    "release": "creates the draft GitHub Release and uploads every asset",
+    "image-merge": "creates the :<version>-candidate and :candidate tags that make the pushed digests pullable",
 }
+# Promotion publishes too, but from a verified draft rather than from a build,
+# so its gate is promote-verify, not artifact-smoke.
+PROMOTING_JOBS = {"promote": "publishes the draft (creating the tag) and retags the image"}
 
 
 def _release() -> dict:
@@ -207,6 +210,12 @@ def test_no_release_job_is_disabled_or_made_advisory() -> None:
         f"release.yml jobs are advisory rather than blocking: {offences}. A gate "
         "that cannot fail the release is not a gate; remove it or fix it."
     )
+
+
+def test_every_promoting_job_depends_on_the_candidate_verification() -> None:
+    jobs = _release()["jobs"]
+    for name in PROMOTING_JOBS:
+        assert "promote-verify" in _needs(jobs[name]), f"{name} must need promote-verify"
 
 
 def test_the_artifact_gate_covers_both_published_architectures() -> None:

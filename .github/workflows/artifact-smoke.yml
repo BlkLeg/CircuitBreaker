@@ -102,6 +102,19 @@ jobs:
           [ -e "${path}" ] || { echo "::error::package did not install ${path}"; exit 1; }
         done
         echo "package contents present"
+    - name: Assert the package installed the runtime tree, not a onefile binary
+      run: |
+        set -euo pipefail
+        [ "$(readlink -f /usr/local/bin/circuit-breaker)" = /opt/circuitbreaker/bin/circuit-breaker ] \
+          || { echo "::error::/usr/local/bin/circuit-breaker is not the tree's launcher"; exit 1; }
+        [ -x /opt/circuitbreaker/python/bin/python3 ] \
+          || { echo "::error::no bundled interpreter at /opt/circuitbreaker/python/bin/python3"; exit 1; }
+        python3 - <<'PY'
+        import json
+        info = json.load(open("/opt/circuitbreaker/share/build-info.json"))
+        assert info["runtime"] == "pbs", info
+        print("runtime:", info["runtime"], "glibc floor:", info["glibc_floor"], "digest:", info["runtime_digest"][:12])
+        PY
     - name: Assert the install resolved a message broker
       run: |
         command -v nats-server >/dev/null 2>&1 \
@@ -113,7 +126,8 @@ jobs:
         for path in \
           /usr/local/bin/circuit-breaker \
           /usr/local/bin/nats-server \
-          /lib/systemd/system/circuit-breaker.service; do
+          /lib/systemd/system/circuit-breaker.service \
+          /opt/circuitbreaker/python; do
           [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
         done
         echo "uninstall clean"
@@ -150,7 +164,7 @@ jobs:
           }
           mkdir -p unpacked
           tar -xzf "${TARBALL}" -C unpacked
-          if [ -f "unpacked/circuit-breaker" ]; then
+          if [ -x "unpacked/bin/circuit-breaker" ]; then
             echo "BUNDLE=$PWD/unpacked" >> "$GITHUB_ENV"
           else
             echo "BUNDLE=$(find "$PWD/unpacked" -maxdepth 1 -mindepth 1 -type d | head -1)" >> "$GITHUB_ENV"
@@ -163,7 +177,8 @@ jobs:
         run: |
           set -euo pipefail
           for path in \
-            circuit-breaker \
+            bin/circuit-breaker \
+            python/bin/python3 \
             deploy/setup.sh \
             share/VERSION \
             manifest.json \
@@ -190,7 +205,7 @@ jobs:
       - name: Assert the bundled binary can load the application it serves
         run: |
           set -euo pipefail
-          "${BUNDLE}/circuit-breaker" --selftest
+          "${BUNDLE}/bin/circuit-breaker" --selftest
 
   deb-boot:
     name: Boot the .deb (${{ matrix.arch }})
@@ -404,7 +419,7 @@ jobs:
           # tests/build/test_smoke_preserves_packaged_env.py keeps this list
           # honest against packaging/postinstall.sh.
           for _key in CB_DATA_DIR UPLOADS_DIR STATIC_DIR CB_ALEMBIC_INI \
-                      CB_AGENT_BINARIES_DIR CB_ALLOW_DIRECT_EGRESS; do
+                      CB_AGENT_BINARIES_DIR CB_SHARE_DIR CB_ALLOW_DIRECT_EGRESS; do
             sudo grep -q "^${_key}=" "$ENV_FILE" || {
               echo "::error::${_key} is missing from $ENV_FILE — this step overwrote configuration packaging/postinstall.sh generated. Overlay the ephemeral values onto the packaged env instead of replacing the file."
               exit 1
@@ -573,7 +588,8 @@ jobs:
             /usr/local/bin/circuit-breaker \
             /usr/local/bin/nats-server \
             /lib/systemd/system/circuit-breaker.service \
-            /lib/systemd/system/circuit-breaker-nats.service; do
+            /lib/systemd/system/circuit-breaker-nats.service \
+            /opt/circuitbreaker/python; do
             [ ! -e "${path}" ] || { echo "::error::uninstall left ${path} behind"; exit 1; }
           done
 

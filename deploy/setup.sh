@@ -1399,8 +1399,69 @@ stage4_write_systemd_units() {
   stage_configure_helper
 }
 
+# Move the staged runtime into place. Runs only after the services are stopped
+# (run_upgrade) or before they have ever started (fresh install), because a
+# live interpreter must never have its python/ replaced underneath it. The
+# previous runtime is kept as python.prev / bin/circuit-breaker.prev until
+# cb_finalise_runtime_tree, which stage8_start_services calls after /readyz.
+cb_activate_runtime_tree() {
+  local staging=/opt/circuitbreaker/.staging
+  if [[ ! -x "${staging}/bin/circuit-breaker" || ! -x "${staging}/python/bin/python3" ]]; then
+    cb_fail "No staged runtime at ${staging}" "The files phase did not complete — re-run the installer"
+  fi
+  cb_step "Activating application runtime"
+  rm -rf /opt/circuitbreaker/python.prev /opt/circuitbreaker/bin/circuit-breaker.prev
+  if [[ -d /opt/circuitbreaker/python ]]; then
+    mv /opt/circuitbreaker/python /opt/circuitbreaker/python.prev
+  fi
+  if [[ -e /opt/circuitbreaker/bin/circuit-breaker ]]; then
+    mv /opt/circuitbreaker/bin/circuit-breaker /opt/circuitbreaker/bin/circuit-breaker.prev
+  fi
+  mv "${staging}/python" /opt/circuitbreaker/python
+  mkdir -p /opt/circuitbreaker/bin
+  cp -f "${staging}/bin/circuit-breaker" "${staging}/bin/cb-python" /opt/circuitbreaker/bin/
+  chmod 755 /opt/circuitbreaker/bin/circuit-breaker /opt/circuitbreaker/bin/cb-python
+  rm -rf "${staging}"
+  cb_ok "Runtime active at /opt/circuitbreaker/python"
+}
+
+# Undo cb_activate_runtime_tree. Called when the activated tree fails its
+# self-test, before cb_fail, so a host that was working keeps working.
+# PyInstaller → PBS has no python.prev (the previous layout had no tree); drop
+# the failed activation and restore the onefile launcher from *.prev instead.
+cb_rollback_runtime_tree() {
+  if [[ -d /opt/circuitbreaker/python.prev ]]; then
+    rm -rf /opt/circuitbreaker/python
+    mv /opt/circuitbreaker/python.prev /opt/circuitbreaker/python
+  else
+    rm -rf /opt/circuitbreaker/python
+    rm -f /opt/circuitbreaker/bin/cb-python
+  fi
+  if [[ -e /opt/circuitbreaker/bin/circuit-breaker.prev ]]; then
+    mv -f /opt/circuitbreaker/bin/circuit-breaker.prev /opt/circuitbreaker/bin/circuit-breaker
+  fi
+}
+
+# The runtime is proven: drop the rollback copy and whatever the PyInstaller
+# binary left behind. Only ever called after /readyz has answered 200.
+cb_finalise_runtime_tree() {
+  rm -rf /opt/circuitbreaker/python.prev /opt/circuitbreaker/bin/circuit-breaker.prev
+  rm -rf /var/lib/circuitbreaker/run/*/_MEI* 2>/dev/null || true
+}
+
 stage6_apply_binary() {
-  cb_section "Binary Backend Setup"
+  cb_section "Application Runtime"
+
+  if [[ -d /opt/circuitbreaker/.staging ]]; then
+    cb_activate_runtime_tree
+  else
+    # Fresh PyInstaller install already placed the binary at
+    # /opt/circuitbreaker/bin/circuit-breaker; there is nothing to activate.
+    [[ -x /opt/circuitbreaker/bin/circuit-breaker ]] \
+      || cb_fail "No application binary at /opt/circuitbreaker/bin/circuit-breaker" \
+                 "The files phase did not complete — re-run the installer"
+    cb_ok "Binary already installed (PyInstaller layout)"
+  fi
 
   cb_step "Setting binary permissions"
   chmod 755 /opt/circuitbreaker/bin/circuit-breaker
@@ -1411,22 +1472,10 @@ stage6_apply_binary() {
   # through a file capability on the binary itself. Any file capability left on
   # it by an older install is removed here, on every run, including upgrades.
   #
-  # `setcap cap_net_raw+ep` on this path did three things, all bad, and none of
+  # `setcap cap_net_raw+ep` on this path did two things, all bad, and none of
   # them was granting a privilege the units did not already have:
   #
-  #  1. It made every exec of the binary privilege-gaining, so the kernel marked
-  #     the process non-dumpable and /proc/<pid>/exe became unreadable even to
-  #     the user running it. PyInstaller's --onefile child validates its parent
-  #     by reading exactly that, so it died:
-  #       "Security validation failure: could not access /proc entry to
-  #        determine the executable path for originating onefile parent
-  #        process!"
-  #     That killed all five circuitbreaker-worker@ units on archlinux and made
-  #     `circuit-breaker --selftest` — and therefore `cb doctor` and
-  #     `cb diag bundle` — fail for every unprivileged caller, reporting a
-  #     healthy install as a broken binary.
-  #
-  #  2. Exec'ing a file that carries capabilities CLEARS the ambient set. So the
+  #  1. Exec'ing a file that carries capabilities CLEARS the ambient set. So the
   #     AmbientCapabilities systemd had just set were discarded at exec, and
   #     services/discovery_probes.py's _has_ambient_net_raw() — which reads
   #     CapAmb from /proc/self/status — saw nothing. Its own docstring says it:
@@ -1434,7 +1483,7 @@ stage6_apply_binary() {
   #     Python binary do not." The file capability was silently defeating the
   #     mechanism discovery actually depends on.
   #
-  #  3. It put a capability-carrying binary on disk for any local user to exec,
+  #  2. It put a capability-carrying binary on disk for any local user to exec,
   #     which is strictly more privilege than the units need.
   #
   # Raw sockets still work: AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN on
@@ -1443,6 +1492,8 @@ stage6_apply_binary() {
   # privilege-gaining exec, and the ambient set therefore survives into the
   # process and into the nmap children it spawns. nmap keeps its own file
   # capability below, which is what covers an nmap run outside those units.
+  # The setcap -r target is now the launcher script; a file capability on it
+  # would still clear the ambient set, so the check stays.
   cb_step "Clearing file capabilities from the binary"
   if command -v setcap &>/dev/null; then
     setcap -r /opt/circuitbreaker/bin/circuit-breaker >> "$LOG_FILE" 2>&1 || true
@@ -1487,7 +1538,8 @@ stage6_apply_binary() {
     cb_ok "Binary self-test passed"
   else
     echo "$_selftest_out" >> "$LOG_FILE" 2>&1 || true
-    cb_fail "The installed binary failed its self-test" \
+    cb_rollback_runtime_tree
+    cb_fail "The installed runtime failed its self-test; the previous runtime was put back" \
       "The bundle is incomplete or corrupt — this is a packaging fault, not a configuration one. Re-run the installer to download it again; if it fails twice, report the version at https://github.com/BlkLeg/circuitbreaker/issues. Detail: ${_selftest_out##*$'\n'}"
   fi
 
@@ -1542,6 +1594,22 @@ stage8_start_services() {
     fi
   done
   cb_ok "Backend API started"
+
+  # /health says the process answers; /readyz says Postgres, Redis and NATS all
+  # do too. Success is the second one.
+  cb_step "Waiting for readiness"
+  local ready_code=""
+  elapsed=0
+  until [[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/readyz 2>/dev/null)" == "200" ]]; do
+    sleep 2
+    elapsed=$((elapsed + 2))
+    if [[ $elapsed -ge 120 ]]; then
+      ready_code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/readyz 2>/dev/null)"
+      cb_fail "Backend never became ready (last /readyz was ${ready_code:-no answer})" "Run: cb doctor"
+    fi
+  done
+  cb_ok "Backend ready"
+  cb_finalise_runtime_tree
   
   # Start workers — warn per-worker rather than aborting a mostly-working install
   cb_step "Starting worker processes"
@@ -1649,8 +1717,13 @@ stage9_write_install_identity() {
   # shellcheck source=/dev/null
   source "$identity_lib"
   local services="circuitbreaker-postgres,circuitbreaker-pgbouncer,circuitbreaker-redis,circuitbreaker-nats,circuitbreaker-backend,nginx"
+  local runtime=pyinstaller
+  if [[ -x /opt/circuitbreaker/python/bin/python3 ]]; then
+    runtime=pbs
+  fi
   if write_install_identity /etc/circuitbreaker/install-identity.json \
     mode=native \
+    runtime="$runtime" \
     version="$version" \
     config_path=/etc/circuitbreaker/.env \
     data_dir="${CB_DATA_DIR:-/var/lib/circuitbreaker}" \
@@ -2289,9 +2362,31 @@ run_upgrade() {
 
   cb_phase_begin apply_bundle "Installing new version"
 
-  # Stop services after backup
-  cb_step "Stopping services"
-  systemctl stop circuitbreaker.target >> "$LOG_FILE" 2>&1 || true
+  # Stop services after backup.
+  #
+  # `systemctl stop circuitbreaker.target` alone is not enough: the target's
+  # member units are pulled in with Wants= (a start-time-only dependency), and
+  # before this fix only circuitbreaker-worker@.service also carried the
+  # PartOf=circuitbreaker.target that makes a target stop propagate to it.
+  # Confirmed live: without that, `systemctl stop circuitbreaker.target`
+  # leaves circuitbreaker-backend running, unchanged, indefinitely — the
+  # runtime tree gets replaced underneath a live interpreter, and a later
+  # `systemctl start circuitbreaker-backend` is a silent no-op against an
+  # already-active unit, so the new code never actually takes effect until
+  # something else (a crash, a reboot) finally cycles the process.
+  #
+  # deploy/systemd/circuitbreaker-*.service now all carry that PartOf=, so
+  # stopping the target is correct for every upgrade from here on — except
+  # the one that installs that fix: the units on disk at this exact line are
+  # whatever the PREVIOUS install wrote, which may predate it. Stopping each
+  # unit by name works regardless of which unit files are currently active,
+  # so this line does not rely on the fix it ships having already taken effect.
+  local _worker_type
+  for _worker_type in "${CB_WORKER_TYPES[@]}"; do
+    systemctl stop "circuitbreaker-worker@${_worker_type}" >> "$LOG_FILE" 2>&1 || true
+  done
+  systemctl stop circuitbreaker.target circuitbreaker-backend circuitbreaker-pgbouncer \
+    circuitbreaker-redis circuitbreaker-nats circuitbreaker-postgres >> "$LOG_FILE" 2>&1 || true
   sleep 2
   cb_ok "Services stopped"
   

@@ -70,9 +70,10 @@ CB_DB_URL=postgresql://circuitbreaker:changeme@127.0.0.1:5432/circuitbreaker
 CB_VAULT_KEY=${VAULT_KEY}
 CB_REDIS_URL=redis://127.0.0.1:6379/0
 NATS_AUTH_TOKEN=${NATS_TOKEN}
-STATIC_DIR=/usr/local/share/circuit-breaker/frontend
-CB_ALEMBIC_INI=/usr/local/share/circuit-breaker/backend/alembic.ini
-CB_AGENT_BINARIES_DIR=/usr/local/share/circuit-breaker/agent-binaries
+STATIC_DIR=/opt/circuitbreaker/share/frontend
+CB_SHARE_DIR=/opt/circuitbreaker/share
+CB_ALEMBIC_INI=/opt/circuitbreaker/share/backend/alembic.ini
+CB_AGENT_BINARIES_DIR=/opt/circuitbreaker/agent-binaries
 CB_DATA_DIR=/var/lib/circuit-breaker
 UPLOADS_DIR=/var/lib/circuit-breaker/uploads
 # No forward proxy on a single-node host, and an empty CB_EGRESS_PROXY_URL is
@@ -130,12 +131,7 @@ for _kv in \
 done
 
 # Write install identity (secret-free). Used by /usr/local/bin/cb.
-_IDENTITY_VERSION="unknown"
-if [ -f /usr/local/share/circuit-breaker/VERSION ]; then
-  _IDENTITY_VERSION="$(tr -d '[:space:]' </usr/local/share/circuit-breaker/VERSION)"
-elif [ -x /usr/local/bin/circuit-breaker ]; then
-  _IDENTITY_VERSION="$(/usr/local/bin/circuit-breaker --version 2>/dev/null | head -1 || echo unknown)"
-fi
+_IDENTITY_VERSION="$(tr -d '[:space:]' </opt/circuitbreaker/share/VERSION 2>/dev/null || echo unknown)"
 if [ -f /usr/local/lib/circuitbreaker/install-identity.sh ]; then
   # shellcheck source=/dev/null
   . /usr/local/lib/circuitbreaker/install-identity.sh
@@ -146,6 +142,7 @@ fi
 if command -v write_install_identity >/dev/null 2>&1; then
   write_install_identity /etc/circuit-breaker/install-identity.json \
     mode=package \
+    runtime=pbs \
     version="${_IDENTITY_VERSION}" \
     config_path=/etc/circuit-breaker/config.toml \
     data_dir=/var/lib/circuit-breaker \

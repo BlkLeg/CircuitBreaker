@@ -128,6 +128,15 @@ install_variants:
       The journey's only mode. --local-bundle means the artifact under test is
       the one that was just built, and no outbound request is made for it.
 
+  - id: upgrade-from-pyinstaller
+    executed: true
+    note: >-
+      The journey's --previous leg installs the last PyInstaller bundle first
+      and upgrades it to the bundle under test, asserting runtime=pbs,
+      preserved secrets and admin account, and no _MEI* directories. Until the
+      PyInstaller path is deleted the previous bundle is built in-job; after
+      that it is the pinned previous_release tag.
+
   - id: published-release
     executed: partially
     note: >-

@@ -4,6 +4,46 @@ The fastest way to get Circuit Breaker running. Choose the method that fits your
 
 ---
 
+## What changed for operators
+
+Native installs (this script and the `.deb` / `.rpm` packages) ship a **hermetic
+runtime tree** under `/opt/circuitbreaker/`: a pinned Python interpreter, the
+application, and its wheels. The `circuit-breaker` command is a small launcher
+into that tree, not a self-extracting binary. On package hosts,
+`/usr/local/bin/circuit-breaker` is a symlink to
+`/opt/circuitbreaker/bin/circuit-breaker`. Upgrades keep the same commands and
+paths you already use.
+
+## What to do
+
+Nothing special on first install or upgrade. Use the commands below (or
+`install.sh --upgrade` / `cb update`). Package hosts keep using their package
+manager once signed repos exist; until then the tarball path below is the
+default.
+
+## Rollback
+
+During an upgrade the previous interpreter is kept as
+`/opt/circuitbreaker/python.prev` until `/readyz` succeeds; after health it is
+removed. If health fails before that, restore the pre-upgrade backup and
+reinstall the previous release:
+
+```bash
+sudo /opt/circuitbreaker/deploy/scripts/restore.sh /var/lib/circuitbreaker/backups/pre-upgrade-<stamp>.sql
+```
+
+On package hosts use `sudo circuit-breaker-rollback` instead. Full detail:
+[Upgrading — Rollback](upgrading.md#rollback-procedures).
+
+## Release channels
+
+`install.sh --channel stable` (default) picks the newest published non-prerelease.
+`--channel candidate` opts into published prereleases. Docker tags
+`:candidate` and `:nightly` are the matching image channels — see
+[Upgrading — Release channels](upgrading.md#release-channels).
+
+---
+
 ## Native (Recommended)
 
 Installs Circuit Breaker directly on your Linux host as a **systemd service**. No Docker required.
@@ -12,16 +52,17 @@ Installs Circuit Breaker directly on your Linux host as a **systemd service**. N
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash
 ```
 
-> **What is verified about this path.** Every release builds this tarball, and
-> the release gate unpacks it, checks the bundle layout, and asserts the binary
-> can load the application it serves. See
+> **What is verified about this path.** Every release builds this tarball. The
+> release gate unpacks it, asserts the launcher can import the application
+> (`--selftest`), and the installer journey installs the tarball, boots the
+> units, and probes `/readyz` across the support matrix. See
 > [ADR 0005 — Verification tiers and platform support](../adr/0005-verification-tiers-and-platform-support.md)
 > for exactly which guarantees are in force today. Packages (`.deb`, `.rpm`)
-> carry the strongest guarantees.
+> carry the strongest upgrade/rollback guarantees once Tier 1 is in force.
 
 **What it does:**
 
-- Downloads a prebuilt release bundle and installs it to `/opt/circuitbreaker`
+- Downloads a prebuilt release bundle and installs the hermetic tree to `/opt/circuitbreaker`
 - Creates the `breaker` system user and the data directory `/var/lib/circuitbreaker`
 - Installs and enables the `circuitbreaker.target` unit group — Postgres, PgBouncer, Redis, NATS, the backend and the workers — behind nginx
 - Installs the `cb` CLI tool to `/usr/local/bin/cb`
@@ -35,6 +76,12 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --unattended
+```
+
+**Candidate channel** (published prereleases only):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --channel candidate
 ```
 
 **After install:**

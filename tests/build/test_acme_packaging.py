@@ -60,18 +60,23 @@ def test_every_acme_pin_is_exact():
 
 
 @pytest.mark.parametrize("dockerfile", ["Dockerfile", "Dockerfile.mono"])
-def test_both_images_install_the_acme_requirements(dockerfile):
+def test_both_images_install_the_acme_requirements(dockerfile: str) -> None:
     content = _read(dockerfile)
 
     assert "requirements-acme.txt" in content, (
         f"{dockerfile}: certbot is not installed, so issuance raises "
         "'certbot is not available in this image' — the first cause"
     )
-    # Copied as well as referenced: a -r against a file that was never COPYed fails the
-    # build, but only at build time, and only for whichever image forgot it.
-    assert content.count("requirements-acme.txt") >= 2, (
-        f"{dockerfile}: requirements-acme.txt must be both COPYed and installed"
-    )
+    # Mono rebuilds via scripts/pbs_tree.py, which installs every file in
+    # REQUIREMENT_FILES (including requirements-acme.txt) — one COPY is enough.
+    # The classic Dockerfile still needs an explicit pip -r against a COPYed file.
+    if dockerfile == "Dockerfile.mono":
+        assert "scripts/pbs_tree.py" in content
+        assert "COPY apps/backend/requirements.txt" in content or "requirements-acme.txt" in content
+    else:
+        assert content.count("requirements-acme.txt") >= 2, (
+            f"{dockerfile}: requirements-acme.txt must be both COPYed and installed"
+        )
 
 
 @pytest.mark.parametrize("directory", ACME_DIRS)
