@@ -1096,9 +1096,18 @@ stage_docker_deploy() {
   #
   # The leading v is stripped first so `--version v1.2.3` and `--version 1.2.3`
   # agree: the git tag carries the v, the registry tag does not.
+  #
+  # "dev" is the one version string that names a branch, not a release: it is
+  # what dev-ci.yml publishes as the rolling `:dev` image after a push to dev
+  # passes the compose smoke, precisely so a pre-release change can be tested
+  # here without waiting on a merge to main. `v${version}` would look for a
+  # "vdev" tag that never exists, so it gets its own ref instead of the
+  # release-tag prefix every numbered version uses.
   local version="${CB_VERSION#v}"
   local ref="main"
-  if [[ -n "${version}" ]]; then
+  if [[ "${version}" == "dev" ]]; then
+    ref="dev"
+  elif [[ -n "${version}" ]]; then
     ref="v${version}"
   fi
   local base_url="https://raw.githubusercontent.com/${CB_GITHUB_REPO}/${ref}"
@@ -1137,7 +1146,10 @@ stage_docker_deploy() {
     local remote="${asset%%:*}"
     local dest="${asset#*:}"
     if ! curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "${base_url}/${remote}" -o "${dest}"; then
-      if [[ -n "${version}" ]]; then
+      if [[ "${version}" == "dev" ]]; then
+        cb_fail "Could not download ${remote} from the dev branch" \
+                "Check network access to raw.githubusercontent.com, or that ${remote} still exists on dev."
+      elif [[ -n "${version}" ]]; then
         cb_fail "Could not download ${remote} at ref ${ref}" \
                 "Is v${version} a published release? Check https://github.com/${CB_GITHUB_REPO}/releases, or drop --version to install from main."
       else
@@ -1662,7 +1674,9 @@ show_help() {
   echo "  --email <address>      Email for Let's Encrypt notifications"
   echo "  --data-dir <path>      Data directory (default: /var/lib/circuitbreaker)"
   echo "  --no-tls               Skip TLS cert generation"
-  echo "  --version <version>    Install specific version (default: latest)"
+  echo "  --version <version>    Install specific version (default: latest)."
+  echo "                         With --docker, 'dev' pins to the dev branch"
+  echo "                         and the :dev image instead of a release tag."
   echo "  --local-bundle <path>  Use a pre-downloaded bundle tarball"
   echo "  --unattended           Skip all prompts, use defaults (for Proxmox LXC)"
   echo "  --verbose              Print every step instead of a progress bar."
