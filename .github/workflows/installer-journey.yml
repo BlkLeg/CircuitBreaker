@@ -15,17 +15,14 @@ on:
       - 'scripts/build_native_release.py'
       - 'scripts/ci/installer-journey.sh'
       - '.github/workflows/installer-journey.yml'
+  # No inputs (CKV_GHA_7: workflow_dispatch inputs must not be able to
+  # influence build output). A manual run always takes the "build the
+  # previous bundle locally" branch below, same as an empty previous_release
+  # did before this input was removed from this trigger. Picking a specific
+  # prior release to upgrade from is still possible — through workflow_call
+  # below, which only another workflow in this repo can invoke, not an
+  # arbitrary person with dispatch access typing a tag into the UI.
   workflow_dispatch:
-    inputs:
-      previous_release:
-        description: >-
-          Tag of the release to upgrade FROM in the upgrade leg (e.g. v0.4.3).
-          Empty builds the previous bundle in this job with --packaging onefile,
-          which is only possible while PyInstaller is still in the tree (Task 8
-          of the 2026-09-22 plan pins a tag here when it removes it).
-        required: false
-        type: string
-        default: ""
   # Called by release-dry-run.yml, so a release candidate can be put through
   # the whole install matrix before a tag exists. The pull_request trigger
   # above is path-filtered, which is right for day-to-day work and wrong for a
