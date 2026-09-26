@@ -182,7 +182,7 @@ cb backup
 In `docker`, `compose`, and `binary` modes this produces the full-state snapshot described above —
 the same artifact the scheduler and the admin API produce — into
 `${CB_BACKUP_DIR:-~/.circuit-breaker/backups}`. It prints the path and the `cb restore` command for
-it. See [cb CLI Tool](cb-cli.md#cb-backup).
+it. See [cb CLI Tool](cb-cli.md#cb-backup-cb-restore).
 
 !!! note "Native installs"
     The `cb` shipped by the native installer (`deploy/cli/cb`) still writes a database-only
