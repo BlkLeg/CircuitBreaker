@@ -690,7 +690,10 @@ jobs:
     needs: version
     runs-on: ubuntu-22.04
     permissions:
-      contents: read
+      # write, although this job only reads: GitHub hides draft releases from
+      # tokens without push access, so under `read` the draft this job exists
+      # to verify is reported as "release not found".
+      contents: write
       packages: read
     outputs:
       image_digest: ${{ steps.candidate.outputs.image_digest }}
