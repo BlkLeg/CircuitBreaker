@@ -58,9 +58,10 @@ which of them are in force today and which are not:
 - **Tier 1** — guaranteed to install, boot, upgrade and roll back: deb/rpm on amd64.
 - **Tier 2** — guaranteed to install and boot: deb/rpm on arm64, verified on
   GitHub's native `ubuntu-22.04-arm` runners.
-- **Tier 3** — guaranteed to build only: apk, AppImage, tarball. `pkg.tar.zst` is
-  **not** in this list; see the 2026-09-21 note below for what was actually being
-  produced when it was.
+- **Tier 3** — apk and AppImage are guaranteed to **build only**. The release
+  **tarball** (what `install.sh` installs) is guaranteed to **install and boot**
+  once the installer journey covers it. `pkg.tar.zst` is **not** in this list;
+  see the 2026-09-21 note below for what was actually being produced when it was.
 
 Four further rules apply repo-wide: a gate may not pass by not running; a gate may not
 pass by not asking; test configuration that changes semantics must be branch-invariant;
@@ -85,7 +86,7 @@ verified. It does not assert that the verification named above has been built.
 |---|---|---|---|
 | 1 | Install, boot, upgrade, roll back — deb/rpm amd64 | The `mode: upgrade` row passes against a release candidate and its evidence is recorded | **Not in force, and not reachable before 0.5.0.** Phase 3 added `fedora-rpm-amd64-upgrade` and the assertions behind it, and fixed the packaging defects it exists to catch. The row has not been executed against a CI-built candidate — and it cannot yet be executed *honestly*, because no released version boots from its own deb/rpm, so there is no N-1 to upgrade from. 0.4.0 is the first release whose package boots and is retained as the N-1 fixture; this row's evidence is `0.4.0 → 0.5.0`. See the 2026-08-30 note. |
 | 2 | Install and boot — deb/rpm arm64 | `artifact-smoke.yml`'s `deb-boot` job passes on the `ubuntu-22.04-arm` leg | **Built, not yet passed.** The job now installs the candidate, starts the units, waits for `/livez` and `/readyz`, reads `alembic_version` out of the database, bootstraps an admin and makes an authenticated request, then uninstalls. It has never completed: on v0.4.3 it failed in `Initialize containers` before its first step (see the 2026-09-21 note). It also now runs pre-tag, from `dev-ci.yml` and `ci.yml`, so the next passing run is on an integration branch rather than a release. |
-| 3 | Build only — apk, AppImage, tarball | The build gate is green for each format | **In force**, for those three. `pkg.tar.zst` was listed here and was never produced — see the 2026-09-21 note. |
+| 3 | Build only — apk, AppImage; install and boot — tarball (`install.sh`) | apk/AppImage: the build gate is green for each format. Tarball: `installer-journey` installs the release tarball, boots the units, and probes `/readyz` | **Tarball install-and-boot in force** on this branch — local Fedora journey green (`runtime pbs`, `/readyz`, `=== Journey complete ===`); the first Actions run URL lands when `feat/hermetic-installer-runtime` is on the remote ([installer-journey.yml](https://github.com/BlkLeg/CircuitBreaker/actions/workflows/installer-journey.yml)). **apk and AppImage remain build-only / in force.** `pkg.tar.zst` was listed here and was never produced — see the 2026-09-21 note. |
 
 Two consequences follow while any row above reads *not in force*:
 
@@ -162,6 +163,15 @@ image its journey runs in, and — for RHEL, which needs a paid subscription —
 rebuilds cover it and why. `tests/build/test_install_support_matrix.py` reconciles the
 declaration with install.sh's two case statements and with the journey matrix, so a
 family cannot be claimed without being executed or explained.
+
+**2026-09-22.** The release tarball left "build only". `installer-journey`
+(wired from `ci.yml` and `release.yml`) installs the hermetic PBS tarball,
+boots the units, probes `/readyz`, and asserts `"runtime": "pbs"` in
+`share/build-info.json`. That is install-and-boot evidence for the format
+`curl … install.sh | bash` actually installs. apk and AppImage stay build-only.
+The first GitHub Actions run URL for the PBS journey is recorded when this
+branch reaches the remote; until then the local Fedora leg on this branch is
+the evidence (`runtime pbs` + `=== Journey complete ===`).
 
 ## Rejected alternatives
 

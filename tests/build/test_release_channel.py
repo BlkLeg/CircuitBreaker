@@ -21,6 +21,7 @@ assert _SPEC is not None and _SPEC.loader is not None
 _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 
+release_channel = _MODULE
 is_prerelease = _MODULE.is_prerelease
 channel_tags = _MODULE.channel_tags
 
@@ -73,3 +74,30 @@ def test_cli_emits_shell_consumable_fields() -> None:
         check=True,
     )
     assert out.stdout.split() == ["1.0.0", "latest"]
+
+
+@pytest.mark.parametrize(
+    ("version", "channel", "expected"),
+    [
+        ("1.0.0", "stable", ["1.0.0", "latest"]),
+        ("1.0.0-rc.2", "stable", ["1.0.0-rc.2"]),
+        ("1.0.0", "candidate", ["1.0.0-candidate", "candidate"]),
+        ("1.0.0-rc.2", "candidate", ["1.0.0-rc.2-candidate", "candidate"]),
+        ("1.0.0", "nightly", ["nightly"]),
+    ],
+)
+def test_channel_tags_by_channel(version, channel, expected):
+    assert release_channel.channel_tags(version, channel) == expected
+
+
+def test_unknown_channel_is_refused():
+    with pytest.raises(SystemExit, match="channel"):
+        release_channel.channel_tags("1.0.0", "beta")
+
+
+def test_cli_channel_argument() -> None:
+    out = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--version", "1.0.0", "--field", "tags", "--channel", "candidate"],
+        capture_output=True, text=True, check=True,
+    )
+    assert out.stdout.split() == ["1.0.0-candidate", "candidate"]

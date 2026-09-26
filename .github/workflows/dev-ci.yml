@@ -658,10 +658,22 @@ jobs:
       arches: '["amd64"]'
 
   # ── Docker Smoke Build ────────────────────────────────────────────────────────
+  # needs artifact-smoke: §5.1 publishes :nightly only after the package gate
+  # AND the compose smoke below. Serialising the image build behind smoke is the
+  # smallest way to enforce that without a second job that cannot see the local
+  # image the compose smoke just proved.
   build-docker:
     name: Build Docker (smoke test)
+    needs: [artifact-smoke]
     runs-on: ubuntu-22.04
     timeout-minutes: 40
+    # packages: write is only exercised by "Push the dev image" below, and
+    # only on a real push to dev — a pull-request run never reaches it (see
+    # that step's `if:`), so a PR from a fork never needs, and never gets,
+    # write access to this repo's GHCR namespace.
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v5
 
@@ -676,6 +688,20 @@ jobs:
           docker build -f Dockerfile.mono \
             -t "circuitbreaker:${CB_VERSION}" \
             .
+
+      - name: Export the image's provenance
+        run: |
+          set -euo pipefail
+          docker buildx build -f Dockerfile.mono --target app-build-info \
+            --output type=local,dest=/tmp/image-info .
+          cat /tmp/image-info/build-info.json
+      - name: Upload the image's provenance
+        uses: actions/upload-artifact@v7
+        with:
+          name: dev-image-build-info-amd64
+          path: /tmp/image-info/build-info.json
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Verify agent binaries are baked into the image
         env:
@@ -891,6 +917,22 @@ jobs:
           echo "stopped in ${elapsed}s"
           [ "${elapsed}" -lt 30 ] || { echo "::error::container did not exit on SIGTERM; it was killed after ${elapsed}s"; exit 1; }
 
+      # The nightly channel (§5.1): after artifact-smoke (job needs) AND the
+      # compose smoke above, on a push to dev (never a PR). amd64 only, because
+      # this job builds one architecture; the packages are the
+      # dev-packages-amd64 artifact above.
+      - name: Publish :nightly
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in $(python3 scripts/release_channel.py --version "$(cat VERSION)" --channel nightly --field tags) "${CB_VERSION}"; do
+            docker tag "circuitbreaker:${CB_VERSION}" "ghcr.io/blkleg/circuitbreaker:${tag}"
+            docker push "ghcr.io/blkleg/circuitbreaker:${tag}"
+          done
+
       # if: always() — the run that most needs its logs is the one that failed
       # before reaching the step that would have collected them.
       - name: Collect container diagnostics
@@ -913,6 +955,32 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # Published only after the compose smoke above has already started this
+      # exact image, migrated, reached /readyz and survived a restart — the
+      # same bar release.yml holds a candidate to, just without that
+      # pipeline's channel/draft/sign/SBOM machinery, none of which exists on
+      # dev. `:dev` always points at the newest pushed commit; `:dev-<sha>`
+      # is what a VM test can pin to and diff against later. This is the
+      # "so I can test features before merging properly" ask: `docker pull
+      # ghcr.io/blkleg/circuitbreaker:dev` from any host, no scp required.
+      #
+      # `if: github.event_name == 'push'`: a pull_request run builds and
+      # smoke-tests the same way (so a PR's Dockerfile/entrypoint changes are
+      # still caught), but only a real push to `dev` — a merged commit —
+      # publishes, matching this job's `packages: write` comment above.
+      - name: Push the dev image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMAGE="ghcr.io/blkleg/circuitbreaker"
+          docker tag "circuitbreaker:${CB_VERSION}" "${IMAGE}:${CB_VERSION}"
+          docker tag "circuitbreaker:${CB_VERSION}" "${IMAGE}:dev"
+          docker push "${IMAGE}:${CB_VERSION}"
+          docker push "${IMAGE}:dev"
+
       # The .env holds four live secrets. They are ephemeral and single-run, but
       # the workspace is not guaranteed to be discarded before another step
       # reads it, and `docker compose down -v` needs the file to resolve the
@@ -923,6 +991,37 @@ jobs:
           docker compose -f docker-compose.yml down -v --remove-orphans || true
           shred -u .env 2>/dev/null || rm -f .env
           sudo rm -rf "${RUNNER_TEMP}/cb-smoke-data" || true
+
+  # ── The image and the package are the same application ─────────────────────
+  # D7 of the 2026-09-22 design: the mono image rebuilds the tree from the same
+  # pins the native build uses, and this is where "the same" is asserted rather
+  # than assumed. A pin edited in one place, a requirement file the image does
+  # not copy, or a pruning difference all fail here, before a release.
+  runtime-parity:
+    name: Runtime parity (image == package)
+    needs: [build-native, build-docker]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: dev-packages-amd64
+          path: dist/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: dev-image-build-info-amd64
+          path: image-info/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compare provenance
+        env:
+          VERSION: ${{ needs.build-native.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p unpacked
+          tar -xzf "dist/circuit-breaker_${VERSION}_linux_amd64.tar.gz" -C unpacked share/build-info.json
+          python3 scripts/ci/assert_runtime_parity.py unpacked/share/build-info.json image-info/build-info.json
 
   # ── Browser E2E ──────────────────────────────────────────────────────────────
   # Ported from ci.yml, verbatim apart from this comment. It was main-only, so

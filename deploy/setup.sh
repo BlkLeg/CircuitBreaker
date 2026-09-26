@@ -168,9 +168,9 @@ stage1_bootstrap() {
 
   # Create directory structure
   cb_step "Creating directory structure"
-  echo "    Application: /opt/circuitbreaker"
-  echo "    Data: ${CB_DATA_DIR}"
-  echo "    Config: /etc/circuitbreaker"
+  cb_detail "Application: /opt/circuitbreaker"
+  cb_detail "Data: ${CB_DATA_DIR}"
+  cb_detail "Config: /etc/circuitbreaker"
   
   declare -A DIRS=(
     ["/opt/circuitbreaker"]="root:root:755"
@@ -196,7 +196,17 @@ stage1_bootstrap() {
     ["${CB_DATA_DIR}/tmp"]="breaker:breaker:700"
     ["${CB_DATA_DIR}/logs"]="breaker:breaker:755"
     ["${CB_DATA_DIR}/backups"]="breaker:breaker:755"
-    ["/etc/circuitbreaker"]="root:breaker:750"
+    # World-traversable on purpose: install-identity.json (0644, no secrets —
+    # see deploy/lib/install-identity.sh) lives here, and `cb info`/`cb
+    # status`/`cb doctor` read it to report on the install at all. At 0750
+    # this directory itself blocked that traversal for the operator who ran
+    # the installer, forcing `sudo cb <anything>` even to check whether the
+    # app was up — unworkable for a homelab tool nobody wants to sudo into
+    # for routine use. The files that actually hold secrets (.env,
+    # docker-proxy.env, helper.conf) are unaffected: each is 0640 root:breaker
+    # in its own right, so a directory listing does not make them readable —
+    # `stat`/`ls` show the name, not the contents.
+    ["/etc/circuitbreaker"]="root:breaker:755"
     ["/etc/nats"]="root:root:755"
     ["/etc/pgbouncer"]="root:root:755"
   )
@@ -636,7 +646,7 @@ stage3_configure_postgres() {
   mkdir -p "${CB_DATA_DIR}/postgres"
   chown postgres:postgres "${CB_DATA_DIR}/postgres"
   chmod 700 "${CB_DATA_DIR}/postgres"
-  echo "    Data directory: ${CB_DATA_DIR}/postgres (postgres:postgres 700)"
+  cb_detail "Data directory: ${CB_DATA_DIR}/postgres (postgres:postgres 700)"
   cb_ok "PostgreSQL data directory created"
   
   # Initialize database
@@ -737,7 +747,7 @@ stage3_configure_pgbouncer() {
   # Compute MD5 hash - CRITICAL: format is md5(password+username)
   cb_step "Configuring pgbouncer connection pooler"
   export pgbouncer_hash=$(echo -n "${CB_DB_PASSWORD}breaker" | md5sum | cut -d' ' -f1)
-  echo "    Pool port: 6432, Backend: PostgreSQL 5432"
+  cb_detail "Pool port: 6432, Backend: PostgreSQL 5432"
   
   mkdir -p /etc/pgbouncer
   
@@ -857,12 +867,12 @@ stage3_configure_redis() {
   mkdir -p "${CB_DATA_DIR}/redis"
   chown "${CB_REDIS_USER}:${CB_REDIS_USER}" "${CB_DATA_DIR}/redis"
   chmod 755 "${CB_DATA_DIR}/redis"
-  echo "    Redis data: ${CB_DATA_DIR}/redis (${CB_REDIS_USER}:${CB_REDIS_USER})"
+  cb_detail "Redis data: ${CB_DATA_DIR}/redis (${CB_REDIS_USER}:${CB_REDIS_USER})"
 
   cb_render_template "/opt/circuitbreaker/deploy/config/redis.conf" "/etc/redis/redis.conf"
   chown "${CB_REDIS_USER}:${CB_REDIS_USER}" /etc/redis/redis.conf
   chmod 640 /etc/redis/redis.conf
-  echo "    Port: 6379, Max memory: 256MB, Policy: allkeys-lru"
+  cb_detail "Port: 6379, Max memory: 256MB, Policy: allkeys-lru"
   cb_ok "Configuration written"
   
   # Start Redis
@@ -919,7 +929,7 @@ stage3_configure_nats() {
   
   chown breaker:breaker /etc/nats/nats.conf
   chmod 640 /etc/nats/nats.conf
-  echo "    Port: 4222, Store: ${CB_DATA_DIR}/nats"
+  cb_detail "Port: 4222, Store: ${CB_DATA_DIR}/nats"
   cb_ok "Configuration written"
   
   # Start NATS
@@ -1246,8 +1256,8 @@ EOF
 write_wait_for_services_script() {
   cb_section "Creating Service Health Check Script"
   cb_step "Writing wait-for-services.sh"
-  echo "    Location: /opt/circuitbreaker/scripts/wait-for-services.sh"
-  echo "    Purpose: Pre-start verification for backend API"
+  cb_detail "Location: /opt/circuitbreaker/scripts/wait-for-services.sh"
+  cb_detail "Purpose: Pre-start verification for backend API"
   
   mkdir -p /opt/circuitbreaker/scripts
   
@@ -1280,8 +1290,8 @@ write_service_scripts() {
 stage4_write_systemd_units() {
   cb_section "Writing systemd Service Units"
   cb_step "Creating systemd unit files"
-  echo "    All services will log to systemd journal"
-  echo "    View with: journalctl -u circuitbreaker-<service>"
+  cb_detail "All services will log to systemd journal"
+  cb_detail "View with: journalctl -u circuitbreaker-<service>"
 
   # Detect Redis user for templating (Arch uses 'redis', Debian uses 'redis', some RHEL might use '_redis').
   # Self-heal: the redis-server binary can be present while its postinst
@@ -1389,8 +1399,69 @@ stage4_write_systemd_units() {
   stage_configure_helper
 }
 
+# Move the staged runtime into place. Runs only after the services are stopped
+# (run_upgrade) or before they have ever started (fresh install), because a
+# live interpreter must never have its python/ replaced underneath it. The
+# previous runtime is kept as python.prev / bin/circuit-breaker.prev until
+# cb_finalise_runtime_tree, which stage8_start_services calls after /readyz.
+cb_activate_runtime_tree() {
+  local staging=/opt/circuitbreaker/.staging
+  if [[ ! -x "${staging}/bin/circuit-breaker" || ! -x "${staging}/python/bin/python3" ]]; then
+    cb_fail "No staged runtime at ${staging}" "The files phase did not complete — re-run the installer"
+  fi
+  cb_step "Activating application runtime"
+  rm -rf /opt/circuitbreaker/python.prev /opt/circuitbreaker/bin/circuit-breaker.prev
+  if [[ -d /opt/circuitbreaker/python ]]; then
+    mv /opt/circuitbreaker/python /opt/circuitbreaker/python.prev
+  fi
+  if [[ -e /opt/circuitbreaker/bin/circuit-breaker ]]; then
+    mv /opt/circuitbreaker/bin/circuit-breaker /opt/circuitbreaker/bin/circuit-breaker.prev
+  fi
+  mv "${staging}/python" /opt/circuitbreaker/python
+  mkdir -p /opt/circuitbreaker/bin
+  cp -f "${staging}/bin/circuit-breaker" "${staging}/bin/cb-python" /opt/circuitbreaker/bin/
+  chmod 755 /opt/circuitbreaker/bin/circuit-breaker /opt/circuitbreaker/bin/cb-python
+  rm -rf "${staging}"
+  cb_ok "Runtime active at /opt/circuitbreaker/python"
+}
+
+# Undo cb_activate_runtime_tree. Called when the activated tree fails its
+# self-test, before cb_fail, so a host that was working keeps working.
+# PyInstaller → PBS has no python.prev (the previous layout had no tree); drop
+# the failed activation and restore the onefile launcher from *.prev instead.
+cb_rollback_runtime_tree() {
+  if [[ -d /opt/circuitbreaker/python.prev ]]; then
+    rm -rf /opt/circuitbreaker/python
+    mv /opt/circuitbreaker/python.prev /opt/circuitbreaker/python
+  else
+    rm -rf /opt/circuitbreaker/python
+    rm -f /opt/circuitbreaker/bin/cb-python
+  fi
+  if [[ -e /opt/circuitbreaker/bin/circuit-breaker.prev ]]; then
+    mv -f /opt/circuitbreaker/bin/circuit-breaker.prev /opt/circuitbreaker/bin/circuit-breaker
+  fi
+}
+
+# The runtime is proven: drop the rollback copy and whatever the PyInstaller
+# binary left behind. Only ever called after /readyz has answered 200.
+cb_finalise_runtime_tree() {
+  rm -rf /opt/circuitbreaker/python.prev /opt/circuitbreaker/bin/circuit-breaker.prev
+  rm -rf /var/lib/circuitbreaker/run/*/_MEI* 2>/dev/null || true
+}
+
 stage6_apply_binary() {
-  cb_section "Binary Backend Setup"
+  cb_section "Application Runtime"
+
+  if [[ -d /opt/circuitbreaker/.staging ]]; then
+    cb_activate_runtime_tree
+  else
+    # Fresh PyInstaller install already placed the binary at
+    # /opt/circuitbreaker/bin/circuit-breaker; there is nothing to activate.
+    [[ -x /opt/circuitbreaker/bin/circuit-breaker ]] \
+      || cb_fail "No application binary at /opt/circuitbreaker/bin/circuit-breaker" \
+                 "The files phase did not complete — re-run the installer"
+    cb_ok "Binary already installed (PyInstaller layout)"
+  fi
 
   cb_step "Setting binary permissions"
   chmod 755 /opt/circuitbreaker/bin/circuit-breaker
@@ -1401,22 +1472,10 @@ stage6_apply_binary() {
   # through a file capability on the binary itself. Any file capability left on
   # it by an older install is removed here, on every run, including upgrades.
   #
-  # `setcap cap_net_raw+ep` on this path did three things, all bad, and none of
+  # `setcap cap_net_raw+ep` on this path did two things, all bad, and none of
   # them was granting a privilege the units did not already have:
   #
-  #  1. It made every exec of the binary privilege-gaining, so the kernel marked
-  #     the process non-dumpable and /proc/<pid>/exe became unreadable even to
-  #     the user running it. PyInstaller's --onefile child validates its parent
-  #     by reading exactly that, so it died:
-  #       "Security validation failure: could not access /proc entry to
-  #        determine the executable path for originating onefile parent
-  #        process!"
-  #     That killed all five circuitbreaker-worker@ units on archlinux and made
-  #     `circuit-breaker --selftest` — and therefore `cb doctor` and
-  #     `cb diag bundle` — fail for every unprivileged caller, reporting a
-  #     healthy install as a broken binary.
-  #
-  #  2. Exec'ing a file that carries capabilities CLEARS the ambient set. So the
+  #  1. Exec'ing a file that carries capabilities CLEARS the ambient set. So the
   #     AmbientCapabilities systemd had just set were discarded at exec, and
   #     services/discovery_probes.py's _has_ambient_net_raw() — which reads
   #     CapAmb from /proc/self/status — saw nothing. Its own docstring says it:
@@ -1424,7 +1483,7 @@ stage6_apply_binary() {
   #     Python binary do not." The file capability was silently defeating the
   #     mechanism discovery actually depends on.
   #
-  #  3. It put a capability-carrying binary on disk for any local user to exec,
+  #  2. It put a capability-carrying binary on disk for any local user to exec,
   #     which is strictly more privilege than the units need.
   #
   # Raw sockets still work: AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN on
@@ -1433,6 +1492,8 @@ stage6_apply_binary() {
   # privilege-gaining exec, and the ambient set therefore survives into the
   # process and into the nmap children it spawns. nmap keeps its own file
   # capability below, which is what covers an nmap run outside those units.
+  # The setcap -r target is now the launcher script; a file capability on it
+  # would still clear the ambient set, so the check stays.
   cb_step "Clearing file capabilities from the binary"
   if command -v setcap &>/dev/null; then
     setcap -r /opt/circuitbreaker/bin/circuit-breaker >> "$LOG_FILE" 2>&1 || true
@@ -1477,7 +1538,8 @@ stage6_apply_binary() {
     cb_ok "Binary self-test passed"
   else
     echo "$_selftest_out" >> "$LOG_FILE" 2>&1 || true
-    cb_fail "The installed binary failed its self-test" \
+    cb_rollback_runtime_tree
+    cb_fail "The installed runtime failed its self-test; the previous runtime was put back" \
       "The bundle is incomplete or corrupt — this is a packaging fault, not a configuration one. Re-run the installer to download it again; if it fails twice, report the version at https://github.com/BlkLeg/circuitbreaker/issues. Detail: ${_selftest_out##*$'\n'}"
   fi
 
@@ -1532,6 +1594,22 @@ stage8_start_services() {
     fi
   done
   cb_ok "Backend API started"
+
+  # /health says the process answers; /readyz says Postgres, Redis and NATS all
+  # do too. Success is the second one.
+  cb_step "Waiting for readiness"
+  local ready_code=""
+  elapsed=0
+  until [[ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/readyz 2>/dev/null)" == "200" ]]; do
+    sleep 2
+    elapsed=$((elapsed + 2))
+    if [[ $elapsed -ge 120 ]]; then
+      ready_code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/readyz 2>/dev/null)"
+      cb_fail "Backend never became ready (last /readyz was ${ready_code:-no answer})" "Run: cb doctor"
+    fi
+  done
+  cb_ok "Backend ready"
+  cb_finalise_runtime_tree
   
   # Start workers — warn per-worker rather than aborting a mostly-working install
   cb_step "Starting worker processes"
@@ -1570,8 +1648,8 @@ stage8_start_services() {
 stage9_install_cb_cli() {
   cb_section "Installing Management CLI"
   cb_step "Installing cb command-line tool"
-  echo "    Location: /usr/local/bin/cb"
-  echo "    Commands: info, status, doctor, logs, restart, backup, update, version, uninstall"
+  cb_detail "Location: /usr/local/bin/cb"
+  cb_detail "Commands: info, status, doctor, logs, restart, backup, update, version, uninstall"
 
   # Canonical CLI is the repo-root `cb`. Bundles stage it under deploy/cli/cb
   # (same file, or a thin wrapper); prefer the shared implementation when both
@@ -1603,7 +1681,7 @@ stage9_install_cb_cli() {
     if cp /opt/circuitbreaker/uninstall.sh /usr/local/bin/uninstall-circuit-breaker \
       && chmod 755 /usr/local/bin/uninstall-circuit-breaker \
       && chown root:root /usr/local/bin/uninstall-circuit-breaker; then
-      echo "    Uninstaller: /usr/local/bin/uninstall-circuit-breaker (or: cb uninstall)"
+      cb_detail "Uninstaller: /usr/local/bin/uninstall-circuit-breaker (or: cb uninstall)"
     else
       cb_warn "Uninstaller could not be installed — remove with: bash uninstall.sh"
     fi
@@ -1639,8 +1717,13 @@ stage9_write_install_identity() {
   # shellcheck source=/dev/null
   source "$identity_lib"
   local services="circuitbreaker-postgres,circuitbreaker-pgbouncer,circuitbreaker-redis,circuitbreaker-nats,circuitbreaker-backend,nginx"
+  local runtime=pyinstaller
+  if [[ -x /opt/circuitbreaker/python/bin/python3 ]]; then
+    runtime=pbs
+  fi
   if write_install_identity /etc/circuitbreaker/install-identity.json \
     mode=native \
+    runtime="$runtime" \
     version="$version" \
     config_path=/etc/circuitbreaker/.env \
     data_dir="${CB_DATA_DIR:-/var/lib/circuitbreaker}" \
@@ -1664,7 +1747,17 @@ stage10_final_output() {
   source /etc/circuitbreaker/.env
   local detected_ip=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[^ ]+' || echo "localhost")
   local version=$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null || echo "unknown")
-  
+
+  # cb_section routes through cb_detail, which only reaches the screen in
+  # --verbose mode — right for the sub-narration it is used for everywhere
+  # else in this file, but wrong here: in the two modes most installs
+  # actually run in (plain, tty), the single line that says the install
+  # SUCCEEDED never printed at all, and the operator was left to infer
+  # success from the absence of an error. Print it unconditionally, in every
+  # mode, before the quieter section label.
+  echo ""
+  echo -e "  ${GREEN}${BOLD}✓  SUCCESS — Circuit Breaker is running!${RESET}"
+
   cb_section "Circuit Breaker is running!"
   echo ""
   
@@ -1826,7 +1919,7 @@ cb_airgap_find_pg_bin_dir() {
 # loop once per dependency.
 cb_airgap_verify_dependencies() {
   cb_section "Verifying Dependencies (air-gap)"
-  echo "    Air-gap mode: nothing will be installed or downloaded."
+  cb_detail "Air-gap mode: nothing will be installed or downloaded."
 
   local missing=()
   local tool
@@ -1853,6 +1946,12 @@ cb_airgap_verify_dependencies() {
 
   if (( ${#missing[@]} > 0 )); then
     cb_warn "Air-gap install needs these already present, and they are not:"
+    # cb_warn's tty branch redraws the live bar on its way out, so the raw
+    # `echo` lines below need the region torn down again right here — not
+    # once at cb_fail's own teardown, by which point cb_warn already
+    # re-armed it and these lines would corrupt the blind two-line rewind
+    # exactly like the mid-phase echoes this whole function used to have.
+    declare -f cb_ui_teardown >/dev/null 2>&1 && cb_ui_teardown
     for tool in "${missing[@]}"; do
       case "$tool" in
         postgresql-15)
@@ -1875,8 +1974,8 @@ cb_airgap_verify_dependencies() {
             "Install the packages above from your local mirror or media, then re-run"
   fi
 
-  echo "    PostgreSQL: $PG_BIN_DIR"
-  echo "    NATS: $(command -v nats-server)"
+  cb_detail "PostgreSQL: $PG_BIN_DIR"
+  cb_detail "NATS: $(command -v nats-server)"
 
   # Container telemetry is optional everywhere. In air-gap it additionally
   # requires the proxy image to be on the host already, because pulling it is an
@@ -1885,7 +1984,7 @@ cb_airgap_verify_dependencies() {
   if command -v docker &>/dev/null \
      && docker image inspect tecnativa/docker-socket-proxy:latest &>/dev/null; then
     DOCKER_AVAILABLE=true
-    echo "    Docker: present, docker-socket-proxy image already local"
+    cb_detail "Docker: present, docker-socket-proxy image already local"
   else
     DOCKER_AVAILABLE=false
     cb_warn "Container telemetry disabled — air-gap needs Docker plus a preloaded"
@@ -2048,7 +2147,7 @@ stage2_dependencies() {
     cb_fail "PostgreSQL 15 verification failed" "Check: $PG_BIN_DIR/pg_ctl --version"
   fi
   local pg_version=$("$PG_BIN_DIR/pg_ctl" --version | grep -oP '\d+\.\d+' | head -1)
-  echo "    Binary path: $PG_BIN_DIR"
+  cb_detail "Binary path: $PG_BIN_DIR"
   cb_ok "PostgreSQL ${pg_version} installed"
 
   # Group 4: pgbouncer, Redis, Nginx
@@ -2159,7 +2258,7 @@ stage2_dependencies() {
   if ! /usr/local/bin/nats-server --version &>/dev/null; then
     cb_fail "NATS Server verification failed" "Check: /usr/local/bin/nats-server --version"
   fi
-  echo "    Install path: /usr/local/bin/nats-server"
+  cb_detail "Install path: /usr/local/bin/nats-server"
   cb_ok "NATS Server ${nats_version} installed"
 
   # Docker detection — enables container telemetry proxy when Docker is present
@@ -2244,6 +2343,16 @@ run_upgrade() {
     # The path is /opt/circuitbreaker/deploy/scripts/restore.sh because that is where
     # the bundle puts it (scripts/build_native_release.py copies deploy/scripts into the
     # release tarball, mode intact) — the same layout this upgrade just installed.
+    #
+    # This must stay visible in every mode, not just --verbose: it is the only
+    # place the rollback command is ever shown, and an operator recovering from
+    # a failed upgrade a few phases from now needs it on screen, not buried in
+    # a log they have to know to go find. Printed as raw output, so the live
+    # region has to be torn down first — the same discipline cb_header,
+    # stage10_final_output and uninstall.sh's closing banner already follow;
+    # see the comment on _cb_live_clear for why the renderer can't protect
+    # itself from an unguarded raw echo landing mid-phase.
+    declare -f cb_ui_teardown >/dev/null 2>&1 && cb_ui_teardown
     echo "    Roll back with: sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${backup_file}"
   else
     cb_warn "Database not running - skipping backup"
@@ -2253,9 +2362,31 @@ run_upgrade() {
 
   cb_phase_begin apply_bundle "Installing new version"
 
-  # Stop services after backup
-  cb_step "Stopping services"
-  systemctl stop circuitbreaker.target >> "$LOG_FILE" 2>&1 || true
+  # Stop services after backup.
+  #
+  # `systemctl stop circuitbreaker.target` alone is not enough: the target's
+  # member units are pulled in with Wants= (a start-time-only dependency), and
+  # before this fix only circuitbreaker-worker@.service also carried the
+  # PartOf=circuitbreaker.target that makes a target stop propagate to it.
+  # Confirmed live: without that, `systemctl stop circuitbreaker.target`
+  # leaves circuitbreaker-backend running, unchanged, indefinitely — the
+  # runtime tree gets replaced underneath a live interpreter, and a later
+  # `systemctl start circuitbreaker-backend` is a silent no-op against an
+  # already-active unit, so the new code never actually takes effect until
+  # something else (a crash, a reboot) finally cycles the process.
+  #
+  # deploy/systemd/circuitbreaker-*.service now all carry that PartOf=, so
+  # stopping the target is correct for every upgrade from here on — except
+  # the one that installs that fix: the units on disk at this exact line are
+  # whatever the PREVIOUS install wrote, which may predate it. Stopping each
+  # unit by name works regardless of which unit files are currently active,
+  # so this line does not rely on the fix it ships having already taken effect.
+  local _worker_type
+  for _worker_type in "${CB_WORKER_TYPES[@]}"; do
+    systemctl stop "circuitbreaker-worker@${_worker_type}" >> "$LOG_FILE" 2>&1 || true
+  done
+  systemctl stop circuitbreaker.target circuitbreaker-backend circuitbreaker-pgbouncer \
+    circuitbreaker-redis circuitbreaker-nats circuitbreaker-postgres >> "$LOG_FILE" 2>&1 || true
   sleep 2
   cb_ok "Services stopped"
   

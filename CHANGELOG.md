@@ -15,7 +15,7 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
-## [0.4.3] — unreleased
+## [0.4.4] — unreleased
 
 Fixes the defect that made 0.4.2 unusable, and closes the gap in the release
 pipeline that let it ship.
@@ -27,6 +27,11 @@ release gate was green, because the only thing any of them executed was
 `--version` — which `start.py` resolves from an embedded file and returns on
 before the application is ever imported. The artifact was signed, attested,
 SBOM'd, scanned and version-parity-checked, and empty.
+
+This unreleased cut also replaces that PyInstaller onefile with a hermetic
+python-build-standalone tree shared by the tarball, packages and mono image,
+adds stage/activate/rollback for upgrades, and publishes through
+nightly → candidate → stable channels (tag last).
 
 ### Fixed
 
@@ -50,6 +55,15 @@ SBOM'd, scanned and version-parity-checked, and empty.
 
 ### Added
 
+- Hermetic native runtime: a pinned python-build-standalone tree under
+  `/opt/circuitbreaker/` (own interpreter, wheels, launcher). Packages symlink
+  `/usr/local/bin/circuit-breaker` into that tree; the mono image rebuilds from
+  the same pins and must share `runtime_digest`.
+- Installer stage → activate → verify → finalise, with `python.prev` held until
+  `/readyz` succeeds; `install.sh --channel stable|candidate`; uninstall via
+  install-identity on both layouts.
+- Release channels: `:nightly` from green `dev`, draft `candidate`, and
+  `stable` promote that retags the same digest (tag created last).
 - `circuit-breaker --selftest` resolves the ASGI target the way uvicorn does
   and imports every worker module and the migration entrypoint. It needs no
   database, broker or network. The build refuses to stage a binary that fails

@@ -208,3 +208,27 @@ commissioned the measurement:
 
 The tooling to answer all three is committed (`scripts/bench_packaging.py`,
 `--packaging`, `--output-dir`). The default packaging mode is unchanged.
+
+## Decision (2026-09-22) — superseding the 2026-09-20 outcome
+
+python-build-standalone was measured on worktop (Fedora 44, amd64, Intel Core
+Ultra 7 258V, 8 logical CPUs, 30 GiB) at commit `ae8fd9c0`:
+
+| configuration | build (s) | compressed (MiB) | installed (MiB) | warm selftest (s) |
+|---|---:|---:|---:|---:|
+| onefile | 59.1 | 122.4 | 155.2 | 2.848 |
+| pbs     | 30.3 | 134.7 | 463.1 | 2.240 |
+
+Page cache was not dropped (needs root); cold and warm are not distinguishable.
+Compressed size rose **10.0 %**; build wall-clock fell **48.7 %**. Installed size
+rose because the PBS tree keeps a full CPython plus site-packages rather than a
+single compressed executable.
+
+The 2026-09-20 rule ("adopt PBS unless it regresses compressed size by more
+than 40 % or build wall-clock by more than 50 %") is retired with the plan it
+belonged to. PBS is adopted by `docs/superpowers/specs/2026-09-22-installer-and-release-design.md`
+D3 on grounds that rule did not weigh: it removes the hidden-import failure
+class (three collectors, one an AST parser, each written after a shipped
+failure) and the `_MEI*` extraction containment burden (AGT-11, P0). The
+size delta above is within the old threshold, and is recorded
+here rather than argued about.

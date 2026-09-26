@@ -306,7 +306,11 @@ TRIVY_IGNORE=""
 # 2026-09-03) and, worse, let a stale lockfile in an abandoned worktree fail a
 # blocking gate after the real tree was already clean. Same class as 0d1f5142,
 # which excluded worktrees from the discovery-publisher scan.
-TRIVY_SKIP_DIRS="--skip-dirs .venv --skip-dirs .venv-release --skip-dirs node_modules --skip-dirs dist --skip-dirs .claude --skip-dirs build --skip-dirs artifacts"
+# .worktrees is the other worktree root (gitignored, used by `git worktree add
+# .worktrees/<branch>`). Trivy's --skip-dirs .venv only matches the top-level
+# .venv, so a worktree's own .venv was scanned and Moto's example keys failed
+# the pre-push gate on 2026-09-26 with the real tree clean.
+TRIVY_SKIP_DIRS="--skip-dirs .venv --skip-dirs .venv-release --skip-dirs node_modules --skip-dirs dist --skip-dirs .claude --skip-dirs .worktrees --skip-dirs build --skip-dirs artifacts"
 
 # The path entries in .trivyignore become --skip-dirs here, and they have to,
 # because Trivy's ignorefile does not do what this repo assumed it did: it

@@ -141,7 +141,7 @@ def test_every_path_the_package_pins_is_writable_or_shipped():
     inside ReadWritePaths, or under the read-only tree the package installs."""
     env_text = POSTINSTALL.read_text(encoding="utf-8")
     writable = _read_write_paths()
-    shipped_ro = ["/usr/local/share/circuit-breaker", "/usr/local/bin"]
+    shipped_ro = ["/usr/local/share/circuit-breaker", "/usr/local/bin", "/opt/circuitbreaker"]
     for match in re.finditer(r"^((?:CB_)?[A-Z_]*(?:DIR|INI))=(/\S+)$", env_text, re.M):
         var, path = match.group(1), match.group(2)
         allowed = writable + shipped_ro

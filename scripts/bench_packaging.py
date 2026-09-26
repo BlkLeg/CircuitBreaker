@@ -121,12 +121,16 @@ def measure(configuration: str, version: str) -> Measurement:
         unpacked.mkdir()
         with tarfile.open(archive) as handle:
             handle.extractall(unpacked, filter="data")
-        # The archive is FLAT: `circuit-breaker`, `deploy/`, `share/` and
-        # `manifest.json` all sit at the root, with no bundle subdirectory and
-        # no `bin/`. Verified against a real artifact with `tar -tzf`.
-        binary = unpacked / "circuit-breaker"
+        # Resolve the launcher from the produced manifest: onefile puts
+        # `circuit-breaker` at the archive root; pbs puts `bin/circuit-breaker`.
+        manifest_path = unpacked / "manifest.json"
+        if manifest_path.is_file():
+            relative = json.loads(manifest_path.read_text(encoding="utf-8")).get("binary", "circuit-breaker")
+        else:
+            relative = "circuit-breaker"
+        binary = unpacked / relative
         if not binary.exists():
-            raise SystemExit(f"no circuit-breaker at the bundle root of {archive}")
+            raise SystemExit(f"no {relative} in {archive}")
 
         _drop_caches()
         cold = _time_selftest(binary, runs=1)[0]

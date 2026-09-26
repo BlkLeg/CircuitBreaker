@@ -9,6 +9,48 @@ verify a backup before upgrading.
 
 ---
 
+## What changed for operators
+
+Native installs keep the application under `/opt/circuitbreaker/` with its own
+Python tree. `circuit-breaker` is a launcher into that tree; on package hosts
+`/usr/local/bin/circuit-breaker` remains a symlink. An in-place upgrade replaces
+the tree; your `.env`, data directory, vault key and TLS material stay put.
+
+## What to do
+
+Nothing new. Upgrade the same way you always have:
+
+- Native / Proxmox: `cb update` or `install.sh --upgrade`
+- Packages: `apt upgrade` / `dnf upgrade` once signed repos exist; until then
+  reinstall the newer package the same way you installed
+- Docker: pull the image tag you pin (see channels below)
+
+## Rollback
+
+During a native upgrade the previous interpreter is renamed to
+`python.prev` (and the old launcher to `bin/circuit-breaker.prev`) until
+`/readyz` returns 200. After health succeeds those copies are deleted. If the
+upgrade fails before that, the installer puts the previous tree back; if you
+need a database rollback after a completed upgrade, restore the pre-upgrade
+dump and reinstall the previous release (see
+[Rollback procedures](#rollback-procedures) below). Package hosts use
+`circuit-breaker-rollback`.
+
+## Release channels
+
+Three image/release channels exist; only **stable** is production-supported.
+
+| Channel | How it is produced | What users pull |
+|---|---|---|
+| **stable** | Promote of a soaked candidate (no rebuild). Default for `install.sh` and `:latest`. | `:X`, `:latest` (never for an rc) |
+| **candidate** | Draft GitHub Release becomes a published prerelease; images `:<version>-candidate` / `:candidate`. Opt in with `install.sh --channel candidate` or `CB_TAG=candidate`. | published prereleases and the moving `:candidate` tag |
+| **nightly** | Last green push to `dev` after artifact-smoke and compose smoke (amd64 image only). Unsupported for production. | `:nightly`, `:dev-<sha>` |
+
+Draft candidate releases are not reachable from unauthenticated `install.sh`;
+release captains soak them with `gh release download` and `--local-bundle`.
+
+---
+
 ## Check Your Current Version
 
 ```bash
@@ -83,7 +125,9 @@ Then:
 docker compose up -d
 ```
 
-Only `:<version>` and `:latest` tags are published. `CB_IMAGE` overrides the whole image reference if you host your own build.
+Only `:<version>`, `:latest`, `:candidate`, and `:nightly` tags are published
+(see [Release channels](#release-channels)). `CB_IMAGE` overrides the whole
+image reference if you host your own build.
 
 ---
 
@@ -97,21 +141,30 @@ Or check **Settings → About** in the UI.
 
 ---
 
-## Rollback
+## Rollback procedures
 
 ### Native / Proxmox LXC
 
-Re-run the installer with the `--version` flag. Give the version **without** the leading `v` — the installer adds it when looking up the release tag:
+While an upgrade is in flight, `/opt/circuitbreaker/python.prev` holds the
+previous interpreter until `/readyz` succeeds; afterwards it is removed. If
+`/readyz` never answers, the installer rolls the tree back itself. After a
+completed upgrade that you need to undo, restore the pre-upgrade dump and
+reinstall the previous release:
 
 ```bash
+sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${CB_DATA_DIR}/backups/pre-upgrade-<stamp>.sql
 curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --version 0.3.5
 ```
 
+Give `--version` **without** the leading `v` — the installer adds it when
+looking up the release tag. Reinstalling the previous release after the restore
+is what keeps Alembic from migrating the restored schema forward again.
+
 ### Distribution packages (deb / rpm)
 
-A package install is not the `install.sh` layout and does not share its paths, so the
-`/opt/circuitbreaker/...` command below does not exist on these hosts. Use the wrapper the package
-ships instead:
+Packages install the same hermetic tree under `/opt/circuitbreaker/`. Prefer the
+wrapper the package ships — it supplies the package unit name, role and
+environment file:
 
 ```bash
 sudo circuit-breaker-rollback
@@ -180,9 +233,10 @@ before it stops the services. Two things about it are worth knowing before you n
   sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${CB_DATA_DIR}/backups/pre-upgrade-<stamp>.sql
   ```
 
-  That path is the `install.sh` layout. On a deb/rpm host the same script is at
-  `/usr/local/share/circuit-breaker/deploy/scripts/restore.sh` and expects a different unit name,
-  role and environment file — run `sudo circuit-breaker-rollback <file>` there, which supplies them.
+  That path is the `install.sh` layout. On a deb/rpm host the restore script is at
+  `/usr/local/share/circuit-breaker/deploy/scripts/restore.sh` and expects a
+  different unit name, role and environment file — run
+  `sudo circuit-breaker-rollback <file>` there, which supplies them.
   See [Distribution packages](#distribution-packages-deb-rpm) above.
 
   Note that a bare dump restores the **database only** — no `uploads/`, no `CB_VAULT_KEY` rewrite, no

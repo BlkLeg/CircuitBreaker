@@ -68,14 +68,15 @@ Never lower the coverage gate to make a build green.
 
 `make verify` and `make verify-full` run unit suites, lint, and the security
 gate. **Neither runs a browser, the agent, the installer, or the packaged
-binary itself.** Four whole suites sit outside them:
+binary itself.** Five whole suites sit outside them:
 
 | Suite | Covers | How to run it |
 |---|---|---|
 | Browser E2E (Playwright) | the real frontend in a real browser | `cd apps/frontend && npx playwright test` |
 | Composed Agent E2E | the agent against the mono image | `make e2e-local` |
 | Installer journey | `install.sh` end to end on a real host | `bash install.sh --local-bundle <tarball> --unattended --no-tls` |
-| Artifact self-test | that the packaged binary contains the application | `circuit-breaker --selftest` |
+| Artifact self-test | that the packaged tree contains the application | `dist/native/bundle/bin/circuit-breaker --selftest` |
+| Runtime parity | native tree and mono image share `runtime_digest` | `scripts/ci/assert_runtime_parity.py` |
 
 A green `verify-full` therefore says nothing about a frontend dependency bump,
 a Playwright change, an agent change, a packaging change, or anything about

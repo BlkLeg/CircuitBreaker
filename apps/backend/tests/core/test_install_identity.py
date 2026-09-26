@@ -84,3 +84,19 @@ def test_candidate_order_includes_system_paths(
 def test_repair_hint_is_mode_specific() -> None:
     assert "native installer" in repair_hint_for_mode("native")
     assert "mono" in repair_hint_for_mode("mono").lower() or "/data" in repair_hint_for_mode("mono")
+
+
+def test_validate_accepts_a_known_runtime() -> None:
+    result = validate_install_identity(_minimal_identity(runtime="pbs"))
+    assert result["runtime"] == "pbs"
+
+
+def test_validate_rejects_an_unknown_runtime() -> None:
+    with pytest.raises(InstallIdentityError, match="runtime"):
+        validate_install_identity(_minimal_identity(runtime="nuitka"))
+
+
+def test_missing_runtime_stays_valid_and_absent() -> None:
+    """Identities written before 2026-09-22 have no runtime; they must still load."""
+    result = validate_install_identity(_minimal_identity())
+    assert "runtime" not in result

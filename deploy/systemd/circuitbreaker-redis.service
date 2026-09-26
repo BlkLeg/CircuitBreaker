@@ -1,6 +1,8 @@
 [Unit]
 Description=Circuit Breaker Redis
 After=network.target
+# See circuitbreaker-backend.service for why this matters.
+PartOf=circuitbreaker.target
 
 [Service]
 Type=notify

@@ -16,6 +16,11 @@ from typing import Any, Final
 IDENTITY_SCHEMA_VERSION: Final[int] = 1
 VALID_MODES: Final[frozenset[str]] = frozenset({"native", "package", "mono", "proxmox"})
 
+# How the application is packaged on this host. Absent on identities written
+# before 2026-09-22, which were all PyInstaller; readers treat absence on a
+# native/package host as "pyinstaller" (see runtime_or_default).
+VALID_RUNTIMES: Final[frozenset[str]] = frozenset({"pyinstaller", "pbs"})
+
 REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "schema_version",
     "mode",
@@ -32,6 +37,7 @@ OPTIONAL_FIELDS: Final[tuple[str, ...]] = (
     "compose_file",
     "cli_path",
     "health_url",
+    "runtime",
 )
 
 # Well-known paths, in search order after $CB_IDENTITY_PATH.
@@ -154,6 +160,15 @@ def validate_install_identity(data: Mapping[str, Any]) -> dict[str, Any]:
         value = data[field]
         if value is None or value == "":
             continue
+        if field == "runtime":
+            runtime = str(value).strip()
+            if runtime not in VALID_RUNTIMES:
+                raise InstallIdentityError(
+                    f"invalid identity runtime {runtime!r}; expected one of "
+                    + ", ".join(sorted(VALID_RUNTIMES))
+                )
+            normalized[field] = runtime
+            continue
         if field == "service_names":
             if not isinstance(value, list) or not all(
                 isinstance(item, str) and item.strip() for item in value
@@ -164,6 +179,21 @@ def validate_install_identity(data: Mapping[str, Any]) -> dict[str, Any]:
             normalized[field] = str(value).strip()
 
     return normalized
+
+
+def runtime_or_default(identity: Mapping[str, Any]) -> str | None:
+    """The runtime an identity implies, for readers that need one.
+
+    Native and package hosts written before the field existed ran the
+    PyInstaller binary; mono and proxmox identities carry no runtime and get
+    None.
+    """
+    runtime = identity.get("runtime")
+    if runtime:
+        return str(runtime)
+    if identity.get("mode") in {"native", "package"}:
+        return "pyinstaller"
+    return None
 
 
 def load_install_identity(

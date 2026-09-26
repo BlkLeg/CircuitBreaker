@@ -86,6 +86,13 @@ _CB_OPEN_TICKS_DONE=0
 _CB_DONE_WEIGHT=0
 _CB_LAST_ETA=-1
 _CB_ETA_TEXT=""
+# Seconds a whole flow is expected to take, real-world, or 0 when no such
+# number has been measured for the live table. Set by cb_ui_use_weights'
+# optional second argument alongside the weights themselves — see the
+# comment on _cb_update_eta for why this exists and why the two flows
+# without a measured number (upgrade, uninstall) simply leave it at 0
+# rather than carry a guessed value.
+_CB_REFERENCE_SECONDS=0
 
 # Phase weights, as percentages of a whole flow. They must sum to 100 and every
 # key used at runtime must appear here; tests/build/test_installer_phase_model.py
@@ -122,17 +129,27 @@ declare -gA CB_PHASE_WEIGHTS_UNINSTALL=(
   [preflight]=10 [stop]=30 [remove]=40 [cleanup]=20
 )
 
+# A real measured median for a cold fresh install, in seconds — see the
+# comment on _cb_update_eta for what this anchors and why. Upgrade and
+# uninstall have no equivalent constant yet: nobody has timed a representative
+# run of either, and a guessed number would just trade one wrong ETA for
+# another. Those two flows fall back to the elapsed-rate estimate instead
+# (cb_ui_use_weights leaves _CB_REFERENCE_SECONDS at 0 when called without a
+# second argument).
+CB_REFERENCE_SECONDS_INSTALL=120
+
 # The live table. cb_ui_use_weights swaps it; the renderer only ever reads this.
 declare -gA CB_PHASE_WEIGHTS=()
 
 cb_ui_use_weights() {
-  local table="$1" key
+  local table="$1" reference_seconds="${2:-0}" key
   local -n _source="$table"
   CB_PHASE_WEIGHTS=()
   for key in "${!_source[@]}"; do
     CB_PHASE_WEIGHTS["$key"]="${_source[$key]}"
   done
-  _cb_log "ui: weights=${table}"
+  _CB_REFERENCE_SECONDS="$reference_seconds"
+  _cb_log "ui: weights=${table} reference_seconds=${reference_seconds}"
 }
 
 declare -ga CB_PHASE_ORDER=(preflight bundle files deps database services start)
@@ -269,7 +286,7 @@ _cb_human_duration() {
 # and _cb_render_eta below is left as a pure printer of the text it leaves in
 # _CB_ETA_TEXT.
 _cb_update_eta() {
-  local pct elapsed remaining open_weight open_elapsed projected_total expected_phase
+  local pct elapsed remaining open_weight open_elapsed projected_total expected_phase expected_elapsed
   pct="$(_cb_overall_percent)"
   elapsed=$(( $(date +%s) - _CB_START_EPOCH ))
 
@@ -287,17 +304,25 @@ _cb_update_eta() {
   if [[ -n "${_CB_OPEN_PHASE}" ]]; then
     open_weight="${CB_PHASE_WEIGHTS[${_CB_OPEN_PHASE}]:-0}"
     open_elapsed=$(( $(date +%s) - _CB_OPEN_START ))
-    # The budget a phase "should" take, projected from a whole-run estimate
-    # rather than from elapsed-so-far. Budgeting off raw `elapsed` collapses
-    # for the phase currently open: elapsed is almost entirely that phase's
-    # own time, so "elapsed * open_weight / 100" is roughly open_elapsed
-    # itself and the overrun ratio trips almost immediately regardless of the
-    # phase's actual weight. Projecting the total run length from the rate
-    # observed so far (elapsed * 100 / pct) and taking this phase's share of
-    # THAT projected total gives a budget that reflects the whole flow, not
-    # just what has happened inside this one phase.
-    projected_total=$(( (elapsed * 100) / pct ))
-    expected_phase=$(( (projected_total * open_weight) / 100 + 1 ))
+    if (( _CB_REFERENCE_SECONDS > 0 )); then
+      # A real measured total exists for this flow — read the phase's budget
+      # straight off it instead of extrapolating one from the rate observed
+      # so far. See the comment on the "remaining" calculation below for why
+      # that extrapolation is the wrong tool once an actual number is known.
+      expected_phase=$(( (_CB_REFERENCE_SECONDS * open_weight) / 100 + 1 ))
+    else
+      # The budget a phase "should" take, projected from a whole-run estimate
+      # rather than from elapsed-so-far. Budgeting off raw `elapsed` collapses
+      # for the phase currently open: elapsed is almost entirely that phase's
+      # own time, so "elapsed * open_weight / 100" is roughly open_elapsed
+      # itself and the overrun ratio trips almost immediately regardless of
+      # the phase's actual weight. Projecting the total run length from the
+      # rate observed so far (elapsed * 100 / pct) and taking this phase's
+      # share of THAT projected total gives a budget that reflects the whole
+      # flow, not just what has happened inside this one phase.
+      projected_total=$(( (elapsed * 100) / pct ))
+      expected_phase=$(( (projected_total * open_weight) / 100 + 1 ))
+    fi
     # An absolute floor alongside the relative one: a low-weight phase has a
     # small expected_phase, so the 2x ratio alone can still trip within a
     # couple of seconds of ordinary noise. Nothing is reported "taking longer
@@ -308,7 +333,35 @@ _cb_update_eta() {
     fi
   fi
 
-  remaining=$(( (elapsed * (100 - pct)) / pct ))
+  if (( _CB_REFERENCE_SECONDS > 0 )); then
+    # Anchored to a real measured total instead of extrapolated from
+    # elapsed/pct. That extrapolation assumes the rate observed so far holds
+    # for whatever has not run yet — true only if every phase costs the same
+    # seconds per weight-point, which they don't: preflight/bundle/files
+    # finish in seconds while deps alone is 45% of the flow, so any early
+    # sample is dominated by the fast administrative phases and always
+    # lowballs the total (observed: 20% done at 6 elapsed seconds projected a
+    # 30-second install that in fact takes roughly two minutes). Anchoring
+    # "remaining" to the measured total sidesteps that: it is just the
+    # unfinished share of a number that came from a stopwatch, not from
+    # whichever phase happened to finish first.
+    #
+    # A host running uniformly slower than the reference — not one stuck
+    # phase, which the overrun check above already covers — is caught
+    # separately here: once actual elapsed time has drifted past double what
+    # the reference implies for this much progress, fall through to the same
+    # non-numeric "taking longer than expected" rather than keep counting
+    # down a number the run has already disproven.
+    expected_elapsed=$(( (_CB_REFERENCE_SECONDS * pct) / 100 ))
+    if (( elapsed >= 30 )) && (( expected_elapsed > 0 )) && (( elapsed > expected_elapsed * 2 )); then
+      _CB_ETA_TEXT='taking longer than expected'
+      return 0
+    fi
+    remaining=$(( (_CB_REFERENCE_SECONDS * (100 - pct)) / 100 ))
+  else
+    remaining=$(( (elapsed * (100 - pct)) / pct ))
+  fi
+
   if (( _CB_LAST_ETA >= 0 )) && (( remaining > _CB_LAST_ETA )); then
     remaining="${_CB_LAST_ETA}"
   fi
@@ -524,6 +577,7 @@ CB_CERT_TYPE="self-signed"
 CB_EMAIL=""
 CB_VERSION=""
 CB_LOCAL_BUNDLE=""
+CB_CHANNEL="${CB_CHANNEL:-stable}"
 # Air-gap mode. Seeded from the environment so `CB_AIRGAP=true bash install.sh`
 # and `--airgap` mean the same thing, and so the variable that governs the
 # running application also governs the installer that writes its config.
@@ -1043,9 +1097,18 @@ stage_docker_deploy() {
   #
   # The leading v is stripped first so `--version v1.2.3` and `--version 1.2.3`
   # agree: the git tag carries the v, the registry tag does not.
+  #
+  # "dev" is the one version string that names a branch, not a release: it is
+  # what dev-ci.yml publishes as the rolling `:dev` image after a push to dev
+  # passes the compose smoke, precisely so a pre-release change can be tested
+  # here without waiting on a merge to main. `v${version}` would look for a
+  # "vdev" tag that never exists, so it gets its own ref instead of the
+  # release-tag prefix every numbered version uses.
   local version="${CB_VERSION#v}"
   local ref="main"
-  if [[ -n "${version}" ]]; then
+  if [[ "${version}" == "dev" ]]; then
+    ref="dev"
+  elif [[ -n "${version}" ]]; then
     ref="v${version}"
   fi
   local base_url="https://raw.githubusercontent.com/${CB_GITHUB_REPO}/${ref}"
@@ -1084,7 +1147,10 @@ stage_docker_deploy() {
     local remote="${asset%%:*}"
     local dest="${asset#*:}"
     if ! curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "${base_url}/${remote}" -o "${dest}"; then
-      if [[ -n "${version}" ]]; then
+      if [[ "${version}" == "dev" ]]; then
+        cb_fail "Could not download ${remote} from the dev branch" \
+                "Check network access to raw.githubusercontent.com, or that ${remote} still exists on dev."
+      elif [[ -n "${version}" ]]; then
         cb_fail "Could not download ${remote} at ref ${ref}" \
                 "Is v${version} a published release? Check https://github.com/${CB_GITHUB_REPO}/releases, or drop --version to install from main."
       else
@@ -1209,7 +1275,12 @@ EOF
     host_ip="localhost"
   fi
 
+  # cb_ok routes through cb_detail, which only prints in --verbose mode — the
+  # Docker deploy path never calls cb_ui_init at all (it returns before the
+  # native flow reaches it), so this success line was invisible on every
+  # plain/default run regardless of mode. Print it unconditionally instead.
   echo ""
+  echo -e "  ${GREEN}${BOLD}✓  SUCCESS — Docker deployment complete!${RESET}"
   cb_ok "Docker deployment complete"
   echo -e "  ${BOLD}Install directory:${RESET} ${install_dir}"
   echo -e "  ${BOLD}Access URLs:${RESET} https://${host_ip}/ or http://${host_ip}/"
@@ -1307,39 +1378,25 @@ stage0_bootstrap_preflight() {
 }
 
 
-# Choose the release a default install (no --version) should fetch.
+# Choose the release a default install (no --version) should fetch, from the
+# /releases list JSON on stdin (newest first, as the API returns it).
 #
-# Reads the /releases list JSON on stdin -- newest first, as the API returns
-# it -- and prints the chosen release object, or nothing if there is none.
+# Not /releases/latest: that endpoint answers with whatever carries the
+# "Latest release" badge, which v1.0.0-rc.2 held for months because the flag
+# was set before release.yml learned --prerelease. Picking from the list keeps
+# the choice independent of that metadata.
 #
-# This deliberately does not ask /releases/latest. That endpoint answers with
-# whatever carries the "Latest release" badge, and v1.0.0-rc.1 and rc.2 were
-# published before release.yml learned to pass --prerelease (GOV-20), so both
-# are recorded as stable and rc.2 still holds the badge. A default install
-# therefore fetched the rc.2 bundle: it reported its version as 1.0.0-rc.2,
-# and it predates the gh#104 PyInstaller fix, so every Proxmox connection
-# failed with "No module named 'proxmoxer.backends'". Picking from the list
-# here makes the choice independent of that stale metadata.
-#
-# The rule is the newest non-draft release, release candidates included; the
-# caller warns loudly when the winner is one. Preferring stable unconditionally
-# would install v0.3.4 for the whole 1.0.0-rc window -- a pre-1.0 build months
-# older than the one README.md documents, which is the same "user silently gets
-# an ancient build" failure this selection exists to prevent.
-#
-# KNOWN LIMITATION, stated plainly rather than wished away: this rule prefers
-# the newest release including candidates, permanently, not just before GA.
-# Once v1.0.0 is stable, publishing v1.0.1-rc.1 makes that candidate the newest
-# release and a default `curl | bash` fetches it again. Closing that properly
-# needs a real per-channel ordering, and doing it here would mean a semver
-# comparator written in bash -- avoiding exactly that is why the signed update
-# manifest is designed the way it is. The manifest publishes ordered per-channel
-# release lists, which turns "the newest stable" into a list lookup instead of a
-# version comparison. Resolve this when that lands; do not hand-roll it here.
-# tests/build/test_install_release_selection.py pins the current behaviour,
-# including the post-GA shape, so a future change to this rule is deliberate.
+# CB_CHANNEL decides the rule. stable — the default — takes the newest release
+# that is not a prerelease, so a `curl | bash` never silently installs a
+# candidate. candidate takes the newest release of either kind, which was the
+# only rule before --channel existed. Drafts are never eligible: they are not
+# visible to an unauthenticated client anyway (release captains soak a draft
+# candidate with `gh release download` and --local-bundle).
 cb_pick_release() {
-  jq '[.[] | select(.draft == false)] | first // empty' 2>/dev/null || true
+  case "${CB_CHANNEL:-stable}" in
+    candidate) jq '[.[] | select(.draft == false)] | first // empty' 2>/dev/null || true ;;
+    *)         jq '[.[] | select(.draft == false and .prerelease == false)] | first // empty' 2>/dev/null || true ;;
+  esac
 }
 
 # Verify a downloaded bundle against the release's SHA256SUMS asset.
@@ -1443,12 +1500,16 @@ stage0_download_bundle() {
         || cb_fail "Failed to fetch the release list" "Check internet connectivity or specify --version <version>"
       release_json=$(printf '%s' "$releases_json" | cb_pick_release)
       if [[ -z "$release_json" ]] || [[ "$release_json" == "null" ]]; then
+        if [[ "${CB_CHANNEL:-stable}" == "stable" ]] \
+          && [[ -n "$releases_json" ]] \
+          && [[ "$(printf '%s' "$releases_json" | jq 'if type == "array" then length else 0 end' 2>/dev/null || echo 0)" -gt 0 ]]; then
+          cb_fail "No stable release is published yet" \
+            "Use --channel candidate to install the newest prerelease, or --version <version>"
+        fi
         cb_fail "No installable release found" "Check https://github.com/${CB_GITHUB_REPO}/releases or specify --version <version>"
       fi
-      if [[ "$(printf '%s' "$release_json" | jq -r '.prerelease')" == "true" ]]; then
-        # Not "no stable release yet": see cb_pick_release's known limitation.
-        # The newest release wins whether or not a stable one exists, so this
-        # message must not claim there is none.
+      if [[ "${CB_CHANNEL:-stable}" == "candidate" ]] \
+        && [[ "$(printf '%s' "$release_json" | jq -r '.prerelease')" == "true" ]]; then
         cb_warn "Installing release candidate $(printf '%s' "$release_json" | jq -r '.tag_name') - the newest published release. Use --version <version> to pick a specific one."
       fi
     fi
@@ -1522,8 +1583,16 @@ stage0_download_bundle() {
   tar -xzf "$CB_BUNDLE_TARBALL" -C /tmp/cb-bundle --no-same-owner --no-same-permissions \
     || cb_fail "Bundle extraction failed" "Tarball may be corrupted: $CB_BUNDLE_TARBALL — re-run to re-download"
   CB_BUNDLE_DIR="/tmp/cb-bundle"
-  if [[ ! -f "${CB_BUNDLE_DIR}/circuit-breaker" ]]; then
-    cb_fail "Bundle is missing the circuit-breaker binary" "Bundle layout unexpected — check release assets for v${CB_VERSION:-unknown}"
+  # PBS is the release layout. PyInstaller onefile (root-level binary, no
+  # python/) stays installable for one cycle so the journey can prove the
+  # upgrade every existing native host will perform; Task 8 removes it.
+  if [[ -x "${CB_BUNDLE_DIR}/bin/circuit-breaker" && -x "${CB_BUNDLE_DIR}/python/bin/python3" ]]; then
+    :
+  elif [[ -f "${CB_BUNDLE_DIR}/circuit-breaker" ]]; then
+    :
+  else
+    cb_fail "Bundle is missing the application runtime" \
+      "Expected either bin/circuit-breaker + python/bin/python3 (PBS) or a root-level circuit-breaker binary (PyInstaller). Check the release assets for v${CB_VERSION:-unknown}"
   fi
   cb_ok "Bundle extracted"
 }
@@ -1538,13 +1607,34 @@ stage0_install_bundle() {
   mkdir -p /opt/circuitbreaker/deploy
   mkdir -p /opt/circuitbreaker/scripts
 
-  # Copy binary
-  cb_step "Installing binary"
-  cp -f "${CB_BUNDLE_DIR}/circuit-breaker" /opt/circuitbreaker/bin/circuit-breaker \
-    || cb_fail "Failed to install binary" "Check disk space: df -h /opt"
-  chmod 755 /opt/circuitbreaker/bin/circuit-breaker
-  chown root:root /opt/circuitbreaker/bin/circuit-breaker
-  cb_ok "Binary installed to /opt/circuitbreaker/bin/"
+  if [[ -x "${CB_BUNDLE_DIR}/python/bin/python3" ]]; then
+    # Stage the PBS runtime, never overwrite it here. On an upgrade the old
+    # services are still running at this point — run_upgrade stops them later —
+    # and replacing python/ underneath a live interpreter is the same class of
+    # fault as the binary swap this used to do. cb_activate_runtime_tree
+    # (deploy/setup.sh) moves the staged tree into place after the stop and
+    # keeps the previous one as python.prev until /readyz answers.
+    cb_step "Staging application runtime"
+    rm -rf /opt/circuitbreaker/.staging
+    mkdir -p /opt/circuitbreaker/.staging
+    cp -a "${CB_BUNDLE_DIR}/python" /opt/circuitbreaker/.staging/python \
+      || cb_fail "Failed to stage the runtime" "Check disk space: df -h /opt"
+    cp -a "${CB_BUNDLE_DIR}/bin" /opt/circuitbreaker/.staging/bin \
+      || cb_fail "Failed to stage the launcher" "Check disk space: df -h /opt"
+    chown -R root:root /opt/circuitbreaker/.staging
+    cb_ok "Runtime staged ($(du -sh /opt/circuitbreaker/.staging/python | cut -f1))"
+  else
+    # PyInstaller onefile: binary lands at the live path immediately. There is
+    # no python/ tree to stage, and the upgrade journey's --previous leg relies
+    # on this layout as the starting state.
+    cb_step "Installing binary"
+    rm -rf /opt/circuitbreaker/.staging
+    cp -f "${CB_BUNDLE_DIR}/circuit-breaker" /opt/circuitbreaker/bin/circuit-breaker \
+      || cb_fail "Failed to install binary" "Check disk space: df -h /opt"
+    chmod 755 /opt/circuitbreaker/bin/circuit-breaker
+    chown root:root /opt/circuitbreaker/bin/circuit-breaker
+    cb_ok "Binary installed to /opt/circuitbreaker/bin/"
+  fi
 
   # Copy share assets (frontend, backend/migrations, VERSION, etc.)
   cb_step "Installing application assets"
@@ -1604,7 +1694,13 @@ show_help() {
   echo "  --email <address>      Email for Let's Encrypt notifications"
   echo "  --data-dir <path>      Data directory (default: /var/lib/circuitbreaker)"
   echo "  --no-tls               Skip TLS cert generation"
-  echo "  --version <version>    Install specific version (default: latest)"
+  echo "  --version <version>    Install specific version (default: latest)."
+  echo "                         With --docker, 'dev' pins to the dev branch"
+  echo "                         and the :dev image instead of a release tag."
+  echo "  --channel stable|candidate   Which published releases a default install may pick."
+  echo "                               stable (default): the newest release that is not a"
+  echo "                               prerelease. candidate: the newest release including"
+  echo "                               prereleases. Ignored with --version or --local-bundle."
   echo "  --local-bundle <path>  Use a pre-downloaded bundle tarball"
   echo "  --unattended           Skip all prompts, use defaults (for Proxmox LXC)"
   echo "  --verbose              Print every step instead of a progress bar."
@@ -1658,6 +1754,10 @@ while [[ $# -gt 0 ]]; do
       CB_VERSION="$2"
       shift 2
       ;;
+    --channel)
+      CB_CHANNEL="$2"
+      shift 2
+      ;;
     --local-bundle)
       CB_LOCAL_BUNDLE="$2"
       shift 2
@@ -1700,6 +1800,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+case "$CB_CHANNEL" in
+  stable|candidate) ;;
+  *)
+    echo "Unknown --channel: $CB_CHANNEL (stable or candidate)"
+    exit 1
+    ;;
+esac
 
 # Air-gap mode promises no outbound request, and resolving a release from the
 # GitHub API is one. Checked here, before anything is created, so an operator who
@@ -1766,7 +1874,7 @@ main() {
   if [[ "${UPGRADE_MODE}" == "true" ]]; then
     cb_ui_use_weights CB_PHASE_WEIGHTS_UPGRADE
   else
-    cb_ui_use_weights CB_PHASE_WEIGHTS_INSTALL
+    cb_ui_use_weights CB_PHASE_WEIGHTS_INSTALL "${CB_REFERENCE_SECONDS_INSTALL}"
   fi
 
   cb_phase_begin preflight "Pre-flight checks"

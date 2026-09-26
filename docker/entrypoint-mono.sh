@@ -11,7 +11,7 @@ set -euo pipefail
 # to each other.
 DATA="${CB_DATA_DIR:-/data}"
 export CB_DATA_DIR="$DATA"
-export CB_ALEMBIC_INI="${CB_ALEMBIC_INI:-/app/backend/alembic.ini}"
+export CB_ALEMBIC_INI="${CB_ALEMBIC_INI:-/opt/circuitbreaker/share/backend/alembic.ini}"
 export ALEMBIC_CONFIG="${ALEMBIC_CONFIG:-$CB_ALEMBIC_INI}"
 
 # Determine if we're using an external Postgres (CB_DB_URL set and host is not 127.0.0.1/localhost).

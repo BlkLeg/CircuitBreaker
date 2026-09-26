@@ -1,0 +1,15 @@
+# The one pinned CPython, shared by every path that assembles the application
+# tree: scripts/build_native_release.py, Dockerfile.mono's tree stage, and the
+# installer journey. Digests are the distributor's own, from the release's
+# SHA256SUMS asset (per-asset `.sha256` sidecars are not published) — never
+# computed from a local download, for the same reason scripts/ci/fleet/matrix.yaml
+# refuses locally computed digests.
+#
+# Bump release, python and BOTH digests together; a stale digest must fail the
+# download, not skip the check. scripts/release_checklist.py refuses a pin
+# older than 120 days: python-build-standalone statically links OpenSSL, so
+# this pin — not `apt upgrade` — is how interpreter and TLS CVEs reach users.
+PBS_RELEASE=20260901
+PBS_PYTHON=3.12.14
+PBS_SHA256_amd64=72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c
+PBS_SHA256_arm64=577b4bec0793ad1ff0cbff9adbd0df078eddde38a4c41bf5d83ad381a85ee39d

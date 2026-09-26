@@ -4,6 +4,33 @@
 
 ---
 
+## What changed for operators
+
+Native installs and distribution packages both place the application under
+`/opt/circuitbreaker/` with its own Python tree. `circuit-breaker` is a
+launcher; on package hosts `/usr/local/bin/circuit-breaker` is a symlink into
+that tree. Uninstall still uses the same entry points.
+
+## What to do
+
+Run `cb uninstall` (or the Proxmox / Docker steps below). No layout-specific
+manual cleanup is required for a hermetic install — the uninstaller reads the
+install identity and removes `/opt/circuitbreaker` on both the `install.sh`
+layout and the package layout.
+
+## Rollback
+
+Uninstall is destructive, not a rollback. To undo an upgrade instead, see
+[Upgrading — Rollback](upgrading.md#rollback-procedures) (`python.prev` during health,
+then `restore.sh` / `circuit-breaker-rollback`).
+
+## Release channels
+
+Channels only affect what you install next. Uninstall does not consult
+`--channel`, `:candidate`, or `:nightly`.
+
+---
+
 ## Native / Quick Install — `cb uninstall`
 
 If you installed with `install.sh` (or via the Proxmox helper, which uses the same installer inside the container), run:
@@ -12,7 +39,12 @@ If you installed with `install.sh` (or via the Proxmox helper, which uses the sa
 cb uninstall
 ```
 
-There is a single confirmation prompt — **`Remove Circuit Breaker and ALL data? [y/N]`**. Answering `y` deletes the database and the vault key along with everything else; there is no second prompt offering to keep your data. Back up first.
+`cb uninstall` reads the install-identity file, stops the units for that
+layout, and removes `/opt/circuitbreaker` on both the tarball layout and the
+package layout (they share that root). There is a single confirmation prompt —
+**`Remove Circuit Breaker and ALL data? [y/N]`**. Answering `y` deletes the
+database and the vault key along with everything else; there is no second
+prompt offering to keep your data. Back up first.
 
 After you confirm, it:
 

@@ -179,6 +179,7 @@ print(json.dumps(rows, indent=2))
 # ── Identity + config (no unsafe container/port guesses) ──────────────────────
 CB_IDENTITY_FILE=""
 CB_IDENTITY_MODE=""
+CB_IDENTITY_RUNTIME=""
 CB_IDENTITY_LOADED=0
 # Set to the path a permissions problem hid, when that is why identity is absent.
 CB_IDENTITY_UNREADABLE=""
@@ -280,6 +281,7 @@ _load_install_identity() {
   v="$(_cb_json_get compose_file)"; [[ -n "$v" ]] && CB_COMPOSE_FILE="$v"
   v="$(_cb_json_get health_url)"; [[ -n "$v" ]] && CB_HEALTH_URL="$v"
   v="$(_cb_json_get cli_path)"; [[ -n "$v" ]] && CB_CLI_PATH="$v"
+  CB_IDENTITY_RUNTIME="$(_cb_json_get runtime)"
   case "$CB_IDENTITY_MODE" in
     mono)
       if [[ -n "$CB_COMPOSE_FILE" ]]; then
@@ -443,6 +445,9 @@ cmd_info() {
     echo ""
     echo -e "  ${GR}File${R}       : ${CB_IDENTITY_FILE}"
     echo -e "  ${GR}Mode${R}       : ${CB_IDENTITY_MODE}"
+    if [[ -n "$CB_IDENTITY_RUNTIME" ]]; then
+      echo -e "  ${GR}Runtime${R}    : ${CB_IDENTITY_RUNTIME}"
+    fi
     echo -e "  ${GR}Version${R}    : $(_cb_json_get version)"
     echo -e "  ${GR}Data dir${R}   : ${CB_DATA_DIR:-—}"
     # Two separate identity fields, printed with a separator. They used to be

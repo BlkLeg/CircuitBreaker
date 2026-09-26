@@ -180,7 +180,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-in-release-image build-release build-from-source release-local version-sync release-tag release-retag release-untag agent-signing-key docker-build docker-push sign sbom
+.PHONY: build build-deps build-in-release-image build-release build-from-source release-candidate release-promote version-sync release-untag agent-signing-key docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -209,10 +209,16 @@ build-from-source: ## Full power-user path: deps + venv + build (clean machine �
 	$(MAKE) --no-print-directory install
 	$(MAKE) --no-print-directory build
 
-release-local: ## build-release + tag current HEAD with VERSION
-	$(MAKE) --no-print-directory build-release
-	git tag -a "v$$(cat VERSION)" -m "Release v$$(cat VERSION)"
-	@echo "Tagged v$$(cat VERSION). Push with: git push origin v$$(cat VERSION)"
+release-candidate: ## Build, gate and stage a DRAFT release for VERSION from HEAD (HEAD must be on origin)
+	@git fetch -q origin
+	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
+	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate
+	@echo "Dispatched. Watch with: gh run watch. Soak the draft with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' && install.sh --local-bundle ..."
+
+release-promote: ## Promote the draft for VERSION to stable (no rebuild; the promote creates the tag)
+	@git fetch -q origin
+	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first"; exit 1)
+	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=stable -f version="$$(cat VERSION)"
 
 # GOV-09 says VERSION is the only hand-edited version. apps/backend/pyproject.toml
 # gets that literally — hatch reads the file — but a package.json and a sentence
@@ -223,23 +229,9 @@ release-local: ## build-release + tag current HEAD with VERSION
 version-sync: ## Rewrite every manifest and doc that names the release to match VERSION
 	python3 scripts/check_version_parity.py --write
 
-release-tag: ## Tag current HEAD as vVERSION (first release of this version — fails if the tag already exists)
-	git tag -a "v$$(cat VERSION)" -m "Circuit Breaker v$$(cat VERSION)"
-	@echo "Tagged v$$(cat VERSION) -> $$(git rev-parse --short HEAD). Push with: git push origin v$$(cat VERSION)"
-
-release-retag: ## Move an existing vVERSION tag to current HEAD (re-trigger a failed or updated Release run)
-	git tag -d "v$$(cat VERSION)"
-	git tag -a "v$$(cat VERSION)" -m "Circuit Breaker v$$(cat VERSION)"
-	@echo "Retagged v$$(cat VERSION) -> $$(git rev-parse --short HEAD)."
-	@echo "Push with:"
-	@echo "  git push origin :refs/tags/v$$(cat VERSION)"
-	@echo "  git push origin v$$(cat VERSION)"
-
 # Deletes on origin first: that is the copy that matters, and if it is already
 # gone this stops before touching the local tag, so nothing claims to have
-# removed something it did not. release-retag is the better move when the
-# intent is to re-run Release against a new HEAD; this one is for withdrawing
-# a tag outright.
+# removed something it did not. Use this to withdraw a mistaken hand-pushed tag.
 release-untag: ## Delete the vVERSION tag on origin and locally (fails if origin has no such tag)
 	git push origin ":refs/tags/v$$(cat VERSION)"
 	git tag -d "v$$(cat VERSION)" || echo "no local tag v$$(cat VERSION); origin's is gone"
@@ -315,6 +307,13 @@ lint: ## Run backend and frontend linters (fast subset for pre-commit; see comme
 # by eye.
 	$(CURDIR)/.venv/bin/ruff check scripts/loadgen
 	MYPYPATH=$(CURDIR):$(BACKEND_DIR)/src $(CURDIR)/.venv/bin/mypy --explicit-package-bases scripts/loadgen
+# scripts/pbs_tree.py is the only code that assembles the hermetic runtime
+# tree (native build, Dockerfile.mono's builder stage, the installer
+# journey); scripts/ci/assert_runtime_parity.py is what proves the native
+# and image artifacts are identical. Both are stdlib-only and outside
+# src/app, so they need naming here too or they lint on nobody's path.
+	$(CURDIR)/.venv/bin/ruff check scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py
+	$(CURDIR)/.venv/bin/mypy scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py
 	cd $(FRONTEND_DIR) && npm run lint
 
 format: ## Format backend and frontend code

@@ -138,6 +138,27 @@ def _version_parity(version: str, repo_root: Path) -> ChecklistRow:
     )
 
 
+def _pbs_pin_is_current(repo_root: Path) -> ChecklistRow:
+    """python-build-standalone statically links OpenSSL; the pin is the CVE path."""
+    pin = repo_root / "packaging" / "python-build-standalone.pin"
+    if not pin.exists():
+        return ChecklistRow("pbs_pin_current", False, f"{pin} is missing")
+    match = re.search(r"^PBS_RELEASE=(\d{8})", pin.read_text(encoding="utf-8"), re.M)
+    if not match:
+        return ChecklistRow("pbs_pin_current", False, "PBS_RELEASE is not a YYYYMMDD tag")
+    released = date(int(match.group(1)[:4]), int(match.group(1)[4:6]), int(match.group(1)[6:]))
+    age = (date.today() - released).days
+    if age > 120:
+        return ChecklistRow(
+            "pbs_pin_current",
+            False,
+            f"PBS_RELEASE {match.group(1)} is {age} days old (limit 120)",
+        )
+    return ChecklistRow(
+        "pbs_pin_current", True, f"PBS_RELEASE {match.group(1)} is {age} days old"
+    )
+
+
 def evaluate(version: str, repo_root: Path) -> list[ChecklistRow]:
     """Every readiness row for this candidate, in a stable order."""
     return [
@@ -145,6 +166,7 @@ def evaluate(version: str, repo_root: Path) -> list[ChecklistRow]:
         _quarantine_register_current(repo_root),
         _tier_table_matches_evidence(repo_root),
         _version_parity(version, repo_root),
+        _pbs_pin_is_current(repo_root),
     ]
 
 
