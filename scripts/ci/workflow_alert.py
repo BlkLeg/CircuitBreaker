@@ -30,7 +30,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from notify_discord import Notification, send
+from notify_discord import MENTION_ENV, Notification, mention_from_env, send
 
 WATCHED_BRANCHES = frozenset({"main", "dev"})
 UNATTENDED_EVENTS = frozenset({"schedule", "workflow_dispatch"})
@@ -103,7 +103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
     if note.level == "failure":
-        mention = os.environ.get("DISCORD_MENTION_USER_ID", "").strip()
+        mention = mention_from_env(os.environ.get(MENTION_ENV, ""))
         note = Notification(
             note.level, note.title, note.body, note.url, note.fields, mention
         )

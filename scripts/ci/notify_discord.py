@@ -110,6 +110,26 @@ def build_payload(note: Notification) -> dict[str, Any]:
     return payload
 
 
+def mention_from_env(raw: str) -> str:
+    """Return the Discord user id in ``raw``, or "" when it is not one.
+
+    Accepts the bare snowflake or Discord's own ``<@id>`` / ``<@!id>`` form. A
+    username (``shawnji.dev``) cannot be pinged through a webhook, and a bad
+    value must cost only the ping, never the message: it warns and returns "".
+    """
+    value = raw.strip()
+    if value.startswith("<@") and value.endswith(">"):
+        value = value[2:-1].lstrip("!")
+    if value.isdigit():
+        return value
+    if value:
+        print(
+            f"::warning::{MENTION_ENV} is not a numeric Discord user id (Developer "
+            "Mode, right-click your name, Copy User ID); sending without a ping"
+        )
+    return ""
+
+
 def validate_webhook_url(url: str) -> None:
     """Refuse anything that is not an https Discord webhook URL.
 
@@ -226,7 +246,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.body_file:
         with open(args.body_file, encoding="utf-8") as handle:
             text = handle.read()
-    mention = os.environ.get(MENTION_ENV, "").strip() if args.mention else ""
+    mention = mention_from_env(os.environ.get(MENTION_ENV, "")) if args.mention else ""
     note = Notification(
         level=args.level,
         title=args.title,
