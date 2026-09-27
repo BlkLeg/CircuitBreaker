@@ -149,7 +149,7 @@ if command -v write_install_identity >/dev/null 2>&1; then
     env_file="$ENV_FILE" \
     cli_path=/usr/local/bin/cb \
     health_url=http://127.0.0.1:8000/api/v1/readyz \
-    service_names="circuit-breaker.service,circuit-breaker-discovery.service" \
+    service_names="circuit-breaker.service,circuit-breaker-discovery.service,circuit-breaker-worker@notification.service,circuit-breaker-worker@telemetry.service,circuit-breaker-worker@integration.service,circuit-breaker-worker@monitor_scheduler.service,circuit-breaker-worker@monitor_poll.service,circuit-breaker-worker@monitor_probe_dispatch.service" \
     || true
 fi
 

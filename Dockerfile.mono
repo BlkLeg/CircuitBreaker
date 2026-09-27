@@ -194,6 +194,7 @@ COPY docker/pgbouncer.ini /etc/pgbouncer/pgbouncer.ini
 COPY docker/10-init-postgres.sh docker/20-migrate.sh docker/30-oobe.sh docker/entrypoint-mono.sh docker/run-postgres-if-embedded.sh /docker/
 COPY deploy/lib/install-identity.sh /usr/local/lib/circuitbreaker/install-identity.sh
 COPY cb /usr/local/bin/cb
+COPY deploy/cli/cb_resources.py /usr/local/lib/circuitbreaker/cb_resources.py
 RUN chmod +x /docker/*.sh /usr/local/bin/cb \
     && chmod 644 /usr/local/lib/circuitbreaker/install-identity.sh
 

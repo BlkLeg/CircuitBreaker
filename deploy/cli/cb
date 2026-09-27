@@ -8,6 +8,7 @@
 #
 # Commands:
 #   status        Show service / container status
+#   resources     Show app resource usage [--watch] [--json] [--interval seconds]
 #   doctor        Run health checks and diagnose issues
 #   diag bundle   Write one redacted .tar.gz to hand over for an issue
 #   logs [-f]     Show (or follow) logs
@@ -49,6 +50,41 @@ do
     break
   fi
 done
+
+# Resource accounting must work without loading application secrets or starting
+# the backend. Dispatch before the legacy config/env loading below. The helper
+# validates identity itself and refuses legacy name/port guesses.
+cmd_resources() {
+  local helper="" candidate interpreter=""
+  for candidate in \
+    "${_CB_HERE}/deploy/cli/cb_resources.py" \
+    "${_CB_HERE}/cb_resources.py" \
+    /usr/local/lib/circuitbreaker/cb_resources.py \
+    /opt/circuitbreaker/deploy/cli/cb_resources.py
+  do
+    if [[ -f "$candidate" ]]; then helper="$candidate"; break; fi
+  done
+  if [[ -z "$helper" ]]; then
+    echo "cb resources: collector missing; reinstall the cb CLI and cb_resources.py from the same release" >&2
+    return 1
+  fi
+  for candidate in /opt/circuitbreaker/python/bin/python3 python3; do
+    if "$candidate" -I -c 'import sys; sys.exit(sys.version_info < (3, 9))' 2>/dev/null; then
+      interpreter="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$interpreter" ]]; then
+    echo "cb resources: Python 3.9+ is required; repair the bundled runtime or install python3 on the CLI host" >&2
+    return 1
+  fi
+  exec "$interpreter" -I "$helper" "$@"
+}
+
+if [[ "${1:-}" == resources ]]; then
+  cmd_resources "${@:2}"
+  exit $?
+fi
 
 # Test seam only — real installs never set this. It prefixes the absolute
 # filesystem paths `cb diag bundle` reads (the env file, the install log) so
@@ -2289,6 +2325,7 @@ usage() {
   echo -e "  ${G}Commands:${R}"
   echo -e "    info [--json]       Show install identity (mode, paths, health URL)"
   echo -e "    status              Show container / service status"
+  echo -e "    resources           App resource usage [--watch] [--json] [--interval seconds]"
   echo -e "    doctor [--json]     Run health checks and diagnose issues"
   echo -e "    diag bundle         Write one redacted .tar.gz to hand over for an issue"
   echo -e "    setup               Report first-run / bootstrap status"
@@ -2323,6 +2360,7 @@ usage() {
 case "${1:-help}" in
   info)            cmd_info "${2:-}" ;;
   status)          cmd_status ;;
+  resources)       cmd_resources "${@:2}" ;;
   doctor)          cmd_doctor "${2:-}" ;;
   diag)            cmd_diag "${@:2}" ;;
   setup)           cmd_setup ;;

@@ -55,7 +55,7 @@ Schema: [`specs/install/identity.schema.json`](../specs/install/identity.schema.
 
 | Command | Native | Mono (Docker/Compose) | Package (advanced) |
 |---|---|---|---|
-| `info`, `status`, `doctor`, `diag bundle`, `setup`, `setup-token`, `logs`, `restart`, `backup`, `restore`, `config validate`, `version`, `uninstall` | ✅ | ✅ | ✅ |
+| `info`, `status`, `resources`, `doctor`, `diag bundle`, `setup`, `setup-token`, `logs`, `restart`, `backup`, `restore`, `config validate`, `version`, `uninstall` | ✅ | ✅ | ✅ |
 | `migrate`, `token`, `user`, `agent` | ✅ | ✅ | ✅ |
 | `update` | ✅ (via installer guidance) | ✅ | ✅ |
 | `vault-recover` | ✅ | ✅ | ✅ |
@@ -164,6 +164,66 @@ from there is up to you.
 ### `cb status`
 
 Show container or systemd unit status for the active mode.
+
+### `cb resources`
+
+Measure Circuit Breaker's local resource footprint, including its API, workers,
+and dedicated dependencies. Works without a running backend or database and does
+not read the app's secrets, change resource limits, or enable accounting.
+
+```bash
+cb resources                         # snapshot over 2 seconds
+cb resources --watch                 # live view; q or Ctrl-C exits
+cb resources --watch --interval 5     # refresh/sample interval, minimum 1 second
+cb resources --json                   # one JSON document
+cb resources --watch --json           # JSON Lines for scripts
+```
+
+Native/Proxmox and package installs use verified systemd service cgroups. Native
+PostgreSQL and `cb-helperd` are included even though they sit outside the app slice.
+The system nginx service is shown separately as shared usage. Docker/Compose uses
+the exact container in install identity and honors the selected Docker context;
+capacity figures come from that daemon's host/VM, including for remote contexts.
+Inside the mono container, visible cgroup v2 counters can be read without a Docker
+socket; use the host command if the container's accounting boundary is hidden.
+
+CPU is measured in cores consumed (`1.00` = one busy logical CPU). Memory is charged
+memory **including cache**, with cache and swap also shown separately; this differs
+from Docker CLI's cache-subtracted display. I/O values are rates over the actual
+sample interval. JSON preserves cumulative counters, per-metric sources and missing
+value reasons, scope-specific limits, and coverage notices (`schema_version: 1`).
+Missing counters are `null`, and incomplete totals are labeled observed subtotals.
+
+Live terminal controls: `c` sorts by CPU, `m` by memory, `e` expands workers, and
+`j`/`k` scroll through component details, limits, and coverage notices.
+Redirected output has timestamped snapshots without terminal control codes.
+Collection rechecks membership and resets rate baselines after restarts or counter
+resets. Limits apply to their named service/slice/container, not necessarily the
+whole application; visible host/guest capacity may exceed an enclosing quota.
+
+Coverage depends on the installation:
+
+- Native network rates require existing systemd IP accounting. Host networking or
+  shared Docker network namespaces cannot supply app-only network rates.
+- Native totals sum verified service cgroups; residual charges directly on parent
+  slices are not assigned to the app. The optional Docker proxy includes its
+  launcher and verified container on the local system daemon; an unreadable local
+  Docker socket produces an explicit gap and partial totals.
+- Shared host services, external databases, remote agents, browser usage, and jobs
+  launched outside managed app services are outside app totals. Package installs
+  include the dedicated `circuit-breaker-nats` service when present, but cannot
+  attribute a shared system database to this app.
+- Mono currently reports container totals. Internal process breakdowns and the
+  optional disk footprint scan are follow-up features, not current flags.
+
+Requires Python 3.9+ (the bundled interpreter is preferred). The host Docker path
+also requires the Docker CLI and access to its daemon; native needs access to
+systemd and readable accounting counters. An unreadable identity needs an account
+with permission to read it, rather than a reinstall. A missing/invalid identity
+must be repaired; resource accounting does not guess from legacy `install.conf`.
+
+Exit status: `0` for a usable report, including explicitly partial reports; `1`
+when installation scope/runtime cannot be collected; `2` for invalid arguments.
 
 ### `cb doctor [--json]`
 
