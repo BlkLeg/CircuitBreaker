@@ -1,0 +1,61 @@
+# scheduled-ref: default-branch-intentional
+# The job runs only scripts/ci/branch_cleanup.py against the GitHub API; the
+# repository contents it checks out are the tool, not the thing under test, so
+# the default branch's copy is the right one.
+name: Branch cleanup
+
+# Deletes remote branches that are fully merged into main or dev, idle for 14
+# days, and neither the head nor the base of an open pull request. The rules
+# and their order live in scripts/ci/branch_cleanup.py; every branch gets one
+# logged decision line either way.
+#
+# Scheduled runs are live. A manual run defaults to a dry run, so "what would
+# this delete?" is one click and deleting needs an explicit opt-out.
+
+on:
+  schedule:
+    - cron: "0 5 * * 0"  # Sunday 05:00 UTC
+  # checkov:skip=CKV_GHA_7: the only input is a boolean that can only make the run do
+  # less (log instead of delete); it builds nothing and publishes nothing, and it
+  # reaches the shell through env: and a quoted string comparison.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log decisions only; delete nothing"
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: branch-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Delete merged, idle branches
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Select and delete branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        run: |
+          args=(--repo "$REPO")
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          python3 scripts/ci/branch_cleanup.py "${args[@]}"
