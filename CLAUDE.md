@@ -122,12 +122,15 @@ These exist because each one has already been broken here, at cost.
 
 ## Skills
 
-Four skills carry the detail — consult them rather than reconstructing conventions:
+Six skills carry the detail — consult them rather than reconstructing conventions.
+Copilot CLI and the Copilot cloud agent read `.claude/skills/` too.
 
 - **cb-code-quality** — gates, naming, constants, error handling, tests
 - **cb-security-hardening** — auth, headers, container hardening, vault rotation
 - **cb-realtime-api** — NATS subjects, WebSocket/SSE streams, frontend↔backend contract
 - **cb-build-test** — dev env, test DB, packaging, secrets and air-gap
+- **cb-release** — candidate → approval → promote, the follow-up PR, recovering a red release
+- **cb-automation** — bots, Discord notifications, GITHUB_TOKEN rules, AI agents, the headless box
 
 ## Two things that look like bugs but aren't
 

@@ -90,6 +90,10 @@ make sbom            # syft
 ```
 Driven by `scripts/build_native_release.py` and `nfpm.yaml` (arch from `GOARCH`).
 
+Publishing a version is not a packaging task: it goes through `release.yml`
+(`make release-candidate`, one approval, the promote creates the tag). Never
+push a `v*` tag by hand — **cb-release** has the flow and its failure modes.
+
 **The mono Docker image** packs Postgres, NATS, Redis, backend, workers, and
 nginx into one container:
 ```bash

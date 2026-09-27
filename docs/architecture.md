@@ -270,9 +270,9 @@ green.
 - **`docs/evidence/`** — dated measurement and audit snapshots, linked from the
   pages that cite them.
 - **`docs/adr/`** — decision records.
-- The four skills under `.claude/skills/` — `cb-code-quality`,
-  `cb-security-hardening`, `cb-realtime-api`, `cb-build-test` — carry the detail
-  behind `CLAUDE.md`.
+- The six skills under `.claude/skills/` — `cb-code-quality`,
+  `cb-security-hardening`, `cb-realtime-api`, `cb-build-test`, `cb-release`,
+  `cb-automation` — carry the detail behind `CLAUDE.md`.
 
 ---
 

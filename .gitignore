@@ -143,7 +143,10 @@ eslint_output.json
 .aider*
 .cursor/
 .codex/
-.claude/
+# Local Claude state (worktrees, settings) stays out; the project skills are
+# shared with Copilot and every contributor, so they are tracked.
+.claude/*
+!.claude/skills/
 .superpowers/
 docker-compose.datadog.yml
 
