@@ -18,26 +18,40 @@ export CB_E2E_DIAGNOSTICS_DIR="${CB_E2E_DIAGNOSTICS_DIR:-$CB_REPO_ROOT/diagnosti
 cb::require_tool python3
 cb::require_tool docker "the journey composes its own stack"
 
+mkdir -p "$CB_E2E_DIAGNOSTICS_DIR"
+cd apps/agent/e2e
 # Tests with a live quarantine-register row are deselected, so a quarantined
 # failure does not simply fail again on the rerun its row permits
 # (composed_rerun_guard.py). An assignment, not a process substitution, so a
 # broken register fails this script instead of silently deselecting nothing.
-deselect_out="$(python3 "$CB_REPO_ROOT/scripts/ci/composed_rerun_guard.py" deselect)"
-deselect=()
-if [[ -n $deselect_out ]]; then
-  mapfile -t deselect <<<"$deselect_out"
-fi
-
-mkdir -p "$CB_E2E_DIAGNOSTICS_DIR"
-cd apps/agent/e2e
+#
+# CB_E2E_NO_DESELECT=1 is a LOCAL escape hatch (`make e2e-local` passes it
+# through) for deliberately running a quarantined test, e.g. to check a fix.
+# CI always deselects: tests/build/test_tier2_wiring.py fails if any workflow
+# mentions the variable, so it cannot become the force switch the rerun guard
+# rules out.
+#
+# All of it runs inside the tee'd group, so the deselect notice (stderr from
+# the guard) and the hatch notice land in composed-journey.log with the run.
+#
 # -p no:cacheprovider: under `make e2e-local` the runner is uid 1001 and the
 # worktree's .pytest_cache belongs to the developer, so pytest's end-of-session
 # cache write dies with EACCES after every test has run. That turns a completed
 # run into a traceback. CI wants no cross-run cache either.
-python3 -m pytest test_agent_e2e.py -v \
-  --junitxml=junit-agent-e2e.xml \
-  --timeout=3600 \
-  -p no:cacheprovider \
-  "${deselect[@]}" \
-  "$@" \
-  2>&1 | tee "$CB_E2E_DIAGNOSTICS_DIR/composed-journey.log"
+{
+  deselect=()
+  if [[ ${CB_E2E_NO_DESELECT:-0} == 1 ]]; then
+    echo "CB_E2E_NO_DESELECT=1: tests with live quarantine-register rows are NOT deselected (local only; CI always deselects)"
+  else
+    deselect_out="$(python3 "$CB_REPO_ROOT/scripts/ci/composed_rerun_guard.py" deselect)"
+    if [[ -n $deselect_out ]]; then
+      mapfile -t deselect <<<"$deselect_out"
+    fi
+  fi
+  python3 -m pytest test_agent_e2e.py -v \
+    --junitxml=junit-agent-e2e.xml \
+    --timeout=3600 \
+    -p no:cacheprovider \
+    "${deselect[@]}" \
+    "$@"
+} 2>&1 | tee "$CB_E2E_DIAGNOSTICS_DIR/composed-journey.log"

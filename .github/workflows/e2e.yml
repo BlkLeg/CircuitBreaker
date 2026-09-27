@@ -40,12 +40,13 @@ on:
       - '.github/workflows/e2e.yml'
       - '.github/workflows/composed-e2e.yml'
   # checkov:skip=CKV_GHA_7: the input selects nothing about what is built — it
-  # only decides whether the operator wants to pay 75 minutes to watch QUAR-001
-  # fail on purpose. The default is the safe value.
+  # only decides whether the operator wants to pay 75 minutes for a lifted run,
+  # which executes the suite minus the tests that have live register rows. The
+  # default is the safe value.
   workflow_dispatch:
     inputs:
       quarantined:
-        description: "Leave true to report QUAR-001 and skip. Set false to actually run the suite."
+        description: "Leave true to report QUAR-001 and skip. Set false to run the suite minus tests with live register rows."
         required: false
         type: boolean
         default: true

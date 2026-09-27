@@ -407,7 +407,9 @@ verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (me
 #
 # CB_COMPOSED_QUARANTINED mirrors composed-e2e.yml's `quarantined` default, and
 # the wiring test fails if they disagree. While QUAR-001 is live the agent half
-# prints the register row and exits 0, as CI does. Set it to 0 to run the suite.
+# prints the register row and exits 0, as CI does. Set it to 0 to run the suite,
+# with the tests that have live register rows deselected (as CI deselects them);
+# add CB_E2E_NO_DESELECT=1 to run those too. That second switch is local only.
 CB_COMPOSED_QUARANTINED ?= 1
 
 verify-composed: verify-composed-browser verify-composed-agent ## Tier 2 — browser E2E + composed agent journey (CB_COMPOSED_QUARANTINED=0 lifts QUAR-001)
@@ -557,5 +559,6 @@ e2e-local: e2e-local-image ## Run the composed agent E2E here as uid 1001 (E2E_A
 	  -e GIT_CONFIG_COUNT=1 \
 	  -e GIT_CONFIG_KEY_0=safe.directory \
 	  -e GIT_CONFIG_VALUE_0=$(CURDIR) \
+	  -e CB_E2E_NO_DESELECT \
 	  $(E2E_RUNNER_IMAGE) \
 	  sh -c 'mkdir -p "$$HOME" && exec bash $(CURDIR)/scripts/ci/tier2-agent-journey.sh $(E2E_ARGS)'

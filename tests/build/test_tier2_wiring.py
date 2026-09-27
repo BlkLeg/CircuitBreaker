@@ -270,3 +270,65 @@ def test_tier2_callers_grant_read_only():
 def test_release_waits_for_tier2():
     assert "tier2" in _load("release.yml")["jobs"]["release"]["needs"]
     assert "tier2" in _load("release-dry-run.yml")["jobs"]["summary"]["needs"]
+
+
+# ── deselection and its local-only escape hatch ────────────────────────────
+NO_DESELECT = "CB_E2E_NO_DESELECT"
+
+
+def test_no_workflow_mentions_the_local_no_deselect_hatch():
+    """CI always deselects tests with live register rows (maintainer decision 2).
+    CB_E2E_NO_DESELECT exists so a developer can deliberately run them on a
+    laptop; wired into a workflow it would become the force switch that
+    decision rules out."""
+    offenders = [
+        path.name for path in sorted(WORKFLOWS.iterdir())
+        if path.is_file() and NO_DESELECT in path.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"{NO_DESELECT} is local-only, but appears in {offenders}"
+
+
+def test_e2e_local_passes_the_no_deselect_hatch_through():
+    assert re.search(rf"-e {NO_DESELECT}(\s|$)", _recipe("e2e-local")), (
+        f"e2e-local runs the script in a container; without `-e {NO_DESELECT}` the hatch never reaches it"
+    )
+
+
+def _collect(tmp_path: Path, **env: str) -> tuple[str, str]:
+    """Run the journey script with --collect-only and return (last stdout line, log)."""
+    stub = tmp_path / "bin"
+    stub.mkdir(exist_ok=True)
+    docker = stub / "docker"
+    docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    docker.chmod(0o755)
+    diagnostics = tmp_path / "diagnostics"
+    result = subprocess.run(
+        [str(REPO_ROOT / AGENT_SCRIPT), "--collect-only", "-q", f"--junitxml={tmp_path / 'junit.xml'}"],
+        capture_output=True, text=True, check=False, cwd=REPO_ROOT,
+        env={
+            "PATH": f"{stub}:{Path(sys.executable).parent}:/usr/bin:/bin",
+            "CB_E2E_DIAGNOSTICS_DIR": str(diagnostics),
+            **env,
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = (diagnostics / "composed-journey.log").read_text(encoding="utf-8")
+    return result.stdout.strip().splitlines()[-1], log
+
+
+def test_the_journey_deselects_live_register_rows_and_logs_it(tmp_path):
+    from composed_rerun_guard import REGISTER, _today, quarantined_tests
+
+    live = quarantined_tests(REGISTER, _today())
+    summary, log = _collect(tmp_path)
+    if live:
+        assert f"({len(live)} deselected)" in summary, summary
+        assert "quarantined, deselected:" in log, "the deselect notice must reach composed-journey.log"
+    else:
+        assert "deselected" not in summary, summary
+
+
+def test_the_local_hatch_runs_every_test_and_says_so(tmp_path):
+    summary, log = _collect(tmp_path, **{NO_DESELECT: "1"})
+    assert "deselected" not in summary, summary
+    assert NO_DESELECT in log, "the hatch must announce itself in composed-journey.log"

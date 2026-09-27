@@ -35,7 +35,9 @@ make verify          # the pre-push gate
 make verify-composed # Tier 2: the browser suite and the composed journey
 ```
 
-`CB_COMPOSED_QUARANTINED=0` lifts QUAR-001 locally. In CI, the composed journey will not re-run on the same
+`CB_COMPOSED_QUARANTINED=0` lifts QUAR-001 locally: the suite runs, minus the tests that have live register
+rows, which are deselected exactly as CI deselects them. Add `CB_E2E_NO_DESELECT=1` to run those too; it is
+local only, and no workflow may set it. In CI, the composed journey will not re-run on the same
 inputs after a failure until each failed test is fixed or has a register row
 (`scripts/ci/composed_rerun_guard.py`). Local runs are not guarded, since they are how a fix gets made.
 
