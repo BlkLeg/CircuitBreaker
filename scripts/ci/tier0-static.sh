@@ -64,6 +64,43 @@ cb::section "Ruff"
 cb::section "Mypy"
 ( cd apps/backend && PYTHONPATH=src "$CB_REPO_ROOT/.venv/bin/mypy" src/app )
 
+# Until 2026-09-27 these two sections were the whole of Tier 0's Python
+# analysis, which meant NO script under scripts/ was linted or type-checked by
+# any workflow: `make lint` named eight of them, but `make lint` is not on the
+# CI path and this file is (ci.yml and dev-ci.yml's Lint job run this script,
+# ADR 0005 P1). The scripts that build the release artifact, assert runtime
+# parity and validate the release-control ledger were analysed on nobody's
+# path, and 30 ruff findings and 5 real type errors had accumulated there
+# unseen — including four unguarded regex `.group()` calls and a release
+# builder that dropped a package format with a warning.
+#
+# Globbed rather than enumerated, for the same reason the Makefile is: a list
+# that has to be edited when a script is added is a list that loses files.
+# scripts/loadgen is a package, so it is matched on its own below.
+cb::section "Ruff (scripts)"
+# nullglob so a pattern matching nothing yields an empty array instead of the
+# literal pattern: the count check below is then what fails, naming the gate,
+# rather than ruff failing on a filename that never existed.
+mapfile -t CB_SCRIPTS < <(shopt -s nullglob; printf '%s\n' scripts/*.py scripts/ci/*.py | sort)
+cb::require_nonempty_glob "scripts/*.py scripts/ci/*.py" "${#CB_SCRIPTS[@]}"
+"$CB_REPO_ROOT/.venv/bin/ruff" check "${CB_SCRIPTS[@]}" scripts/loadgen
+
+# MYPYPATH plus --explicit-package-bases is what lets the few scripts importing
+# `app.*` resolve it from source instead of reporting the installed package as
+# missing py.typed, and what lets the two sibling imports that follow a runtime
+# sys.path insert — build_native_release.py's `pbs_tree`, workflow_alert.py's
+# `notify_discord` — resolve as modules.
+#
+# loadgen is a second invocation rather than more arguments to the first: with
+# scripts/ on MYPYPATH it resolves as both `loadgen.x` and `scripts.loadgen.x`,
+# and mypy refuses a source file reachable under two module names.
+cb::section "Mypy (scripts)"
+MYPYPATH="$CB_REPO_ROOT:$CB_REPO_ROOT/apps/backend/src:$CB_REPO_ROOT/scripts:$CB_REPO_ROOT/scripts/ci" \
+    "$CB_REPO_ROOT/.venv/bin/mypy" --explicit-package-bases "${CB_SCRIPTS[@]}"
+
+MYPYPATH="$CB_REPO_ROOT:$CB_REPO_ROOT/apps/backend/src" \
+    "$CB_REPO_ROOT/.venv/bin/mypy" --explicit-package-bases scripts/loadgen
+
 # EXEC: the requirement ledger is the release's source of truth, and dev
 # is the branch it is edited on. ci.yml runs this same check on pushes and
 # PRs to main; dev-ci is what catches a drifted ledger on the branch where

@@ -8,6 +8,16 @@ FRONTEND_PORT ?= 5173
 BACKEND_DIR   ?= apps/backend
 FRONTEND_DIR  ?= apps/frontend
 
+# Every standalone Python script in the repo, for the lint/type gate. A glob,
+# not a list: the enumeration this replaced had silently lost 14 files —
+# including build_native_release.py, check_version_parity.py and
+# release_channel.py, which build and gate the release — because adding a
+# script and adding it to the gate were two separate acts. scripts/loadgen is
+# a package with its own lines in `lint`, so it is not matched here.
+# scripts/ci/tier0-static.sh runs the same two commands; that is the gate of
+# record, and `make lint` is its fast local mirror.
+CB_SCRIPTS    := $(wildcard scripts/*.py scripts/ci/*.py)
+
 CB_DATA_DIR   ?= ./circuitbreaker-data
 
 # Local services for development
@@ -314,16 +324,24 @@ lint: ## Run backend and frontend linters (fast subset for pre-commit; see comme
 # by eye.
 	$(CURDIR)/.venv/bin/ruff check scripts/loadgen
 	MYPYPATH=$(CURDIR):$(BACKEND_DIR)/src $(CURDIR)/.venv/bin/mypy --explicit-package-bases scripts/loadgen
-# scripts/pbs_tree.py is the only code that assembles the hermetic runtime
-# tree (native build, Dockerfile.mono's builder stage, the installer
-# journey); scripts/ci/assert_runtime_parity.py is what proves the native
-# and image artifacts are identical. scripts/ci/ledger_watch.py drives the
-# nightly release-control expiry issue; notify_discord.py, workflow_alert.py,
-# branch_cleanup.py and post_release_bump.py run unattended in workflows
-# (see the cb-automation skill). All are stdlib-only and outside
-# src/app, so they need naming here too or they lint on nobody's path.
-	$(CURDIR)/.venv/bin/ruff check scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/ci/quarantine_notice.py scripts/post_release_bump.py
-	$(CURDIR)/.venv/bin/mypy scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/ci/quarantine_notice.py scripts/post_release_bump.py
+# Everything else under scripts/: pbs_tree.py assembles the hermetic runtime
+# tree, assert_runtime_parity.py proves the native and image artifacts are
+# identical, build_native_release.py builds what users download, and the
+# scripts/ci automation runs unattended in workflows (see the cb-automation
+# skill). All are outside src/app, so they are gated here or nowhere.
+#
+# MYPYPATH plus --explicit-package-bases is the same invocation the loadgen
+# lines use above, and it is what lets the few scripts that import `app.*`
+# resolve it from source instead of reporting the installed package as
+# untyped.
+	$(CURDIR)/.venv/bin/ruff check $(CB_SCRIPTS)
+# scripts and scripts/ci join MYPYPATH so the two sibling imports that follow a
+# sys.path insert at runtime — build_native_release.py's `pbs_tree` and
+# workflow_alert.py's `notify_discord` — resolve for mypy the same way. Kept a
+# separate invocation from loadgen above: with scripts/ on MYPYPATH, loadgen
+# resolves as both `loadgen.x` and `scripts.loadgen.x` and mypy refuses.
+	MYPYPATH=$(CURDIR):$(BACKEND_DIR)/src:$(CURDIR)/scripts:$(CURDIR)/scripts/ci \
+	    $(CURDIR)/.venv/bin/mypy --explicit-package-bases $(CB_SCRIPTS)
 	cd $(FRONTEND_DIR) && npm run lint
 
 format: ## Format backend and frontend code

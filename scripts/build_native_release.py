@@ -29,7 +29,9 @@ DOCS_SEED_FILE = REPO_ROOT / "DocsPage.md"
 AGENT_ROOT = REPO_ROOT / "apps" / "agent"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import pbs_tree  # noqa: E402  — sibling module; stdlib-only so the Docker stage can run it alone
+# Sibling module, imported after the sys.path insert above; stdlib-only so
+# Dockerfile.mono's builder stage can run it on its own.
+import pbs_tree
 
 
 def detect_target() -> tuple[str, str]:
@@ -229,9 +231,10 @@ def _collect_migration_hidden_imports() -> list[str]:
                 for alias in node.names:
                     if alias.name == "app" or alias.name.startswith("app."):
                         found.add(alias.name)
-            elif isinstance(node, ast.ImportFrom):
-                if node.module and (node.module == "app" or node.module.startswith("app.")):
-                    found.add(node.module)
+            elif isinstance(node, ast.ImportFrom) and node.module and (
+                node.module == "app" or node.module.startswith("app.")
+            ):
+                found.add(node.module)
     return sorted(found)
 
 
@@ -516,16 +519,16 @@ def _write_readme(bundle_dir: Path, version: str, target_os: str, binary: str) -
     run_prefix = "./" if target_os != "windows" else ""
     if binary.startswith("bin/"):
         contents_lines = (
-            f"  python/                 — bundled CPython (python-build-standalone) and site-packages\n"
-            f"  bin/circuit-breaker     — launcher\n"
-            f"  README.txt              — This file\n"
-            f"  .env.example            — Environment variable template\n"
-            f"  manifest.json           — Build metadata (version, arch, checksums)\n"
-            f"  share/VERSION           — Version string\n"
-            f"  share/frontend/         — Pre-built web UI assets\n"
-            f"  share/backend/alembic.ini — Database migration config\n"
-            f"  share/backend/migrations/ — Database migration scripts\n"
-            f"  share/config.toml.default — Sample configuration file\n"
+            "  python/                 — bundled CPython (python-build-standalone) and site-packages\n"
+            "  bin/circuit-breaker     — launcher\n"
+            "  README.txt              — This file\n"
+            "  .env.example            — Environment variable template\n"
+            "  manifest.json           — Build metadata (version, arch, checksums)\n"
+            "  share/VERSION           — Version string\n"
+            "  share/frontend/         — Pre-built web UI assets\n"
+            "  share/backend/alembic.ini — Database migration config\n"
+            "  share/backend/migrations/ — Database migration scripts\n"
+            "  share/config.toml.default — Sample configuration file\n"
         )
     else:
         contents_lines = (
@@ -748,7 +751,7 @@ def stage_bundle(
     if uninstaller_src.exists():
         shutil.copy2(uninstaller_src, bundle_dir / "uninstall.sh")
 
-    manifest = {
+    manifest: dict[str, object] = {
         "app": "Circuit Breaker",
         "version": version,
         "os": target_os,
@@ -961,7 +964,7 @@ def create_linux_packages(
             [nfpm, "package", "--config", str(nats_config), "--packager", nats_fmt,
              "--target", str(nats_pkg)],
             env={**env, "NATS_VERSION": nats_version}, cwd=str(REPO_ROOT),
-            capture_output=True, text=True,
+            capture_output=True, text=True, check=False,
         )
         if nats_result.returncode != 0:
             raise RuntimeError(
@@ -977,12 +980,30 @@ def create_linux_packages(
             [nfpm, "package", "--config", str(nfpm_config), "--packager", fmt,
              "--target", str(pkg_path)],
             env=env, cwd=str(REPO_ROOT), capture_output=True, text=True,
+            check=False,
         )
-        if result.returncode == 0:
-            print(f"  Created: {pkg_path.name}")
-            packages.append(pkg_path)
-        else:
-            print(f"  WARNING: {fmt} packaging failed: {result.stderr.strip()}")
+        # Attempted and failed is fatal, exactly as it is in build_arch_package
+        # below: nfpm was located and invoked, so a non-zero exit is a broken
+        # build and not an absent toolchain.
+        #
+        # This printed a WARNING and continued until 2026-09-27, which left
+        # `packages` quietly short a format while the build still exited 0. The
+        # release then signs whatever files happen to exist — release.yml's
+        # signing loop is `[ -f "$f" ] && ... || continue` — so a dropped .apk
+        # or .rpm would have been published as a complete release with no gate
+        # objecting anywhere. That is the same failure ADR 0005 recorded for
+        # `.pkg.tar.zst`; the fix never reached this loop.
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"{fmt} packaging failed after nfpm was found and invoked.\n"
+                f"  exit status: {result.returncode}\n"
+                f"  stderr: {result.stderr.strip()}\n"
+                f"Fix the packaging config, or remove {fmt} from this loop and "
+                "from the release's published formats; do not ship a build that "
+                "silently drops a format."
+            )
+        print(f"  Created: {pkg_path.name}")
+        packages.append(pkg_path)
 
     return packages
 
@@ -1049,6 +1070,7 @@ def create_appimage(
             capture_output=True,
             text=True,
             env={**os.environ, "ARCH": "x86_64"},
+            check=False,
         )
     finally:
         if appdir.exists():
@@ -1148,6 +1170,7 @@ def create_arch_package(
             cwd=str(work_dir),
             capture_output=True,
             text=True,
+            check=False,
         )
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)

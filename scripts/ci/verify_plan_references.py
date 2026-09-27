@@ -194,7 +194,7 @@ def _check_needs(plan: Path, text: str) -> list[Finding]:
             if not candidate or "$" in candidate:
                 continue
             # A job the plan itself adds to that workflow is legitimate.
-            if candidate in declared or re.search(rf"^\s*{re.escape(candidate)}:\s*$", text, re.M):
+            if candidate in declared or re.search(rf"^\s*{re.escape(candidate)}:\s*$", text, re.MULTILINE):
                 continue
             findings.append(
                 Finding(
@@ -226,9 +226,12 @@ def _script_flags(script: str) -> set[str] | None:
             and node.func.attr == "add_argument"
         ):
             for argument in node.args:
-                if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                    if argument.value.startswith("--"):
-                        flags.add(argument.value)
+                if (
+                    isinstance(argument, ast.Constant)
+                    and isinstance(argument.value, str)
+                    and argument.value.startswith("--")
+                ):
+                    flags.add(argument.value)
     return flags
 
 

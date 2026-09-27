@@ -121,6 +121,22 @@ dev = [
     "types-bleach>=6.4.0.20260728",
     "types-requests>=2.33.0.20260906",
     "types-cachetools>=7.0.0.20260713",
+    # PyYAML ships no py.typed. Several scripts/ci gates and tests/build policy
+    # suites parse workflow YAML, so without the stubs mypy reports every one of
+    # those calls as [import-untyped] and the honest options are to suppress the
+    # error or to type-check it. These stubs are the second option.
+    "types-PyYAML>=6.0.12.20260906",
+    # pyinstaller is already a dev dependency above; scripts/build_native_release.py
+    # imports PyInstaller.utils.hooks to discover hidden imports, so the type gate
+    # needs its stubs to check that call rather than suppress it.
+    "types-pyinstaller>=6.22.1.20260827",
+    # vermin computes the minimum Python version a source file requires.
+    # tests/build/test_ci_scripts_match_runner_python.py uses it to check every
+    # scripts/ci script that a workflow job runs WITHOUT actions/setup-python
+    # against that runner's system python3, which is 3.10 on ubuntu-22.04.
+    # A hand-maintained list of 3.11+ names cannot stay complete; this does not
+    # have to be maintained at all.
+    "vermin>=1.8.0",
     "bandit>=1.7.0",
     "pip-audit>=2.7.0",
     # Security floors for transitive packages retained in the all-groups lock.
