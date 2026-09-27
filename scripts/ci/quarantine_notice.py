@@ -139,7 +139,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"::error::{exc}", file=sys.stderr)
             return 2
         print(notice)
-        if _parse_date(row["expiry"], row["quarantine_id"]) < today:
+        # format_notice already parsed `expiry` and decided EXPIRED vs SKIPPED
+        # from it; re-parsing here would be a second parse of a value that, by
+        # this point, cannot fail. Reuse that decision instead of repeating it.
+        if notice.startswith("EXPIRED"):
             expired.append(row["quarantine_id"])
 
     if expired:

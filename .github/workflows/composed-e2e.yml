@@ -177,9 +177,27 @@ jobs:
       # exit status of `tee`, not of the script, and a missing or expired
       # register row would be silently swallowed — the job would report
       # success for the exact silent pass this slice exists to remove.
+      #
+      # The script's stdout and stderr are both folded into the summary,
+      # fenced so the scope:/owner:/tracking: lines keep their line breaks
+      # instead of collapsing into one Markdown paragraph, and so the
+      # ::error:: reason on a missing or expired row (stderr-only from the
+      # script) reaches the summary rather than living only in the job log.
+      # `set +e`/`set -e` around the call is what lets the closing fence and
+      # the real exit code both survive a failure under `-e`: without them,
+      # `-e` would abort the group the instant python3 returned non-zero and
+      # the fence would never close. `status` is what `pipefail` then carries
+      # out of the pipe as the step's own exit code.
       - name: Report the register row that permits the skip
         shell: bash
         run: |
-          python3 scripts/ci/quarantine_notice.py \
-            --check "Composed Agent E2E / composed-journey" \
-            | tee -a "${GITHUB_STEP_SUMMARY}"
+          {
+            echo '```'
+            set +e
+            python3 scripts/ci/quarantine_notice.py \
+              --check "Composed Agent E2E / composed-journey" 2>&1
+            status=$?
+            set -e
+            echo '```'
+            exit "${status}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"
