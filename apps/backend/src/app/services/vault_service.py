@@ -456,20 +456,25 @@ def rotate_vault_key(db: Session) -> None:
 
         # OAuth / OIDC client secrets live as ``client_secret_enc`` inside each
         # provider entry (api/settings.py). oidc_providers is a list, but older
-        # rows hold a dict keyed by slug; both are carried.
+        # rows hold a dict keyed by slug; both are carried. The log labels are
+        # fixed strings: provider names come out of the same blobs as the
+        # secrets, and CodeQL (rightly, by taint) flags logging anything that
+        # flows from them.
         if isinstance(cfg.oauth_providers, dict):
             cfg.oauth_providers = {
-                name: _reencrypt_blob(entry, f"OAuth provider {name} secret")
+                name: _reencrypt_blob(entry, "OAuth provider client secret")
                 for name, entry in cfg.oauth_providers.items()
             }
         # Typed as object: the column is Mapped[list], but rows written before
         # the list shape hold a dict, which the ORM type cannot express.
         oidc: object = cfg.oidc_providers
         if isinstance(oidc, list):
-            cfg.oidc_providers = [_reencrypt_blob(entry, "OIDC provider secret") for entry in oidc]
+            cfg.oidc_providers = [
+                _reencrypt_blob(entry, "OIDC provider client secret") for entry in oidc
+            ]
         elif isinstance(oidc, dict):
             cfg.oidc_providers = {  # type: ignore[assignment]
-                slug: _reencrypt_blob(entry, f"OIDC provider {slug} secret")
+                slug: _reencrypt_blob(entry, "OIDC provider client secret")
                 for slug, entry in oidc.items()
             }
 
