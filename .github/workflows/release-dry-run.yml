@@ -113,7 +113,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/tier2.yml
     with:
-      suites: '["brwoser"]'  # TEMP: Tier 2 failure-path proof
+      suites: '["browser"]'
 
   # ── Container images, per architecture, exported rather than pushed ───────
   image:
