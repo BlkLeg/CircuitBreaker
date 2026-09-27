@@ -101,6 +101,14 @@ jobs:
     needs: version
     uses: ./.github/workflows/installer-journey.yml
 
+  # Rehearses the release's browser gate. release.yml blocks Stage Draft Release
+  # on this same reusable workflow, so without it here the dry run would stop
+  # covering the promotion graph it exists to rehearse.
+  browser-e2e:
+    name: Browser E2E
+    needs: version
+    uses: ./.github/workflows/browser-e2e.yml
+
   # ── Container images, per architecture, exported rather than pushed ───────
   image:
     name: Build Image (${{ matrix.arch }})
@@ -518,7 +526,7 @@ jobs:
   # ── One place to read the answer ──────────────────────────────────────────
   summary:
     name: Dry run result
-    needs: [version, build, artifact-smoke, installer-journey, image, image-merge, staged-publication]
+    needs: [version, build, artifact-smoke, browser-e2e, installer-journey, image, image-merge, staged-publication]
     # always(), so a failure anywhere still produces the summary rather than
     # leaving the run with no verdict — and the step below is what decides,
     # not the absence of a red job.
