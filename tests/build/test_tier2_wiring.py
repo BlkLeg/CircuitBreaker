@@ -188,6 +188,16 @@ def test_tier2_runs_serially_without_cancelling():
     assert concurrency["cancel-in-progress"] is False
 
 
+def test_tier2_concurrency_keys_on_the_tested_ref():
+    """`github.ref` is the branch the FILE was loaded from, so a nightly (loaded
+    from main, testing dev) and a dispatch on dev landed in different groups."""
+    group = _load("tier2.yml")["concurrency"]["group"]
+    assert group == (
+        "tier2-${{ github.workflow }}-"
+        "${{ inputs.ref || (github.event_name == 'schedule' && 'refs/heads/dev') || github.ref }}"
+    ), group
+
+
 def test_the_nightly_has_exactly_one_home():
     """One cron cannot live in two files: both would run the composed suite."""
     assert "schedule" not in _triggers(_load("e2e.yml"))

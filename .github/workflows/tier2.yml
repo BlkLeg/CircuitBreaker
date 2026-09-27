@@ -59,11 +59,18 @@ on:
         default: ""
 
 # A manual dispatch and the nightly must not interleave: B1's triage will read
-# one run's artifacts as one run. Queue rather than cancel, because a cancelled
-# nightly is a night with no signal. `github.workflow` is the caller's name when
-# this is called, so a release queues only behind its own earlier run.
+# one run's artifacts as one run. The group keys on the TESTED ref, not
+# `github.ref`: a scheduled run loads from main but tests dev, so keying on the
+# file's branch put the nightly and a dispatch on dev in different groups. An
+# explicit `inputs.ref` is used as typed, so `dev` and `refs/heads/dev` are two
+# groups. `github.workflow` is the caller's name when this is called, so a
+# release queues only behind its own earlier run.
+#
+# `cancel-in-progress: false` never cancels a RUNNING run, but it is not a full
+# queue either: GitHub keeps at most one pending run per group, and a newer run
+# queuing replaces (cancels) an already-pending one.
 concurrency:
-  group: tier2-${{ github.workflow }}-${{ github.ref }}
+  group: tier2-${{ github.workflow }}-${{ inputs.ref || (github.event_name == 'schedule' && 'refs/heads/dev') || github.ref }}
   cancel-in-progress: false
 
 permissions: {}
