@@ -150,8 +150,16 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
+      # Pinned to the same `ref` the caller passed in, for the same reason
+      # `composed-journey` above pins it: on `schedule`, this file is loaded
+      # from the default branch, but the caller redirects a scheduled run to
+      # `dev`. Without `ref:` here, a nightly would read `main`'s copy of the
+      # register and this script while speaking for a suite run against
+      # `dev` — announcing `main`'s stale quarantine (or silence) for a
+      # suite that may no longer be quarantined on the branch under test.
       - uses: actions/checkout@v5
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       # The register's `check` column is a stable identifier, not a live check
