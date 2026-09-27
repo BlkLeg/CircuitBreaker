@@ -45,10 +45,45 @@ permissions:
   contents: read
 
 jobs:
+  # ── The rerun guard ────────────────────────────────────────────────────────
+  # The journey may not run again on the same inputs while the previous run's
+  # failures are unaddressed: neither fixed (which changes the fingerprint)
+  # nor quarantined (register rows, which tier2-agent-journey.sh deselects).
+  # See scripts/ci/composed_rerun_guard.py. There is no force switch.
+  rerun-guard:
+    name: Composed agent journey — rerun guard
+    if: ${{ !inputs.quarantined }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: read      # list and download earlier verdict artifacts
+      contents: read
+    outputs:
+      fingerprint: ${{ steps.fingerprint.outputs.fingerprint }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      # An assignment on its own line: `echo "x=$(cmd)"` would swallow a failing cmd.
+      - id: fingerprint
+        shell: bash
+        run: |
+          fp="$(python3 scripts/ci/composed_rerun_guard.py fingerprint)"
+          echo "fingerprint=${fp}" >> "$GITHUB_OUTPUT"
+      - name: Refuse to repeat an unaddressed failure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
+        run: python3 scripts/ci/composed_rerun_guard.py check
+
   # ── The suite ───────────────────────────────────────────────────────────────
   composed-journey:
     name: Composed agent journey
     if: ${{ !inputs.quarantined }}
+    needs: rerun-guard
     runs-on: ubuntu-22.04
     timeout-minutes: 75
     steps:
@@ -102,6 +137,8 @@ jobs:
           } | tee diagnostics/run-manifest.txt
 
       - name: Run the composed journey
+        id: journey
+        timeout-minutes: 65
         shell: bash
         env:
           CB_E2E_SEED: "20260826"
@@ -134,6 +171,29 @@ jobs:
             apps/agent/e2e/junit-agent-e2e.xml
             diagnostics/
           retention-days: 30
+
+      # The verdict the next run's guard reads. Recorded only when the journey
+      # actually ran: an install step failing before it is an infrastructure
+      # problem, not a verdict on these inputs.
+      - name: Record the verdict for these inputs
+        if: ${{ !cancelled() && steps.journey.outcome != 'skipped' }}
+        shell: bash
+        env:
+          FINGERPRINT: ${{ needs.rerun-guard.outputs.fingerprint }}
+          OUTCOME: ${{ steps.journey.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/ci/composed_rerun_guard.py record \
+            --junit apps/agent/e2e/junit-agent-e2e.xml --out verdict/verdict.json
+
+      - name: Upload the verdict
+        if: ${{ !cancelled() && steps.journey.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: composed-journey-verdict-${{ needs.rerun-guard.outputs.fingerprint }}
+          path: verdict/verdict.json
+          if-no-files-found: error
+          retention-days: 90
 
   # ── The quarantine, said out loud ───────────────────────────────────────────
   # This job is why the `if: false` could be removed. It is cheap (a checkout
