@@ -86,6 +86,43 @@ def _workflows() -> list[Path]:
     )
 
 
+def _self_qualifies(name: str, triggers: dict) -> bool:
+    """True if `name`'s own trigger proves its job graph runs whenever the
+    workflow file itself changes, so it can register as its own pre-tag
+    caller.
+
+    A trigger with no `paths:`/`paths-ignore:` filter always covers its own
+    file. A `paths:` filter must explicitly list the workflow's own path
+    (`.github/workflows/<name>`); anything narrower is not proven to fire when
+    the workflow itself changes — a future callee could otherwise self-register
+    via a `pull_request: paths:` list that covers files unrelated to its own
+    job graph, which is exactly the vacuous pass this function exists to
+    refuse. `paths-ignore:` is treated as disqualifying outright rather than
+    checked for a match: proving the workflow's own path is not excluded needs
+    the same glob engine GitHub evaluates it with, and this project does not
+    maintain one, so the safe answer is "no" rather than an approximation that
+    could be wrong in either direction.
+    """
+    own_path = f".github/workflows/{name}"
+    events = set(triggers)
+    # A `push` restricted to tags is a tag trigger wearing a push's name.
+    push = triggers.get("push")
+    if isinstance(push, dict) and "tags" in push and "branches" not in push:
+        events.discard("push")
+    for event in PRE_TAG_EVENTS & events:
+        config = triggers.get(event)
+        if not isinstance(config, dict):
+            # A bare trigger (`pull_request:` with nothing under it, or a
+            # scalar/list form) carries no path filter at all.
+            return True
+        if "paths-ignore" in config:
+            continue
+        paths = config.get("paths")
+        if not paths or own_path in paths:
+            return True
+    return False
+
+
 def _pre_tag_callers() -> dict[str, set[str]]:
     """workflow file name -> the pre-tag workflows that call it."""
     callers: dict[str, set[str]] = {}
@@ -101,12 +138,13 @@ def _pre_tag_callers() -> dict[str, set[str]]:
             events.discard("push")
         if not (PRE_TAG_EVENTS & events):
             continue
-        # A workflow can also be its own pre-tag caller: one that carries a
-        # qualifying trigger directly (e.g. tier2.yml's own path-filtered
-        # pull_request, added so its plan/result/concurrency graph runs before
-        # a tag whenever that graph itself changes) runs its whole job graph
-        # pre-tag with no other file needing to call it.
-        callers.setdefault(path.name, set()).add(path.name)
+        # A workflow can also be its own pre-tag caller, but only when its own
+        # trigger is proven to cover its own file (`_self_qualifies`) — see
+        # tier2.yml's path-filtered pull_request, added so its
+        # plan/result/concurrency graph runs before a tag whenever that graph
+        # itself changes.
+        if _self_qualifies(path.name, triggers):
+            callers.setdefault(path.name, set()).add(path.name)
         for name in _called_workflows(document):
             callers.setdefault(name, set()).add(path.name)
     return callers
@@ -117,6 +155,36 @@ def _exceptions() -> dict[str, dict[str, str]]:
         return {}
     with EXCEPTIONS.open(encoding="utf-8", newline="") as handle:
         return {row["workflow"]: row for row in csv.DictReader(handle)}
+
+
+def test_self_qualifies_when_pull_request_paths_include_the_workflows_own_file() -> None:
+    triggers = {"pull_request": {"paths": [".github/workflows/tier2.yml", "scripts/ci/tier2_gate.py"]}}
+    assert _self_qualifies("tier2.yml", triggers)
+
+
+def test_self_qualifies_is_false_when_pull_request_paths_exclude_the_workflows_own_file() -> None:
+    """The vacuous-pass case the finding names: a `paths:` filter that watches
+    files unrelated to the workflow's own job graph must not self-register."""
+    triggers = {"pull_request": {"paths": ["docs/**"]}}
+    assert not _self_qualifies("tier2.yml", triggers)
+
+
+def test_self_qualifies_when_pull_request_has_no_paths_filter() -> None:
+    triggers = {"pull_request": None}
+    assert _self_qualifies("tier2.yml", triggers)
+
+
+def test_self_qualifies_is_false_for_a_tags_only_push() -> None:
+    triggers = {"push": {"tags": ["v*"]}}
+    assert not _self_qualifies("tier2.yml", triggers)
+
+
+def test_self_qualifies_is_false_when_the_only_filter_is_paths_ignore() -> None:
+    """`paths-ignore` is not checked for a match; a trigger that carries one
+    never self-registers, on the documented theory that approximating GitHub's
+    glob engine could be wrong in either direction."""
+    triggers = {"pull_request": {"paths-ignore": ["docs/**"]}}
+    assert not _self_qualifies("tier2.yml", triggers)
 
 
 def test_release_calls_at_least_one_reusable_workflow() -> None:
