@@ -104,17 +104,9 @@ jobs:
       # playwright.config.ts keeps visual.spec.ts out of the other four.
       - name: Run Playwright suite
         shell: bash
-        run: |
-          cd apps/frontend
-          npx playwright test \
-            --shard="${{ matrix.shard }}/${{ strategy.job-total }}" \
-            --project=chromium \
-            --project=firefox \
-            --project=webkit \
-            --project=mobile-chrome \
-            --project=visual-desktop \
-            --project=visual-mobile \
-            2>&1 | tee "${GITHUB_WORKSPACE}/artifacts/playwright.log"
+        env:
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: scripts/ci/tier2-browser.sh "${SHARD}"
 
       # REL-20: a failed job must be diagnosable from retained artifacts alone.
       # playwright.config.ts already writes the JUnit report and keeps traces,

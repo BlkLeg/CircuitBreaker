@@ -110,12 +110,7 @@ jobs:
           # workflow step has nothing left to collect. `_dump_compose_logs`
           # writes here from inside `_down()`, while containers still exist.
           CB_E2E_DIAGNOSTICS_DIR: ${{ github.workspace }}/diagnostics
-        run: |
-          cd apps/agent/e2e
-          python -m pytest test_agent_e2e.py -v \
-            --junitxml=junit-agent-e2e.xml \
-            --timeout=3600 \
-            2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/composed-journey.log"
+        run: scripts/ci/tier2-agent-journey.sh
 
       # Backstop only, for a run killed before any `_down()`. The logs that
       # explain a failure come from CB_E2E_DIAGNOSTICS_DIR above.

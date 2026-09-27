@@ -512,6 +512,7 @@ e2e-local-prep: ## Make the worktree writable by the uid-1001 runner
 	    sh -c 'find /agent-etc /e2e-data -mindepth 1 -delete'; \
 	fi
 
+# The pytest flags, -p no:cacheprovider included, live in scripts/ci/tier2-agent-journey.sh.
 e2e-local: e2e-local-image ## Run the composed agent E2E here as uid 1001 (E2E_ARGS='-k name' to filter)
 	@test -n "$(E2E_DOCKER_GID)" || { \
 	  echo "ERROR: no 'docker' group on this host — cannot grant the runner access"; \
@@ -533,13 +534,5 @@ e2e-local: e2e-local-image ## Run the composed agent E2E here as uid 1001 (E2E_A
 	  -e GIT_CONFIG_COUNT=1 \
 	  -e GIT_CONFIG_KEY_0=safe.directory \
 	  -e GIT_CONFIG_VALUE_0=$(CURDIR) \
-	  -e CB_E2E_SEED=20260826 \
-	  -e PYTHONHASHSEED=0 \
-	  -e CB_E2E_DIAGNOSTICS_DIR=$(CURDIR)/diagnostics \
 	  $(E2E_RUNNER_IMAGE) \
-	  sh -c 'mkdir -p "$$HOME" && exec pytest test_agent_e2e.py -v --timeout=3600 \
-	    -p no:cacheprovider $(E2E_ARGS)'
-# -p no:cacheprovider: the runner is uid 1001 and .pytest_cache in the worktree
-# belongs to the developer, so pytest's end-of-session cache write dies with
-# EACCES *after* every test has already run — turning a completed run into a
-# traceback and a non-zero exit. Nothing here wants a cross-run cache anyway.
+	  sh -c 'mkdir -p "$$HOME" && exec bash $(CURDIR)/scripts/ci/tier2-agent-journey.sh $(E2E_ARGS)'
