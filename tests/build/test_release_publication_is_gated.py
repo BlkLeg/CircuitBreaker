@@ -233,3 +233,61 @@ def test_the_artifact_gate_covers_both_published_architectures() -> None:
         "covers both published architectures; overriding it here ships an "
         "architecture nothing installed."
     )
+
+
+# The job that turns a draft into a published release. Anything that reads the
+# release before this job runs is reading a draft.
+PUBLISH_JOB = "promote"
+
+_READS_RELEASE = re.compile(r"\bgh release (?:view|download)\b")
+
+
+def _needs_transitively(jobs: dict, name: str) -> set[str]:
+    seen: set[str] = set()
+    pending = list(_needs(jobs[name]))
+    while pending:
+        upstream = pending.pop()
+        if upstream not in seen:
+            seen.add(upstream)
+            pending.extend(_needs(jobs[upstream]))
+    return seen
+
+
+def _contents_permission(workflow: dict, job: dict) -> str | None:
+    permissions = job["permissions"] if "permissions" in job else workflow.get("permissions")
+    if isinstance(permissions, dict):
+        return permissions.get("contents")
+    # A scalar grants every scope that level; absent means the repo default,
+    # which this workflow never relies on.
+    return permissions
+
+
+def test_jobs_that_read_the_draft_can_see_it() -> None:
+    """A token without push access is told a draft release does not exist.
+
+    GitHub lists draft releases only to callers with push access, so
+    `gh release view` under `contents: read` answers "release not found" for a
+    draft that is sitting right there. promote-verify shipped that way: the
+    v0.4.4 candidate staged its draft, and every promote of it failed claiming
+    there was no draft to promote. No stable release could ever have passed.
+
+    Jobs that run only on a pushed tag are exempt: they ask whether a
+    *published* release exists, and a draft being invisible to them is the
+    answer they want.
+    """
+    workflow = _release()
+    jobs = workflow["jobs"]
+    offences = []
+    for name, job in jobs.items():
+        if "workflow_dispatch" not in str(job.get("if", "workflow_dispatch")):
+            continue
+        if name == PUBLISH_JOB or PUBLISH_JOB in _needs_transitively(jobs, name):
+            continue
+        reads = any(_READS_RELEASE.search(step.get("run", "")) for step in job.get("steps", []))
+        if reads and _contents_permission(workflow, job) != "write":
+            offences.append(name)
+    assert not offences, (
+        f"release.yml jobs read the release before {PUBLISH_JOB!r} publishes it, "
+        f"but their token cannot see drafts: {offences}. Grant them "
+        "`contents: write`; with `read`, gh reports the draft as not found."
+    )
