@@ -78,8 +78,19 @@ in main), by design of the containment rule.
 ## Adding an automation — checklist
 
 - [ ] Logic in a typed, docstringed stdlib script under `scripts/ci/` with
-      unit tests in `tests/build/` (fixtures, no network); add it to the
-      ruff/mypy lines of `make lint`.
+      unit tests in `tests/build/` (fixtures, no network). Nothing to register:
+      `make lint` and `scripts/ci/tier0-static.sh` both glob
+      `scripts/*.py scripts/ci/*.py`, so a new script is linted and
+      type-checked the moment it lands. The enumeration these replaced had
+      quietly lost 14 files, and only `make lint` — never CI — ran it.
+- [ ] **If the job that runs it has no `actions/setup-python` step, the script
+      must run on Python 3.10** — `ubuntu-22.04`'s system `python3`. The dev
+      venv's 3.12 hides the difference, which is how `datetime.UTC` reached
+      `quarantine_notice.py`.
+      `tests/build/test_ci_scripts_match_runner_python.py` fails the build on a
+      newer stdlib name (an `ast` scan plus `vermin`), and `ruff.toml` pins the
+      lint target to `py310` so ruff cannot ask for a 3.11+ alias back. Either
+      stay portable, or add `actions/setup-python`.
 - [ ] Top-level `permissions: {}` or read-only; grant per job, minimum needed.
 - [ ] Every `${{ }}` through `env:` and quoted; actions pinned by tag like the
       rest of the repo (`actions/checkout@v5`), `persist-credentials: false`

@@ -14,9 +14,8 @@ import hashlib
 import re
 import sys
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_DIR = ROOT / "specs" / "1.0.0"
@@ -305,7 +304,9 @@ def validate_exceptions(
     if unknown_references:
         fail(f"ledger references unknown exception IDs: {', '.join(unknown_references)}")
 
-    today = date.today()
+    # UTC: every expiry column under specs/1.0.0/release-control is a UTC
+    # date, and ledger_watch.py and quarantine_notice.py both compare in UTC.
+    today = datetime.now(timezone.utc).date()
     for index, row in enumerate(rows, start=2):
         exception_id = row["exception_id"].strip()
         if not exception_id:

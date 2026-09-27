@@ -43,6 +43,21 @@ cb::require_file() {
     exit 127
 }
 
+cb::require_nonempty_glob() {
+    # P2, restated for globs: a gate handed an empty file list passes for
+    # exactly the same reason a gate with a missing scanner passes. A glob is
+    # worth using because nobody has to maintain it, which is also why nobody
+    # would notice it silently stopping matching after a directory move. So
+    # the match count is asserted, not assumed.
+    local pattern=$1 count=${2:-0}
+    if [ "$count" -gt 0 ]; then
+        return 0
+    fi
+    printf '::error::glob matched no files: %s — the gate would have analysed nothing\n' \
+        "$pattern" >&2
+    exit 127
+}
+
 cb::skipped() {
     printf 'SKIPPED (%s): %s\n' "$2" "$1"
 }
