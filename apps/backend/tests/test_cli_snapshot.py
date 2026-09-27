@@ -40,7 +40,8 @@ def test_parser_accepts_snapshot_verify():
 
 def test_verify_returns_zero_for_a_good_archive(monkeypatch, capsys):
     monkeypatch.setattr(
-        "app.cli.verify_archive", lambda path, installed_version=None: {"cb_version": "1.0.0"}
+        "app.cli.verify_archive",
+        lambda path, installed_version=None, known_revisions=None: {"cb_version": "1.0.0"},
     )
 
     assert main(["snapshot", "verify", "/tmp/snap.tar.gz"]) == 0
@@ -48,7 +49,7 @@ def test_verify_returns_zero_for_a_good_archive(monkeypatch, capsys):
 
 
 def test_verify_returns_nonzero_and_prints_the_reason(monkeypatch, capsys):
-    def _boom(path, installed_version=None):
+    def _boom(path, installed_version=None, known_revisions=None):
         raise SnapshotProblem("vault.key inside snap.tar.gz is empty")
 
     monkeypatch.setattr("app.cli.verify_archive", _boom)

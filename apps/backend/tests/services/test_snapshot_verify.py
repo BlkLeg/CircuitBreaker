@@ -14,6 +14,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 
 from app.services.backup.verify import SnapshotProblem, verify_archive
 
@@ -23,10 +24,14 @@ def _make_archive(
     *,
     manifest: dict | None = None,
     db_bytes: bytes = b"-- dump\n",
-    vault: str = "a-vault-key",
+    vault: str | None = None,
     omit: set[str] | None = None,
 ) -> Path:
     omit = omit or set()
+    if vault is None:
+        # A real, ephemeral Fernet key: the verifier refuses a vault.key that could not
+        # open a vault, and CLAUDE.md forbids a hardcoded one in a fixture.
+        vault = Fernet.generate_key().decode()
     inner = tmp_path / "cb-snapshot-test"
     inner.mkdir(parents=True, exist_ok=True)
 
