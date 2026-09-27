@@ -78,6 +78,11 @@ contents:
     file_info:
       mode: 0644
 
+  - src: deploy/cli/cb_resources.py
+    dst: /usr/local/lib/circuitbreaker/cb_resources.py
+    file_info:
+      mode: 0644
+
   # systemd unit
   - src: packaging/circuit-breaker.service
     dst: /lib/systemd/system/circuit-breaker.service

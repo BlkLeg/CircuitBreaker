@@ -4,6 +4,15 @@ schema_version: 1
 identity_schema: identity.schema.json
 diagnostic_schema: diagnostic-result.schema.json
 
+resource_accounting:
+  command: "cb resources [--watch] [--json] [--interval seconds]"
+  interpreter: "Python 3.9+ (bundled preferred)"
+  native: "Verified service cgroups; systemd counter fallback; shared nginx separate"
+  proxmox: "Native accounting within the LXC visibility boundary"
+  mono: "Recorded container via Docker Engine; visible cgroup v2 inside container"
+  package: "Verified app units and optional dedicated circuit-breaker-nats"
+  missing_metrics: "null with reason; partial totals labeled observed subtotals"
+
 first_class:
   - native
   - mono
@@ -83,6 +92,13 @@ modes:
       - circuitbreaker-redis
       - circuitbreaker-nats
       - circuitbreaker-backend
+      - circuitbreaker-worker@discovery
+      - circuitbreaker-worker@notification
+      - circuitbreaker-worker@telemetry
+      - circuitbreaker-worker@integration
+      - circuitbreaker-worker@monitor_scheduler
+      - circuitbreaker-worker@monitor_poll
+      - circuitbreaker-worker@monitor_probe_dispatch
       - nginx
     container_name: null
     compose_file: null
