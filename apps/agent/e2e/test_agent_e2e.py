@@ -145,6 +145,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -153,6 +154,7 @@ import shlex
 import shutil
 import ssl
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
@@ -454,6 +456,142 @@ def _dump_compose_logs(env: dict | None = None) -> None:
         (_DIAGNOSTICS_DIR / f"compose-logs-{name}.log").write_text(logs.stdout + logs.stderr)
     except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a test
         print(f"[e2e] could not capture compose logs for {name}: {exc}")
+    _dump_server_process_logs(_DIAGNOSTICS_DIR / f"server-logs-{name}", env)
+
+
+# Where the mono container's own processes write. `docker compose logs` shows a
+# container's stdout, and in the mono image that is supervisord's alone: every
+# program it runs — backend-api, each worker, nginx, postgres — is pointed at a
+# file under /data by supervisord's `stdout_logfile`/`stderr_logfile`
+# (supervisord-e2e.conf, mirroring supervisord.mono.conf). So the compose log
+# this harness has always uploaded carries no backend line at all, WARNING and
+# traceback included, and every failure in this suite has had to be reasoned
+# about from the client side only. These are the files that answer "what did
+# the server do".
+_SERVER_LOG_DIR = "/data"
+_SERVER_LOG_GLOB = "*.log"
+
+
+def _dump_server_process_logs(dest: Path, env: dict | None = None) -> None:
+    """Copy every supervisord-managed process log out of the server container.
+
+    Streamed out of the running container as a tar, because the bind-mounted
+    data directory is written by the container's own `breaker` user and a CI
+    runner is not guaranteed to be able to read it from the host. Falls back to
+    the host copy when the container is already gone. Never raises: this runs
+    from `_down()` in every test's `finally`.
+    """
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        streamed = subprocess.run(
+            [
+                *COMPOSE,
+                "exec",
+                "-T",
+                "circuitbreaker",
+                "sh",
+                "-c",
+                f"cd {_SERVER_LOG_DIR} && tar -cf - -- {_SERVER_LOG_GLOB}",
+            ],
+            cwd=E2E_DIR,
+            env=env,
+            capture_output=True,
+            timeout=120,
+        )
+        if streamed.returncode == 0 and streamed.stdout:
+            with tarfile.open(fileobj=io.BytesIO(streamed.stdout), mode="r:") as archive:
+                # Regular files only, flattened to their base name: the archive
+                # comes out of the container under test, so nothing in it gets to
+                # choose a path on the runner.
+                for member in archive.getmembers():
+                    if not member.isfile():
+                        continue
+                    source = archive.extractfile(member)
+                    if source is not None:
+                        (dest / Path(member.name).name).write_bytes(source.read())
+            return
+        for path in _E2E_DATA_DIR.glob(_SERVER_LOG_GLOB):
+            shutil.copyfile(path, dest / path.name)
+    except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a test
+        print(f"[e2e] could not capture server process logs into {dest}: {exc}")
+
+
+def _server_log_excerpt(pattern: str, *, lines: int = 60, env: dict | None = None) -> str:
+    """The last `lines` server-process log lines matching `pattern`, for an assertion.
+
+    A timeout that says only "condition not met" is the failure shape this suite
+    kept producing; the lines here are what the server itself said about the
+    thing that did not happen. Case-insensitive extended regex, as `grep -iE`.
+    """
+    command = (
+        f"cd {_SERVER_LOG_DIR} && grep -h -i -E -- {shlex.quote(pattern)} "
+        f"{_SERVER_LOG_GLOB} 2>/dev/null | tail -n {int(lines)}"
+    )
+    try:
+        result = subprocess.run(
+            [*COMPOSE, "exec", "-T", "circuitbreaker", "sh", "-c", command],
+            cwd=E2E_DIR,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a test
+        return f"<could not read server logs: {exc}>"
+    return result.stdout.strip() or f"<no server log line matched {pattern!r}>"
+
+
+def _server_container_state() -> dict:
+    """The server container's lifecycle as the engine records it.
+
+    `StartedAt` moving, a non-zero `RestartCount` or `OOMKilled` is the
+    difference between "the server answered wrongly" and "there was briefly no
+    server": a client-side `Connection reset by peer` looks identical either
+    way. `container_name: circuitbreaker` is fixed by the repo-root compose
+    file, so the name is stable across every test.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{json .State}}\t{{.RestartCount}}",
+                "circuitbreaker",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        state_json, restart_count = result.stdout.strip().rsplit("\t", 1)
+        state = json.loads(state_json)
+    except Exception as exc:  # noqa: BLE001 — diagnostics must never fail a test
+        return {"error": f"could not inspect the server container: {exc}"}
+    return {
+        "status": state.get("Status"),
+        "started_at": state.get("StartedAt"),
+        "finished_at": state.get("FinishedAt"),
+        "exit_code": state.get("ExitCode"),
+        "oom_killed": state.get("OOMKilled"),
+        "health": (state.get("Health") or {}).get("Status"),
+        "restart_count": int(restart_count),
+    }
+
+
+# What a server-side process restart or crash looks like in the logs
+# `_dump_server_process_logs` collects: supervisord's own lines about a program
+# exiting or being respawned, and anything the backend logged at ERROR or above.
+_SERVER_FAULT_PATTERN = r"exited:|spawned:|gave up:|Traceback|\bERROR\b|\bCRITICAL\b|Killed"
+
+
+def _server_fault_report(state_before: dict) -> str:
+    """Everything the server side can say about an interruption, as one string."""
+    return (
+        f"server container before: {state_before}; now: {_server_container_state()}; "
+        "server process log (faults, newest last):\n"
+        f"{_server_log_excerpt(_SERVER_FAULT_PATTERN)}"
+    )
 
 
 def _purge_data_dir(env: dict | None = None) -> list[str]:
@@ -699,6 +837,10 @@ class _AgentStreamListener:
         # silence shape ADR 0005 names, in the harness rather than the product.
         self._reader_error: BaseException | None = None
         self._reader_ended_at: float | None = None
+        # Wall-clock, UTC, alongside the monotonic stamp above: the server's
+        # process logs and `docker inspect`'s StartedAt are wall-clock, and a
+        # listener death is only explained by lining it up against them.
+        self._reader_ended_wall: datetime | None = None
         self._frames_seen = 0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -725,6 +867,7 @@ class _AgentStreamListener:
         finally:
             with self._lock:
                 self._reader_ended_at = time.monotonic()
+                self._reader_ended_wall = datetime.now(timezone.utc)
 
     def diagnostics(self) -> str:
         """What this listener knows about its own state, for an assertion.
@@ -735,12 +878,15 @@ class _AgentStreamListener:
         with self._lock:
             alive = self._thread.is_alive()
             error = self._reader_error
+            ended_wall = self._reader_ended_wall
             frames = self._frames_seen
             seen = [
                 (e.get("agent_id"), e.get("event_type")) for e in self.events
             ]
         state = "alive" if alive else "ENDED"
         detail = f"reader={state}, frames_received={frames}, events={seen}"
+        if ended_wall is not None:
+            detail += f", reader_ended_at={ended_wall.isoformat()}"
         if error is not None:
             detail += f", reader_error={type(error).__name__}: {error}"
         elif not alive:
@@ -1391,6 +1537,16 @@ def test_agent_full_lifecycle_enroll_through_revoke_and_reconnect():
         token = _bootstrap_admin(client)
         headers = {"Authorization": f"Bearer {token}"}
         client.headers.update(headers)
+        # The baseline every "the server went away" report below is read
+        # against. Every nightly that reached this test failed it with the
+        # server unreachable from the host (`Connection reset by peer`, an SSL
+        # EOF, or a presence stream closed with no close frame) right after
+        # `up -d cb-agent`, while `docker compose` itself reported the server
+        # container `Running` and untouched. Whether that is the container
+        # restarting, one supervised process dying, or the engine's port
+        # forwarding dropping a live connection is exactly what these two
+        # snapshots and the server's own process log tell apart.
+        server_state = _server_container_state()
 
         # ---- Step 1: fetch + verify install script/binary ----
         material = _fetch_install_material(client, headers)
@@ -1402,10 +1558,17 @@ def test_agent_full_lifecycle_enroll_through_revoke_and_reconnect():
             subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
 
             # ---- Step 5: online=true and heartbeats ----
-            _wait_until(
-                lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
-                timeout=20,
-            )
+            try:
+                _wait_until(
+                    lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"]
+                    == "active",
+                    timeout=20,
+                )
+            except TimeoutError as exc:
+                raise AssertionError(
+                    f"agent {agent_id} did not become active within 20s of `up -d cb-agent` "
+                    f"({exc}). {_server_fault_report(server_state)}"
+                ) from exc
             # internal/link.heartbeatInterval's ticker fires only *after* its
             # first 20s elapses (not immediately on connect), so last_seen_at
             # (only ever written from an actual TYPE_HEARTBEAT frame — see
@@ -1511,7 +1674,10 @@ def test_agent_full_lifecycle_enroll_through_revoke_and_reconnect():
                 # problem — so what survives it is the product claim: the
                 # server revoked the agent and pushed nothing to the live
                 # viewers watching it.
-                stream.assert_alive("no `revoked` push arrived")
+                try:
+                    stream.assert_alive("no `revoked` push arrived")
+                except AssertionError as dead:
+                    raise AssertionError(f"{dead} {_server_fault_report(server_state)}") from exc
                 raise AssertionError(
                     "the agent was revoked but no `revoked` event reached the live "
                     "/agents/stream viewer within 10s, and the viewer was still "
@@ -2509,6 +2675,12 @@ _PARTITION_DETECT_S = 60
 # deadline itself, and status.json is written from the disconnect handler
 # after that.
 _PARTITION_DETECT_BUDGET_S = _PARTITION_DETECT_S + 30
+# How long a healthy link gets to show an empty spool before the partition. A
+# lone frame waits at most one server /link poll (5s) for its coalesced
+# `data.ack`, and one arrives every `_TELEMETRY_INTERVAL_S`, so the spool is
+# empty for part of every interval. Three intervals leave room for a slow ack
+# without letting a spool that never drains pass.
+_SPOOL_DRAIN_BUDGET_S = _TELEMETRY_INTERVAL_S * 3
 # How long to keep collecting *after* detection, so there is a backlog whose
 # delivery can be checked. Four intervals at the 10s cadence.
 _PARTITION_SPOOL_S = 40
@@ -2579,10 +2751,30 @@ def test_agent_black_hole_partition_is_detected_and_spools():
                 _wait_until(
                     lambda: _agent_status()["link_state"] == "accepted", timeout=30
                 )
-                assert _agent_status()["spool_depth"] == 0, (
-                    "spool was already non-empty before the partition — the "
-                    "backlog asserted below would not be attributable to it"
-                )
+                # Waited for, never sampled. Every data frame is fsync'd to the
+                # spool before it reaches the socket and is committed only by
+                # the server's `data.ack` (internal/link/outbound.go), and the
+                # server coalesces those acks, checking only once per /link loop
+                # iteration: on an idle link that is once per
+                # `_LINK_POLL_SECONDS` (api/ws_agents.py). A lone telemetry
+                # frame therefore sits in the spool, correctly, for up to that
+                # long, which at a 10s sample interval is about half of every
+                # cycle. A single read of `spool_depth == 0` was a coin toss
+                # that failed three nightlies in six. What the partition
+                # assertions need is a spool that DRAINS, which is what the
+                # healthy link below proves.
+                try:
+                    _wait_until(
+                        lambda: _agent_status()["spool_depth"] == 0,
+                        timeout=_SPOOL_DRAIN_BUDGET_S,
+                        interval=0.25,
+                    )
+                except TimeoutError as exc:
+                    raise AssertionError(
+                        "the spool never drained to empty on a healthy link before the "
+                        "partition, so the backlog asserted below would not be "
+                        f"attributable to it: {_agent_status()!r}"
+                    ) from exc
                 samples_before = sum(
                     p["sample_count"] for p in _history_points(client, agent_id)
                 )
@@ -3284,10 +3476,22 @@ def test_remote_probe_assignment_execution_and_unavailability():
             # written to the server.
             time.sleep(60)
             assert _agent_status()["link_state"] == "accepted"
-            assert _agent_status()["spool_depth"] == 0, (
-                "the agent still has frames queued, so the result it posted for the retired run "
-                "may not have reached the server yet and the assertion below would be vacuous"
-            )
+            # Waited for rather than sampled, for the reason the black-hole
+            # partition test gives: a frame in flight sits in the spool until
+            # the server's coalesced `data.ack` lands, so a live link reads
+            # non-zero for part of every interval without anything being stuck.
+            try:
+                _wait_until(
+                    lambda: _agent_status()["spool_depth"] == 0,
+                    timeout=_SPOOL_DRAIN_BUDGET_S,
+                    interval=0.25,
+                )
+            except TimeoutError as exc:
+                raise AssertionError(
+                    "the agent still has frames queued, so the result it posted for the "
+                    "retired run may not have reached the server yet and the assertion "
+                    f"below would be vacuous: {_agent_status()!r}"
+                ) from exc
 
             after_late_result = _probe_run(client, slow_id, run_id)
             assert after_late_result == cancelled, (
@@ -3853,6 +4057,67 @@ def _automatic_scope(client: httpx.Client, agent_id: int) -> set[str]:
     }
 
 
+# What the server logs about a bootstrap pass. The success line is INFO and the
+# eligibility refusal DEBUG, so in a default deployment only the failures below
+# reach the backend's log; each is matched here so a timeout names whichever
+# one fired, and an empty match is itself the finding "no pass failed loudly".
+_BOOTSTRAP_LOG_PATTERN = (
+    r"discovery bootstrap|Deferred discovery|No running async loop|Traceback|\bERROR\b"
+)
+
+
+def _bootstrap_report(client: httpx.Client, agent_id: int) -> str:
+    """Everything the server will say about why a bootstrap has not happened.
+
+    `GET /agents/{id}/discovery` is the server's own answer to "is this agent
+    eligible, and if not why" — the same evaluator the bootstrap consults — so a
+    timeout reports it verbatim instead of the bare "condition not met within
+    240s (last error: None)" that three tests failed with for days, which is
+    true of every possible cause at once.
+    """
+    parts: list[str] = []
+    try:
+        view = json.dumps(_discovery_view(client, agent_id), default=str, sort_keys=True)
+        parts.append(f"discovery view: {view[:8000]}")
+    except Exception as exc:  # noqa: BLE001 — a report must not replace the failure
+        parts.append(f"<discovery view unavailable: {exc}>")
+    try:
+        profiles = [
+            (p["id"], p["cidr"], p.get("managed_by"), p.get("enabled"))
+            for p in _discovery_profiles(client, agent_id)
+        ]
+        parts.append(f"profiles (id, cidr, managed_by, enabled): {profiles}")
+    except Exception as exc:  # noqa: BLE001
+        parts.append(f"<profiles unavailable: {exc}>")
+    parts.append(
+        "server process log (bootstrap, newest last):\n"
+        + _server_log_excerpt(_BOOTSTRAP_LOG_PATTERN)
+    )
+    return "\n".join(parts)
+
+
+def _wait_for_bootstrap(client: httpx.Client, agent_id: int, predicate, *, what: str) -> None:
+    """`_wait_until` on a bootstrap outcome, failing with the server's own account."""
+    try:
+        _wait_until(predicate, timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S)
+    except TimeoutError as exc:
+        raise AssertionError(
+            f"{what} did not happen for agent {agent_id} within "
+            f"{_DISCOVERY_BOOTSTRAP_BUDGET_S}s ({exc}).\n{_bootstrap_report(client, agent_id)}"
+        ) from exc
+
+
+def _wait_for_bootstrap_value(client: httpx.Client, agent_id: int, getter, *, what: str):
+    """`_wait_until_and_return` on a bootstrap outcome, with the same failure report."""
+    try:
+        return _wait_until_and_return(getter, timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S)
+    except TimeoutError as exc:
+        raise AssertionError(
+            f"{what} did not happen for agent {agent_id} within "
+            f"{_DISCOVERY_BOOTSTRAP_BUDGET_S}s ({exc}).\n{_bootstrap_report(client, agent_id)}"
+        ) from exc
+
+
 def _scan_jobs(client: httpx.Client, *, profile_id: int | None = None) -> list[dict]:
     resp = client.get("/api/v1/discovery/jobs")
     resp.raise_for_status()
@@ -4295,10 +4560,12 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 _assert_backend_cannot_reach(_PROBE_TARGET_IP, _PROBE_NET_CIDR)
 
                 # ---- 1. The agent reports its directly connected subnets ----
-                _wait_until(
+                _wait_for_bootstrap(
+                    client,
+                    agent_id,
                     lambda: {_AGENT_NET_CIDR, _PROBE_NET_CIDR}
                     <= _automatic_scope(client, agent_id),
-                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                    what="the agent's directly connected subnets reaching its automatic scope",
                 )
                 scope = _automatic_scope(client, agent_id)
                 assert scope == {_AGENT_NET_CIDR, _PROBE_NET_CIDR}, (
@@ -4311,9 +4578,11 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 assert view["limits"]["scope_mode"] == "direct_private", view["limits"]
 
                 # ---- 2. The system-managed profiles ------------------
-                _wait_until(
+                _wait_for_bootstrap(
+                    client,
+                    agent_id,
                     lambda: len(_discovery_profiles(client, agent_id)) >= 2,
-                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                    what="the bootstrap creating one system profile per subnet",
                 )
                 profiles = _discovery_profiles(client, agent_id)
                 assert {p["cidr"] for p in profiles} == {_AGENT_NET_CIDR, _PROBE_NET_CIDR}, (
@@ -4333,9 +4602,11 @@ def test_agent_zero_configuration_discovery_import_and_replay():
                 )
 
                 # ---- 3. The initial scan, and progress that streams ---------
-                initial_job = _wait_until_and_return(
+                initial_job = _wait_for_bootstrap_value(
+                    client,
+                    agent_id,
                     lambda: next(iter(_scan_jobs(client, profile_id=probe_profile["id"])), None),
-                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                    what="the bootstrap queueing its initial scan",
                 )
                 job_id = initial_job["id"]
                 assert initial_job["triggered_by"] == "bootstrap", initial_job
@@ -5143,13 +5414,17 @@ def test_agent_discovery_capability_disable_cancels_and_late_findings_die():
                 _assert_backend_cannot_reach(address, _PROBE_NET_CIDR)
 
             # ---- zero-configuration bootstrap, as established above ----
-            _wait_until(
+            _wait_for_bootstrap(
+                client,
+                agent_id,
                 lambda: {_AGENT_NET_CIDR, _PROBE_NET_CIDR} <= _automatic_scope(client, agent_id),
-                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                what="the agent's directly connected subnets reaching its automatic scope",
             )
-            _wait_until(
+            _wait_for_bootstrap(
+                client,
+                agent_id,
                 lambda: len(_discovery_profiles(client, agent_id)) >= 2,
-                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                what="the bootstrap creating one system profile per subnet",
             )
             probe_profile = _system_profile_for(client, agent_id, _PROBE_NET_CIDR)
 
@@ -5449,13 +5724,17 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
             _assert_backend_cannot_reach(_PROBE_TARGET_IP, _PROBE_NET_CIDR)
 
             # ---- the baseline every later claim is measured against ---------
-            _wait_until(
+            _wait_for_bootstrap(
+                client,
+                agent_id,
                 lambda: {_AGENT_NET_CIDR, _PROBE_NET_CIDR} <= _automatic_scope(client, agent_id),
-                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                what="the agent's directly connected subnets reaching its automatic scope",
             )
-            _wait_until(
+            _wait_for_bootstrap(
+                client,
+                agent_id,
                 lambda: len(_discovery_profiles(client, agent_id)) >= 2,
-                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                what="the bootstrap creating one system profile per subnet",
             )
             probe_profile = _system_profile_for(client, agent_id, _PROBE_NET_CIDR)
             _system_profile_for(client, agent_id, _AGENT_NET_CIDR)
@@ -5465,9 +5744,11 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
                 f"there is no recurrence for the restart to resume: {probe_profile}"
             )
 
-            initial_job = _wait_until_and_return(
+            initial_job = _wait_for_bootstrap_value(
+                client,
+                agent_id,
                 lambda: next(iter(_scan_jobs(client, profile_id=probe_profile["id"])), None),
-                timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                what="the bootstrap queueing its initial scan",
             )
             initial_job_id = initial_job["id"]
             _wait_until(
@@ -5815,10 +6096,12 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
                 assert _PROBE_NET_2_CIDR not in _agent_route_networks()
                 assert _PROBE_NET_CIDR not in _agent_route_networks(service=_AGENT_2_SERVICE)
 
-                _wait_until(
+                _wait_for_bootstrap(
+                    client,
+                    agent2_id,
                     lambda: {_AGENT_2_NET_CIDR, _PROBE_NET_2_CIDR}
                     <= _automatic_scope(client, agent2_id),
-                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                    what="the agent's directly connected subnets reaching its automatic scope",
                 )
                 assert _automatic_scope(client, agent2_id) == {
                     _AGENT_2_NET_CIDR,
@@ -5835,9 +6118,11 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
                     f"first one's scope: {sorted(_automatic_scope(client, agent_id))}"
                 )
 
-                _wait_until(
+                _wait_for_bootstrap(
+                    client,
+                    agent2_id,
                     lambda: len(_discovery_profiles(client, agent2_id)) >= 2,
-                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                    what="the bootstrap creating one system profile per subnet",
                 )
                 probe2_profile = _system_profile_for(client, agent2_id, _PROBE_NET_2_CIDR)
                 _system_profile_for(client, agent2_id, _AGENT_2_NET_CIDR)
@@ -5848,9 +6133,11 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
                     "first agent's profiles"
                 )
 
-                job2 = _wait_until_and_return(
+                job2 = _wait_for_bootstrap_value(
+                    client,
+                    agent_id,
                     lambda: next(iter(_scan_jobs(client, profile_id=probe2_profile["id"])), None),
-                    timeout=_DISCOVERY_BOOTSTRAP_BUDGET_S,
+                    what="the bootstrap queueing its initial scan",
                 )
                 _wait_until(
                     lambda: _scan_job(client, job2["id"])["status"] == "completed",
