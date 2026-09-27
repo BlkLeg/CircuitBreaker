@@ -105,3 +105,35 @@ def test_the_html_reporter_cannot_clear_the_junit_report():
     assert html_folder not in junit_path.parents and html_folder != junit_path.parent, (
         f"html outputFolder {html_folder} would clear {junit_path}"
     )
+
+
+def test_verify_composed_runs_both_suites_and_is_documented():
+    text = MAKEFILE.read_text(encoding="utf-8")
+    line = re.search(r"^verify-composed:([^\n]*)$", text, re.M)
+    assert line, "no verify-composed target"
+    deps, _, help_text = line.group(1).partition("##")
+    assert set(deps.split()) == {"verify-composed-browser", "verify-composed-agent"}
+    assert "Tier 2" in help_text, "verify-composed must say what it is in `make help`"
+
+
+def test_verify_composed_browser_calls_the_script():
+    assert BROWSER_SCRIPT in _recipe("verify-composed-browser")
+
+
+def test_verify_composed_agent_honours_the_register_or_runs_the_real_suite():
+    recipe = _recipe("verify-composed-agent")
+    assert "quarantine_notice.py" in recipe
+    assert '"Composed Agent E2E / composed-journey"' in recipe
+    assert "$(MAKE) e2e-local" in recipe
+
+
+def test_local_quarantine_default_matches_the_workflow():
+    """composed-e2e.yml defaults `quarantined` to true, so a laptop must default to
+    the same. Otherwise `make verify-composed` starts a 75-minute suite that is
+    known red, or skips one that CI runs."""
+    workflow = _load("composed-e2e.yml")
+    triggers = workflow.get("on", workflow.get(True))
+    ci_default = bool(triggers["workflow_call"]["inputs"]["quarantined"]["default"])
+    match = re.search(r"^CB_COMPOSED_QUARANTINED\s*\?=\s*(\d)\s*$", MAKEFILE.read_text(encoding="utf-8"), re.M)
+    assert match, "Makefile has no `CB_COMPOSED_QUARANTINED ?= 0|1`"
+    assert (match.group(1) == "1") == ci_default

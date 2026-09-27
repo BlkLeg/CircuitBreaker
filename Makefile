@@ -294,7 +294,7 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-fleet verify-fleet-upgrade loadgen nav-wedge
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-composed verify-composed-browser verify-composed-agent verify-fleet verify-fleet-upgrade loadgen nav-wedge
 
 loadgen: ## Seed and run a non-blocking Phase-2 baseline (TIER=A, CB_LOADGEN_TOKEN required)
 	$(CURDIR)/.venv/bin/python scripts/loadgen/seed.py seed --tier "$(or $(TIER),A)" --db-url "$(CB_TEST_DB_URL)"
@@ -398,6 +398,29 @@ verify: verify-fast ## Tier 0 + Tier 1 minus the backend suite — the pre-push 
 
 verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (measured 6m43s)
 	CB_VERIFY_BACKEND=shards scripts/ci/tier1-unit.sh
+
+# T2. Not part of `verify`: the browser suite builds the production frontend and
+# drives four browsers, and the composed journey takes up to 75 minutes. Each
+# target calls the same scripts/ci script the workflow does (design D1/P1;
+# tests/build/test_tier2_wiring.py enforces it). Browsers must be installed
+# locally: `cd apps/frontend && npx playwright install --with-deps`.
+#
+# CB_COMPOSED_QUARANTINED mirrors composed-e2e.yml's `quarantined` default, and
+# the wiring test fails if they disagree. While QUAR-001 is live the agent half
+# prints the register row and exits 0, as CI does. Set it to 0 to run the suite.
+CB_COMPOSED_QUARANTINED ?= 1
+
+verify-composed: verify-composed-browser verify-composed-agent ## Tier 2 — browser E2E + composed agent journey (CB_COMPOSED_QUARANTINED=0 lifts QUAR-001)
+
+verify-composed-browser: ## Tier 2 — the Playwright suite, all projects, unsharded
+	scripts/ci/tier2-browser.sh
+
+verify-composed-agent: ## Tier 2 — the composed agent journey, or its register row while quarantined
+	@if [ "$(CB_COMPOSED_QUARANTINED)" = "1" ]; then \
+	  python3 scripts/ci/quarantine_notice.py --check "Composed Agent E2E / composed-journey"; \
+	else \
+	  $(MAKE) e2e-local; \
+	fi
 
 # T3. Not part of `verify` and deliberately not wired into any workflow yet: it
 # boots a VM, downloads a 556MB image on first run, and takes minutes, which is
