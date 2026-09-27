@@ -101,10 +101,17 @@ checks, so `tests/build/required_checks.py` is untouched by this design.
 
 Rationale: a 30-minute composed suite on the critical path of every merge, in a single-maintainer repo,
 converts one flake into a total merge lockout — and the automation would then be racing the maintainer to
-quarantine it. The nightly has nobody waiting on it, so a diagnosis arriving ten minutes later costs
-nothing. Accepted consequence: a regression introduced on `dev` is not seen by a nightly on `main`. The
-release gate is the backstop, which is precisely why browser E2E stays a release gate and not only a
-nightly.
+quarantine it. The nightly has nobody waiting on it, so a diagnosis arriving ten minutes later costs nothing.
+
+**The nightly tests `dev`, not `main`, and that is deliberate.** An earlier draft of this section accepted "a
+regression introduced on `dev` is not seen by a nightly on `main`" as a consequence. It is not a consequence,
+because `e2e.yml:57-59` already solved this: `schedule` fires only from the default branch's copy of a
+workflow file, `main` trails the integration branch, so the existing nightly checks out `dev` and tests the
+code that is actually moving. `tier2.yml` follows that precedent — the workflow file comes from `main`, the
+tree under test comes from `dev` — which is why `composed-e2e.yml` takes a `ref` input rather than hard-coding
+the redirect it inherited. Tag pushes, `workflow_dispatch` and `workflow_call` keep testing the ref that
+triggered them. The release gate remains the backstop for anything that reaches a tag without a nightly having
+seen it.
 
 ### D3 — The decision is deterministic; the model only writes prose
 
@@ -136,11 +143,11 @@ and a human merge.
 | File | Change |
 |---|---|
 | `.github/workflows/composed-e2e.yml` | **New.** The composed agent journey as `workflow_call`, lifted out of `e2e.yml`. |
-| `.github/workflows/mono-smoke.yml` | **New.** The mono image build and smoke, lifted out of `dev-ci.yml`'s `build-docker`. The GHCR **push step and its `packages: write` grant stay behind in `dev-ci.yml`** — a nightly Tier 2 run must not publish a dev image, and leaving the push out is what lets this workflow declare only `contents: read`. `dev-ci.yml`'s caller job keeps `needs: [artifact-smoke]`, preserving the existing ordering. |
+| `.github/workflows/mono-smoke.yml` | **New, but deferred to slice A3** (§9). The plan for A1 found that the smoke cannot be separated from its image: `dev-ci.yml:969-980` pushes to GHCR by `docker tag`-ing the image the *same job* built, in that runner's Docker daemon, and the job's own comment requires the push to happen only after the smoke has started that exact image. A reusable workflow puts the smoke on a different runner with nothing to tag, so extracting it needs either an image transported as an artifact or the publish moved inside the called workflow — a decision with its own cost, taken on its own evidence rather than folded into the first slice. Until A3 lands, the mono smoke stays inline in `dev-ci.yml` exactly as it is today. |
 | `.github/workflows/tier2.yml` | **New.** `name: Tier 2 (composed)`, matching `Fleet (Tier 3)`. Nightly cron, `workflow_dispatch`, `workflow_call`. Carries a `concurrency` group so a manual dispatch and the nightly cannot interleave two runs whose artifacts the triage would then read as one. |
 | `.github/workflows/e2e.yml` | Thin caller of `composed-e2e.yml`. Keeps its tag and path-filtered PR triggers; **drops its nightly schedule**, which `tier2.yml` takes over. |
 | `.github/workflows/dev-ci.yml` | `build-docker` becomes a caller of `mono-smoke.yml`. |
-| `.github/workflows/release.yml`, `release-dry-run.yml` | Call `tier2.yml` with all three suites (the default `suites`) instead of `browser-e2e.yml` directly. **Decided 2026-09-27:** the release runs the whole tier. The alternative was to drop `"mono"` as redundant against the `runtime_digest` parity check the release already performs; running it costs one extra mono image build on the release path, and buys a boot-level signal that parity alone does not give — the digest proves the image and the package were built from the same tree, not that the image starts. |
+| `.github/workflows/release.yml`, `release-dry-run.yml` | Call `tier2.yml` instead of `browser-e2e.yml` directly — with `["browser","composed"]` from A2, and the default all-three set once A3 adds the mono suite. **Decided 2026-09-27:** the release runs the whole tier. The alternative was to drop `"mono"` as redundant against the `runtime_digest` parity check the release already performs; running it costs one extra mono image build on the release path, and buys a boot-level signal that parity alone does not give — the digest proves the image and the package were built from the same tree, not that the image starts. |
 | `Makefile` | `make verify-composed` — the laptop entry point §4 of the programme design anticipated but never named. It exports `CI=1`, because `playwright.config.ts` selects its JUnit reporter on `process.env.CI`; without that a local run writes no `junit.xml` and cannot be triaged, which would make the local and CI forms of the tier differ in exactly the way P1 forbids. |
 
 `tier2.yml` selects suites with a `suites` JSON-array input and `if: contains(fromJSON(inputs.suites), 'browser')`
@@ -455,8 +462,8 @@ Expected to pass with no change: `test_workflow_job_graph.py`, `test_workflow_ru
 registry, not an inference: `SEEDED_WORKFLOWS`, `EVIDENCE_OWING_JOBS` and `ARTIFACT_SOURCE_WORKFLOWS`
 enumerate workflows and job ids by name, so moving the composed journey out of `e2e.yml` silently drops the
 requirement that it upload diagnostics unless `composed-e2e.yml` is added to `ARTIFACT_SOURCE_WORKFLOWS` in
-the same commit. `mono-smoke.yml` and `tier2.yml` join the same maps. Slice A1 is not complete without those
-entries; a green run of that test proves nothing if the workflow it was watching has been renamed out from
+the same commit. `tier2.yml` joins the same maps in A2 and `mono-smoke.yml` in A3. Slice A1 is not complete without its
+entry; a green run of that test proves nothing if the workflow it was watching has been renamed out from
 under it.
 
 **`test_scheduled_workflows_pin_their_ref.py`** covers the two new crons, which carry
@@ -493,8 +500,9 @@ read-only against real nightlies.
 
 | # | Slice | Delivers | Write access |
 |---|---|---|---|
-| A1 | Extract `mono-smoke.yml` and `composed-e2e.yml`; `e2e.yml` and `dev-ci.yml` become callers; QUAR-001 becomes a visible `SKIPPED`; the `test_ci_evidence_retention.py` registry gains both workflows (§7.4) | No behaviour change, fewer lines, an honest skip | none |
-| A2 | `tier2.yml` aggregator, `make verify-composed`, the drift guard; `release.yml` and `release-dry-run.yml` call it | Tier 2 exists, is runnable locally, and is nameable | none |
+| A1 | Extract `composed-e2e.yml`; `e2e.yml` becomes a caller and drops its nightly; QUAR-001 becomes a visible `SKIPPED` backed by the register; the `test_ci_evidence_retention.py` registry follows the move (§7.4) | No behaviour change, fewer lines, an honest skip | none |
+| A2 | `tier2.yml` aggregator, `make verify-composed`, the drift guard; `release.yml` and `release-dry-run.yml` call it with `["browser","composed"]` | Tier 2 exists, is runnable locally, and is nameable | none |
+| A3 | `mono-smoke.yml`, after deciding how the built image reaches a second runner; the release's `suites` becomes the default all-three | The tier's third suite | `packages: write` stays wherever the push ends up |
 | B1 | `tier2_triage.py` + tests + `triage-decide` | Verdicts, `verdict.json`, M1–M3 | none |
 | B2 | `triage-emit`, and `review_alert.py` as the message builder it calls | M4, M5 for the bot's own PR, the issue and the row PR | first write access in the programme |
 | B3 | `maintainer_digest.py`, `maintainer-digest.yml`, `review-alert.yml` (hourly sweep) | M5 for human and Dependabot PRs, M6 nightly | read-only (digest); `pull-requests: write` for the label only (review alert) |
