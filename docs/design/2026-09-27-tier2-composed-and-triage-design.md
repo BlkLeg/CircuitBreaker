@@ -148,7 +148,7 @@ and a human merge.
 | `.github/workflows/e2e.yml` | Thin caller of `composed-e2e.yml`. Keeps its tag and path-filtered PR triggers; **drops its nightly schedule**, which `tier2.yml` takes over. |
 | `.github/workflows/dev-ci.yml` | `build-docker` becomes a caller of `mono-smoke.yml`. |
 | `.github/workflows/release.yml`, `release-dry-run.yml` | Call `tier2.yml` instead of `browser-e2e.yml` directly — with `["browser","composed"]` from A2, and the default all-three set once A3 adds the mono suite. **Superseded 2026-09-27 by the maintainer:** the release calls `tier2.yml` with `["browser"]` only. The composed journey is not a release gate (AGT-01 stands), because making it reliably green is a steep hill that should not block releases. Whether A3 adds `"mono"` to the release is decided in A3. |
-| `Makefile` | `make verify-composed` — the laptop entry point §4 of the programme design anticipated but never named. It exports `CI=1`, because `playwright.config.ts` selects its JUnit reporter on `process.env.CI`; without that a local run writes no `junit.xml` and cannot be triaged, which would make the local and CI forms of the tier differ in exactly the way P1 forbids. |
+| `Makefile` | `make verify-composed` — the laptop entry point §4 of the programme design anticipated but never named. Its browser half runs `scripts/ci/tier2-browser.sh`, which exports `CI=1`, because `playwright.config.ts` selects its JUnit reporter on `process.env.CI`; without that a local run writes no `junit.xml` and cannot be triaged, which would make the local and CI forms of the tier differ in exactly the way P1 forbids. |
 
 `tier2.yml` selects suites with a `suites` JSON-array input and `if: contains(fromJSON(inputs.suites), 'browser')`
 on each call job — the established pattern from `artifact-smoke.yml`'s `arches`.
@@ -219,6 +219,10 @@ build-context `COPY` sources, root `docker-compose.yml`, `pytest.ini`, the journ
 daily UI commit is never mistaken for a fix to an agent failure; a frontend-caused crash is therefore
 fix-only). Register rows for `Composed Agent E2E / composed-journey` now quarantine individual tests by
 deselection whenever the suite runs, rather than only the whole suite.
+
+Two limits: "never runs twice" is best-effort across concurrent runs on the same fingerprint, since two runs
+can both pass the guard before either records a verdict; and verdict artifacts are retained for 90 days,
+after which an unaddressed failure may run once more.
 
 ---
 
@@ -483,8 +487,9 @@ suite until its triage jobs exist (A2 plan, deviation 4) — and `mono-smoke.yml
 complete without its entry; a green run of that test proves nothing if the workflow it was watching has been
 renamed out from under it.
 
-**`test_scheduled_workflows_pin_their_ref.py`** covers the two new crons, which carry
-`# scheduled-ref: default-branch-intentional`.
+**`test_scheduled_workflows_pin_their_ref.py`** covers the new crons. `tier2.yml` does not carry
+`# scheduled-ref: default-branch-intentional`: it pins every checkout's ref, and the ref it passes to each
+called suite, so the test checks it rather than exempting it (§7.2; A2 plan, deviation 3).
 
 **Check-run names change on the release path, and nothing asserts them today.** `release.yml` currently calls
 `browser-e2e.yml` directly, so its checks read `Browser E2E / browser-e2e (shard 1/2)`. Calling `tier2.yml`
