@@ -107,6 +107,34 @@ def test_a_non_numeric_mention_id_is_refused() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("424242", "424242"),
+        (" <@424242> ", "424242"),
+        ("<@!424242>", "424242"),
+        ("", ""),
+    ],
+)
+def test_mention_ids_are_read_in_discords_own_forms(raw: str, expected: str) -> None:
+    assert notify.mention_from_env(raw) == expected
+
+
+def test_a_username_costs_the_ping_not_the_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The first live week: a username in the secret dropped every ping message."""
+    recorder = _Recorder([None])
+    monkeypatch.setenv(notify.WEBHOOK_ENV, WEBHOOK)
+    monkeypatch.setenv(notify.MENTION_ENV, "shawnji.dev")
+    monkeypatch.setattr(notify, "_default_opener", recorder)
+    assert notify.main(["--title", "x", "--mention"]) == 0
+    assert len(recorder.requests) == 1
+    body = json.loads(recorder.requests[0].data or b"{}")
+    assert "content" not in body and body["allowed_mentions"] == {"parse": []}
+    assert "sending without a ping" in capsys.readouterr().out
+
+
 def test_embed_fields_are_clipped_to_discords_limits() -> None:
     payload = notify.build_payload(
         notify.Notification(
