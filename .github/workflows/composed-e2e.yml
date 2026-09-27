@@ -156,12 +156,13 @@ jobs:
 
       # The register's `check` column is a stable identifier, not a live check
       # run name: after this extraction the real check run for this job
-      # renders as `<caller job> / composed-journey — quarantined`-shaped
-      # names that vary per caller, while the register still spells the
-      # pre-extraction name `Composed Agent E2E / composed-journey`. That is
-      # deliberate — the register is a governance ledger and this refactor is
-      # not the place to rewrite its row — so do not "fix" this string to
-      # match a current check run name.
+      # renders as `composed / Composed agent journey — quarantined` (e2e.yml's
+      # caller job id, since it sets no `name:`, followed by this job's own
+      # `name:`), a name that varies per caller, while the register still
+      # spells the pre-extraction name `Composed Agent E2E / composed-journey`.
+      # That is deliberate — the register is a governance ledger and this
+      # refactor is not the place to rewrite its row — so do not "fix" this
+      # string to match a current check run name.
       #
       # `shell: bash` matters here: a default `run:` on Linux is `bash -e`
       # without `-o pipefail`, so `python3 ... | tee ...` would report the
