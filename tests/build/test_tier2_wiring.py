@@ -213,3 +213,50 @@ def test_browser_e2e_checks_out_the_ref_it_was_given():
 def test_notify_watches_tier2():
     watched = _triggers(_load("notify.yml"))["workflow_run"]["workflows"]
     assert "Tier 2 (composed)" in watched
+
+
+def _tier2_callers() -> dict[str, dict]:
+    callers = {}
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        for job_id, job in (_load(path.name).get("jobs") or {}).items():
+            if str((job or {}).get("uses", "")) == "./.github/workflows/tier2.yml":
+                callers[f"{path.name}:{job_id}"] = job
+    return callers
+
+
+def test_the_release_path_calls_tier2_and_not_browser_e2e_directly():
+    for name in ("release.yml", "release-dry-run.yml"):
+        jobs = _load(name)["jobs"]
+        assert jobs["tier2"]["uses"] == "./.github/workflows/tier2.yml", name
+        direct = [j for j, job in jobs.items() if str(job.get("uses", "")).endswith("browser-e2e.yml")]
+        assert not direct, f"{name} still calls browser-e2e.yml directly from {direct}"
+
+
+def test_every_tier2_caller_passes_real_suites():
+    callers = _tier2_callers()
+    assert callers, "nothing calls tier2.yml"
+    for where, job in callers.items():
+        raw = (job.get("with") or {}).get("suites", "")
+        if raw == "":
+            continue
+        suites = json.loads(raw)
+        assert suites and set(suites) <= set(KNOWN_SUITES), f"{where} passes {suites}"
+
+
+def test_the_release_does_not_gate_on_the_composed_journey():
+    """Maintainer decision 2026-09-27 (A2 plan): the release is not gated on the
+    composed journey. `suites` is passed explicitly, because the tier's default
+    includes composed, so omitting it would silently start gating."""
+    for name in ("release.yml", "release-dry-run.yml"):
+        raw = _load(name)["jobs"]["tier2"]["with"]["suites"]
+        assert json.loads(raw) == ["browser"], f"{name} passes {raw}"
+
+
+def test_tier2_callers_grant_read_only():
+    for where, job in _tier2_callers().items():
+        assert job.get("permissions") == {"contents": "read"}, where
+
+
+def test_release_waits_for_tier2():
+    assert "tier2" in _load("release.yml")["jobs"]["release"]["needs"]
+    assert "tier2" in _load("release-dry-run.yml")["jobs"]["summary"]["needs"]
