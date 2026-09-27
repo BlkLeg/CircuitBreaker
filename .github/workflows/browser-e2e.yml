@@ -16,12 +16,12 @@ name: Browser E2E
 # blocks no merge; gating the candidate on it is what makes the suite load
 # bearing for a release.
 #
-# What this does NOT cover: the composed agent journey. e2e.yml is disabled
-# (`if: false`) under QUAR-001, issue #162, expiring 2026-12-21 — the discovery
-# bootstrap never creates its system-managed profiles, so all three tests time
-# out. Wiring it in here would make every release red. When that quarantine
-# clears, e2e.yml becomes the second caller-shaped gap to close, the same way
-# this one was.
+# What this does NOT cover: the composed agent journey. e2e.yml calls
+# composed-e2e.yml but is quarantined (QUAR-001, issue #162, expiring
+# 2026-12-21) — the discovery bootstrap never creates its system-managed
+# profiles, so all three tests time out. Wiring it in here would make every
+# release red. When that quarantine clears, flipping `quarantined: false` on
+# e2e.yml's call is the remaining gap to close, the same way this one was.
 #
 # The aggregate that branch protection can require deliberately stays in the
 # CALLING workflow. A reusable workflow's jobs are reported as

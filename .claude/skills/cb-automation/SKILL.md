@@ -21,7 +21,7 @@ babysitting). Everything that needs a human reaches them through **Discord**.
 | `dependabot-lockfile-sync.yml` | Dependabot pip PR into dev/main | Regenerates `requirements.txt` from `poetry.lock` with the **base** branch's generator, pushes, then dispatches required checks | Via notify.yml on failure |
 | `dependabot-automerge.yml` | Dependabot PR opened/updated | Queues `gh pr merge --auto` for patch/minor updates into `dev` (the ruleset's 21 checks still decide); labels majors `major-update` and comments; never touches PRs into `main` | — |
 | `security.yml`, `codeql.yml` | Weekly + push/PR + dispatch | Scanners | Via notify.yml on failure |
-| `e2e.yml` | Disabled (`if: false`, QUAR-001, issue #162) | Composed agent journey | — |
+| `e2e.yml` | RC tag, agent-path PR, nightly | Calls `composed-e2e.yml`, quarantined (`quarantined: true`, QUAR-001, issue #162) — reports the register row instead of running | Via notify.yml on failure |
 
 Squash-merged branches are never cleaned up (their commits are not contained
 in main), by design of the containment rule.
