@@ -1,0 +1,68 @@
+name: Dependabot auto-merge
+
+# Patch and minor Dependabot updates into `dev` merge themselves once the 21
+# required checks pass; nothing else does. `gh pr merge --auto` only *queues*
+# the merge: the `dev` ruleset still decides, so a red check leaves the PR open
+# exactly as it would for a human.
+#
+# Deliberately not auto-merged:
+#   * semver-major updates — they need a migration (tailwind 4, vitest 5 and
+#     plugin-react 6 all broke the browser E2E build in September 2026); they
+#     get the `major-update` label and a comment instead;
+#   * anything based on `main` — Dependabot raises security updates against the
+#     default branch, and `main` only moves through a dev→main PR;
+#   * anything not opened by Dependabot from this repository.
+#
+# `pull_request`, not `pull_request_target`: no PR code is checked out or run
+# here, and a Dependabot-triggered `pull_request` run gets exactly the write
+# scopes granted below. Note that the lockfile-sync commit on pip PRs is pushed
+# with GITHUB_TOKEN and gets its checks from dispatch_required_checks.sh, which
+# is what lets the queued merge complete on those PRs too.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  automerge:
+    name: Queue or flag the update
+    if: >-
+      github.event.pull_request.user.login == 'dependabot[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Read the update's metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Queue the merge for a patch or minor update into dev
+        if: >-
+          github.event.pull_request.base.ref == 'dev'
+          && (steps.meta.outputs.update-type == 'version-update:semver-patch'
+              || steps.meta.outputs.update-type == 'version-update:semver-minor')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --merge "$PR_URL"
+
+      - name: Flag a major update for a human
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          gh label create major-update --force --color "D93F0B" \
+            --description "Dependabot major bump: needs a migration, never auto-merged"
+          gh pr edit "$PR_URL" --add-label major-update
+          if [ "$(gh pr view "$PR_URL" --json comments \
+                --jq '[.comments[] | select(.body | startswith("Major update:"))] | length')" = "0" ]; then
+            gh pr comment "$PR_URL" --body "Major update: not auto-merged. It needs a migration by a human or the Copilot cloud agent (see the cb-automation skill)."
+          fi

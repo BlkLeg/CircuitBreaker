@@ -259,14 +259,36 @@ def rotate_vault_key(db: Session) -> None:
       - AppSettings.smtp_password_enc
       - AppSettings.dhcp_router_user_enc / dhcp_router_pass_enc
       - AppSettings.acme_dns_config (any ``*_enc`` key)
+      - AppSettings.opnsense_api_key_enc / opnsense_api_secret_enc
+      - AppSettings.backup_s3_secret_key_enc
+      - AppSettings.agent_server_private_key / agent_server_key_pending_private_key
+      - AppSettings.oauth_providers / oidc_providers (any ``*_enc`` key per provider)
       - DiscoveryProfile.snmp_community_encrypted
       - credentials table (encrypted_value)
+      - certificates table (key_pem, when encrypted)
+      - integrations table (api_key)
+      - users table (oauth_tokens, when encrypted)
+      - Hardware.telemetry_config (``password``)
       - NotificationSink.provider_config (any ``*_enc`` key)
+
+    A value stored with the vault that is missing from this list survives the
+    rotation as ciphertext the new key cannot read: the agent server keys were,
+    and the first rotation locked every agent out (issue #168).
+    tests/services/test_vault_rotation_coverage.py seeds every location here.
 
     After rotation the in-memory vault singleton is reinitialized with the new
     key so subsequent encrypt/decrypt calls use it immediately.
     """
-    from app.db.models import AppSettings, Credential, DiscoveryProfile, NotificationSink
+    from app.db.models import (
+        AppSettings,
+        Certificate,
+        Credential,
+        DiscoveryProfile,
+        Hardware,
+        Integration,
+        NotificationSink,
+        User,
+    )
     from app.services.log_service import write_log
 
     vault = get_vault()
@@ -283,6 +305,9 @@ def rotate_vault_key(db: Session) -> None:
         _cfg_p = db.get(AppSettings, 1)
         if _cfg_p and _cfg_p.smtp_password_enc:
             _probe, _probe_label = _cfg_p.smtp_password_enc, "AppSettings.smtp_password_enc"
+        elif _cfg_p and _cfg_p.agent_server_private_key:
+            _probe = _cfg_p.agent_server_private_key
+            _probe_label = "AppSettings.agent_server_private_key"
     except Exception:
         pass
     if _probe is None:
@@ -393,6 +418,93 @@ def rotate_vault_key(db: Session) -> None:
         cfg.acme_dns_config = _reencrypt_blob(  # type: ignore[assignment]
             cfg.acme_dns_config, "ACME DNS credentials"
         )
+
+    def _reencrypt_attr(obj: object, attr: str, label: str, *, plaintext_prefix: str = "") -> None:
+        """Re-encrypt the single ciphertext in ``obj.attr`` in place.
+
+        ``plaintext_prefix`` names a legacy plaintext shape the column may still
+        hold (a PEM header, a JSON object); such a value is not ciphertext and is
+        left exactly as it is rather than reported as a failure.
+        """
+        value = getattr(obj, attr, None)
+        if not value:
+            return
+        if plaintext_prefix and str(value).lstrip().startswith(plaintext_prefix):
+            return
+        try:
+            setattr(obj, attr, _reencrypt(str(value)))
+        except Exception as exc:
+            _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                # Logs only type(exc).__name__ — exception class name, not any credential value
+                "Could not re-encrypt %s during rotation (reason: %s)",
+                label,
+                type(exc).__name__,
+            )
+
+    # AppSettings columns holding one ciphertext each. The agent server keys are
+    # the Noise static keys every agent /link handshake is checked against; left
+    # behind, the first rotation locks out every enrolled agent (issue #168).
+    if cfg is not None:
+        for attr, label in (
+            ("opnsense_api_key_enc", "OPNsense API key"),
+            ("opnsense_api_secret_enc", "OPNsense API secret"),
+            ("backup_s3_secret_key_enc", "S3 backup secret key"),
+            ("agent_server_private_key", "agent server private key"),
+            ("agent_server_key_pending_private_key", "pending agent server private key"),
+        ):
+            _reencrypt_attr(cfg, attr, label)
+
+        # OAuth / OIDC client secrets live as ``client_secret_enc`` inside each
+        # provider entry (api/settings.py). oidc_providers is a list, but older
+        # rows hold a dict keyed by slug; both are carried. The log labels are
+        # fixed strings: provider names come out of the same blobs as the
+        # secrets, and CodeQL (rightly, by taint) flags logging anything that
+        # flows from them.
+        if isinstance(cfg.oauth_providers, dict):
+            cfg.oauth_providers = {
+                name: _reencrypt_blob(entry, "OAuth provider client secret")
+                for name, entry in cfg.oauth_providers.items()
+            }
+        # Typed as object: the column is Mapped[list], but rows written before
+        # the list shape hold a dict, which the ORM type cannot express.
+        oidc: object = cfg.oidc_providers
+        if isinstance(oidc, list):
+            cfg.oidc_providers = [
+                _reencrypt_blob(entry, "OIDC provider client secret") for entry in oidc
+            ]
+        elif isinstance(oidc, dict):
+            cfg.oidc_providers = {  # type: ignore[assignment]
+                slug: _reencrypt_blob(entry, "OIDC provider client secret")
+                for slug, entry in oidc.items()
+            }
+
+    for integ in db.query(Integration).filter(Integration.api_key.isnot(None)).all():
+        _reencrypt_attr(integ, "api_key", f"integration {integ.id} API key")
+
+    # Certificates imported before key encryption may still hold a plaintext PEM.
+    for cert in db.query(Certificate).all():
+        _reencrypt_attr(
+            cert, "key_pem", f"certificate {cert.id} private key", plaintext_prefix="-----BEGIN"
+        )
+
+    # oauth_tokens is read as plain JSON first, ciphertext second (api/auth_oauth.py).
+    for user in db.query(User).filter(User.oauth_tokens.isnot(None)).all():
+        _reencrypt_attr(user, "oauth_tokens", f"user {user.id} OAuth tokens", plaintext_prefix="{")
+
+    # Hardware telemetry stores its BMC/SNMP password encrypted under "password"
+    # (api/telemetry.py). A new dict is assigned so the JSONB change is seen.
+    for hw in db.query(Hardware).filter(Hardware.telemetry_config.isnot(None)).all():
+        config = hw.telemetry_config
+        if isinstance(config, dict) and config.get("password"):
+            try:
+                hw.telemetry_config = {**config, "password": _reencrypt(str(config["password"]))}
+            except Exception as exc:
+                _logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure  # noqa: E501
+                    # Logs only type(exc).__name__ — exception class name, not any credential value
+                    "Could not re-encrypt telemetry password for hardware %d (reason: %s)",
+                    hw.id,
+                    type(exc).__name__,
+                )
 
     # Re-encrypt DiscoveryProfile.snmp_community_encrypted
     profiles = (
