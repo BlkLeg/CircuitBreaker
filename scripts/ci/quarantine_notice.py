@@ -59,16 +59,29 @@ def rows_for_check(register: Path, check: str) -> list[dict[str, str]]:
 
 
 def format_notice(row: Mapping[str, str], today: date) -> str:
-    """One `SKIPPED (...)` line, in `cb::skipped`'s shape, naming the row.
+    """One header line, in `cb::skipped`'s shape, naming the row.
 
-    The days-remaining figure is the part a reader acts on: it turns "this is
-    quarantined" into "this stops being allowed on a date you can see".
+    The days-remaining (or days-ago) figure is the part a reader acts on: it
+    turns "this is quarantined" into "this stops being allowed on a date you
+    can see". An expired row prints `EXPIRED`, not `SKIPPED`: this text can be
+    piped straight into a step summary, and a reassuring `SKIPPED` block on a
+    job that actually failed would be the same dishonest marker this script
+    exists to remove.
     """
     expiry = _parse_date(row["expiry"], row["quarantine_id"])
     remaining = (expiry - today).days
+    if remaining < 0:
+        header = (
+            f"EXPIRED ({row['quarantine_id']}, expired {expiry.isoformat()}, "
+            f"{-remaining} days ago): {row['check']}"
+        )
+    else:
+        header = (
+            f"SKIPPED ({row['quarantine_id']}, expires {expiry.isoformat()}, "
+            f"{remaining} days left): {row['check']}"
+        )
     return (
-        f"SKIPPED ({row['quarantine_id']}, expires {expiry.isoformat()}, "
-        f"{remaining} days left): {row['check']}\n"
+        f"{header}\n"
         f"  scope:    {row['scope']}\n"
         f"  owner:    {row['owner']}\n"
         f"  tracking: {row['tracking']}"

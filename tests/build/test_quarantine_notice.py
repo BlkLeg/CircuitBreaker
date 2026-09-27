@@ -88,6 +88,17 @@ def test_the_notice_names_the_row_the_expiry_and_the_tracking_item(tmp_path: Pat
     assert CHECK in notice
 
 
+def test_an_expired_rows_notice_says_expired_not_skipped(tmp_path: Path) -> None:
+    """Piped into a step summary, `SKIPPED` on an expired row would read as a
+    reassuring marker for a job that actually failed — the same dishonest
+    marker this script exists to remove. The header must say `EXPIRED`."""
+    rows = rows_for_check(_register(tmp_path, expiry="2026-09-26"), CHECK)
+    notice = format_notice(rows[0], date(2026, 9, 27))
+    assert notice.startswith("EXPIRED (")
+    assert "SKIPPED" not in notice
+    assert "1 days ago" in notice
+
+
 def test_a_matching_row_exits_zero(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     code = main(["--check", CHECK, "--register", str(_register(tmp_path)), "--today", "2026-09-27"])
     assert code == 0
