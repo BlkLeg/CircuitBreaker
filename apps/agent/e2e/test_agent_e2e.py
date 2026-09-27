@@ -2509,6 +2509,12 @@ _PARTITION_DETECT_S = 60
 # deadline itself, and status.json is written from the disconnect handler
 # after that.
 _PARTITION_DETECT_BUDGET_S = _PARTITION_DETECT_S + 30
+# How long a healthy link gets to show an empty spool before the partition. A
+# lone frame waits at most one server /link poll (5s) for its coalesced
+# `data.ack`, and one arrives every `_TELEMETRY_INTERVAL_S`, so the spool is
+# empty for part of every interval. Three intervals leave room for a slow ack
+# without letting a spool that never drains pass.
+_SPOOL_DRAIN_BUDGET_S = _TELEMETRY_INTERVAL_S * 3
 # How long to keep collecting *after* detection, so there is a backlog whose
 # delivery can be checked. Four intervals at the 10s cadence.
 _PARTITION_SPOOL_S = 40
@@ -2579,10 +2585,30 @@ def test_agent_black_hole_partition_is_detected_and_spools():
                 _wait_until(
                     lambda: _agent_status()["link_state"] == "accepted", timeout=30
                 )
-                assert _agent_status()["spool_depth"] == 0, (
-                    "spool was already non-empty before the partition — the "
-                    "backlog asserted below would not be attributable to it"
-                )
+                # Waited for, never sampled. Every data frame is fsync'd to the
+                # spool before it reaches the socket and is committed only by
+                # the server's `data.ack` (internal/link/outbound.go), and the
+                # server coalesces those acks, checking only once per /link loop
+                # iteration: on an idle link that is once per
+                # `_LINK_POLL_SECONDS` (api/ws_agents.py). A lone telemetry
+                # frame therefore sits in the spool, correctly, for up to that
+                # long, which at a 10s sample interval is about half of every
+                # cycle. A single read of `spool_depth == 0` was a coin toss
+                # that failed three nightlies in six. What the partition
+                # assertions need is a spool that DRAINS, which is what the
+                # healthy link below proves.
+                try:
+                    _wait_until(
+                        lambda: _agent_status()["spool_depth"] == 0,
+                        timeout=_SPOOL_DRAIN_BUDGET_S,
+                        interval=0.25,
+                    )
+                except TimeoutError as exc:
+                    raise AssertionError(
+                        "the spool never drained to empty on a healthy link before the "
+                        "partition, so the backlog asserted below would not be "
+                        f"attributable to it: {_agent_status()!r}"
+                    ) from exc
                 samples_before = sum(
                     p["sample_count"] for p in _history_points(client, agent_id)
                 )
@@ -3284,10 +3310,22 @@ def test_remote_probe_assignment_execution_and_unavailability():
             # written to the server.
             time.sleep(60)
             assert _agent_status()["link_state"] == "accepted"
-            assert _agent_status()["spool_depth"] == 0, (
-                "the agent still has frames queued, so the result it posted for the retired run "
-                "may not have reached the server yet and the assertion below would be vacuous"
-            )
+            # Waited for rather than sampled, for the reason the black-hole
+            # partition test gives: a frame in flight sits in the spool until
+            # the server's coalesced `data.ack` lands, so a live link reads
+            # non-zero for part of every interval without anything being stuck.
+            try:
+                _wait_until(
+                    lambda: _agent_status()["spool_depth"] == 0,
+                    timeout=_SPOOL_DRAIN_BUDGET_S,
+                    interval=0.25,
+                )
+            except TimeoutError as exc:
+                raise AssertionError(
+                    "the agent still has frames queued, so the result it posted for the "
+                    "retired run may not have reached the server yet and the assertion "
+                    f"below would be vacuous: {_agent_status()!r}"
+                ) from exc
 
             after_late_result = _probe_run(client, slow_id, run_id)
             assert after_late_result == cancelled, (
