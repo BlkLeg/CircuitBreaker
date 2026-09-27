@@ -275,25 +275,30 @@ addopts = [
 # coroutine rather than an async generator — fixed in discovery_probes.py, not
 # ignored here.
 #
-# Three warnings survive a full run and are tracked rather than silenced,
-# because none is reachable by a filter here — they are raised outside a test's
-# warning-capture context, so `error::` does not convert them:
+# Two warnings survive a full run and are tracked rather than silenced,
+# because neither is reachable by a filter here — they are raised outside a
+# test's warning-capture context, so `error::` does not convert them:
 #   1. StarletteDeprecationWarning, raised at import of
 #      tests/api/test_monitor_stream_auth.py (collection time).
 #   2. CryptographyDeprecationWarning from scapy's FFDH import. It subclasses
 #      UserWarning, not DeprecationWarning, so the rules below never see it.
-#   3. PytestUnraisableExceptionWarning wrapping "coroutine
-#      'AsyncMockMixin._execute_mock_call' was never awaited". Raised at GC
-#      finalization, so the test it is reported against is where collection
-#      happened to run, not where the coroutine was created — tracemalloc puts
-#      the allocation inside the ASGI middleware chain of
-#      tests/services/test_monitor_probe_cancellation.py. shawnji (backend):
-#      open, needs localisation under PYTHONTRACEMALLOC before it can be fixed.
-#      The suite's other nine instances of this warning were real and are fixed
-#      (see discovery_probes.py).
+#
+# A third, PytestUnraisableExceptionWarning wrapping "coroutine
+# 'AsyncMockMixin._execute_mock_call' was never awaited", was listed here as
+# unreachable too. That was wrong: pytest reports an unraisable exception
+# through warnings.warn inside the test's capture context, so
+# `error::pytest.PytestUnraisableExceptionWarning` below does fail the test it
+# is attributed to. Without that entry an un-awaited coroutine is a printed
+# warning and a green test — REL-08 in name only. The 2026-08-19 instance does
+# not reproduce at f71d3fc on CPython 3.12: a full 4013-test run with
+# gc.collect() forced at every teardown and this filter as an error produced
+# none. Being raised at GC finalization, it fails whichever test is running
+# when the coroutine is collected; localise it with PYTHONTRACEMALLOC=25,
+# which prints where the coroutine was created.
 filterwarnings = [
     "error::RuntimeWarning",
     "error::DeprecationWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
     # shawnji (backend): starlette's TestClient still imports httpx 0.x. Remove
     # when starlette supports httpx2 or the suite drops starlette.testclient
     # (only tests/api/test_monitor_stream_auth.py uses it).
