@@ -1243,6 +1243,12 @@ EOF
       install -Dm755 "$repo_cb" /usr/local/bin/cb 2>/dev/null \
         || sudo install -Dm755 "$repo_cb" /usr/local/bin/cb 2>/dev/null \
         || cb_warn "Could not install /usr/local/bin/cb — copy ${repo_cb} manually"
+      local resources_src="${repo_cb%/cb}/deploy/cli/cb_resources.py"
+      if [[ -f "$resources_src" ]]; then
+        install -Dm644 "$resources_src" /usr/local/lib/circuitbreaker/cb_resources.py 2>/dev/null \
+          || sudo install -Dm644 "$resources_src" /usr/local/lib/circuitbreaker/cb_resources.py 2>/dev/null \
+          || cb_warn "Could not install cb_resources.py — copy ${resources_src} to /usr/local/lib/circuitbreaker/"
+      fi
     fi
   fi
 

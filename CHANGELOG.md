@@ -15,6 +15,45 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
+## [0.4.5] — unreleased
+
+Fixes a vault key rotation that cut off every enrolled agent, and adds
+`cb resources` alongside the automation that now cuts and maintains each
+release.
+
+### Added
+
+- `cb resources`: application resource accounting from the terminal — how much
+  capacity the installation consumes, which components consume it, and whether
+  resource limits are constraining it. It measures locally, so it still answers
+  when the API or database is unhealthy, and reports what it could not measure
+  as a coverage gap rather than hiding it. `--watch` for a live view, `--json`
+  for scripts.
+- A release is one dispatch and one approval: `make release-candidate` builds,
+  gates and stages a draft, then waits for approval on the `release`
+  environment before publishing — the tag is created last. A follow-up pull
+  request then opens the next patch and rotates this file.
+- A nightly ledger watch that keeps one `release-control` issue for ledger rows
+  nearing expiry and overdue risk reviews, and a weekly cleanup of merged
+  branches idle for more than 14 days.
+- Discord notifications for workflow failures, recoveries and releases, and
+  auto-merge for Dependabot patch and minor updates.
+
+### Fixed
+
+- Vault key rotation re-encrypts every value the vault holds. It previously
+  re-encrypted an explicit list of locations and skipped the rest, so after the
+  first automatic rotation (every 90 days) the server could no longer decrypt
+  its own Noise static key and every agent `/link` handshake failed with
+  `InvalidToken`. OPNsense and S3 backup credentials, OAuth and OIDC client
+  secrets, integration API keys, certificate private keys, user OAuth tokens
+  and hardware telemetry passwords were orphaned the same way. All of them are
+  now re-encrypted in one transaction. **If you run enrolled agents on 0.4.4 or
+  earlier, upgrade before your next rotation falls due.**
+- OAuth and OIDC rotation failures log a fixed label rather than a value read
+  out of the credential blob, closing a CodeQL data-flow alert.
+- A malformed Discord mention id costs only the ping, not the notification.
+
 ## [0.4.4] — 2026-09-27
 
 Replaces the PyInstaller onefile that 0.4.3 still shipped with a hermetic

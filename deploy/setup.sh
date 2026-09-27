@@ -1688,6 +1688,11 @@ stage9_install_cb_cli() {
   fi
 
   # Shared identity helpers travel with the bundle when present.
+  if [[ -f /opt/circuitbreaker/deploy/cli/cb_resources.py ]]; then
+    install -Dm644 /opt/circuitbreaker/deploy/cli/cb_resources.py \
+      /usr/local/lib/circuitbreaker/cb_resources.py \
+      || cb_warn "Resource collector could not be installed; cb resources will use the bundled helper"
+  fi
   if [[ -f /opt/circuitbreaker/deploy/lib/install-identity.sh ]]; then
     mkdir -p /usr/local/lib/circuitbreaker
     cp /opt/circuitbreaker/deploy/lib/install-identity.sh \
@@ -1717,6 +1722,15 @@ stage9_write_install_identity() {
   # shellcheck source=/dev/null
   source "$identity_lib"
   local services="circuitbreaker-postgres,circuitbreaker-pgbouncer,circuitbreaker-redis,circuitbreaker-nats,circuitbreaker-backend,nginx"
+  local resource_worker resource_unit
+  for resource_worker in discovery notification telemetry integration monitor_scheduler monitor_poll monitor_probe_dispatch; do
+    services+=",circuitbreaker-worker@${resource_worker}"
+  done
+  for resource_unit in cb-helperd circuitbreaker-docker-proxy circuitbreaker-healthcheck; do
+    if [[ -f "/etc/systemd/system/${resource_unit}.service" ]]; then
+      services+=",${resource_unit}"
+    fi
+  done
   local runtime=pyinstaller
   if [[ -x /opt/circuitbreaker/python/bin/python3 ]]; then
     runtime=pbs

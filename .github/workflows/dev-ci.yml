@@ -1024,100 +1024,18 @@ jobs:
           python3 scripts/ci/assert_runtime_parity.py unpacked/share/build-info.json image-info/build-info.json
 
   # ── Browser E2E ──────────────────────────────────────────────────────────────
-  # Ported from ci.yml, verbatim apart from this comment. It was main-only, so
-  # every UI regression reached `dev` unmeasured and was found by the `main` PR
-  # that carried a fortnight of them at once — the branch that receives the work
-  # is the branch where a bisect is cheap.
+  # Runs here as well as on `main`: it was main-only once, so every UI
+  # regression reached `dev` unmeasured and was found by the `main` PR that
+  # carried a fortnight of them at once — the branch that receives the work is
+  # the branch where a bisect is cheap.
+  #
+  # The suite itself lives in browser-e2e.yml, shared with ci.yml and
+  # release.yml, so the three callers cannot drift apart. The aggregate below
+  # stays here: a called workflow's jobs report as `<caller> / <job>`, so
+  # hosting it there would rename the `Browser E2E` check run this job exists
+  # to keep stable.
   browser-e2e:
-    name: Browser E2E (shard ${{ matrix.shard }}/${{ strategy.job-total }})
-    runs-on: ubuntu-22.04
-    timeout-minutes: 45
-    # Pinned to the Playwright image so rendering matches the container the
-    # REL-18 visual baselines are generated in. A version skew between this tag
-    # and the @playwright/test version in package.json shows up as
-    # unexplainable screenshot diffs.
-    container:
-      image: mcr.microsoft.com/playwright:v1.63.0-noble
-    # Steps in a container run as root, but the runner mounts $HOME at
-    # /github/home owned by the image's `pwuser`. Firefox refuses to start in
-    # that situation ("Running Nightly as root in a regular user's session is
-    # not supported"); /root is root's own directory, so the check succeeds.
-    # Nothing in this job needs $HOME to persist.
-    env:
-      HOME: /root
-    # REL-20: Playwright's --shard is deterministic by construction — it sorts
-    # the test list and slices it — so shard N holds the same specs on every
-    # run. Two shards, not four: each one still pays the production build in
-    # playwright.config.ts's webServer, so the split stops paying for itself
-    # quickly.
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
-    steps:
-      - uses: actions/checkout@v5
-
-      # No `cache: npm` here, unlike every other job. This one runs inside the
-      # Playwright container with HOME forced to /root (see above), so the npm
-      # cache directory the cache step would save is not the one the runner
-      # restores into on the next run, and the mismatch is silent — a cache
-      # that never hits costs an upload per shard and saves nothing. The
-      # container is the reason this job exists; keeping its dependency install
-      # honest is worth more than the cache.
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "20"
-
-      - name: Install frontend deps
-        run: cd apps/frontend && npm ci
-
-      - name: Record the run manifest
-        run: |
-          mkdir -p artifacts
-          {
-            echo "commit=${GITHUB_SHA}"
-            echo "workflow=${GITHUB_WORKFLOW}"
-            echo "job=browser-e2e"
-            echo "shard=${{ matrix.shard }}/${{ strategy.job-total }}"
-            echo "image=mcr.microsoft.com/playwright:v1.63.0-noble"
-            echo "node=$(node -v)"
-            echo "playwright=$(cd apps/frontend && npx playwright --version)"
-            echo "CB_TEST_SEED=${CB_TEST_SEED}"
-          } | tee artifacts/run-manifest.txt
-
-      # The visual-* projects carry the REL-18 baselines (committed 2026-08-19,
-      # see docs/testing-visual-baselines.md). They are separate projects so a
-      # stale baseline fails the visual gate and not the functional one;
-      # playwright.config.ts keeps visual.spec.ts out of the other four.
-      - name: Run Playwright suite
-        shell: bash
-        run: |
-          cd apps/frontend
-          npx playwright test \
-            --shard="${{ matrix.shard }}/${{ strategy.job-total }}" \
-            --project=chromium \
-            --project=firefox \
-            --project=webkit \
-            --project=mobile-chrome \
-            --project=visual-desktop \
-            --project=visual-mobile \
-            2>&1 | tee "${GITHUB_WORKSPACE}/artifacts/playwright.log"
-
-      # REL-20: a failed job must be diagnosable from retained artifacts alone.
-      # playwright.config.ts already writes the JUnit report and keeps traces,
-      # screenshots and video on failure; test-results/ is where those land, so
-      # the two paths below cover every artifact class this job produces.
-      - name: Upload Playwright report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: playwright-report-shard-${{ matrix.shard }}
-          path: |
-            apps/frontend/playwright-report/
-            apps/frontend/test-results/
-            artifacts/
-          if-no-files-found: warn
-          retention-days: 14
+    uses: ./.github/workflows/browser-e2e.yml
 
   # ── Browser E2E aggregate ────────────────────────────────────────────────────
   # The stable check-run name branch protection can require.
