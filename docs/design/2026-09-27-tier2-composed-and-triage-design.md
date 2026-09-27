@@ -121,8 +121,8 @@ mechanical reason and a `notes` marker saying the narrative is pending.
 
 ### D4 — The automation diagnoses and drafts; it never touches application code
 
-On a red T2 the automation may: post to Discord, open one `release-control` issue, and open one PR adding a
-quarantine-register row. It may not modify application code, may not merge anything, and may not renew an
+On a red T2 the automation may: post to Discord, open one `release-control` issue, and open one PR that adds
+a quarantine-register row — or, for a `RECOVERED` test, one PR that removes a row that is no longer true. It may not modify application code, may not merge anything, and may not renew an
 existing row (the register's own docstring makes renewal a deliberate act; a bot drafting one would hollow
 out the only date in the system that means anything). Nothing reaches `main` without the 21 required checks
 and a human merge.
@@ -136,12 +136,12 @@ and a human merge.
 | File | Change |
 |---|---|
 | `.github/workflows/composed-e2e.yml` | **New.** The composed agent journey as `workflow_call`, lifted out of `e2e.yml`. |
-| `.github/workflows/mono-smoke.yml` | **New.** The mono image smoke, lifted out of `dev-ci.yml`'s `build-docker`. |
-| `.github/workflows/tier2.yml` | **New.** `name: Tier 2 (composed)`, matching `Fleet (Tier 3)`. Nightly cron, `workflow_dispatch`, `workflow_call`. |
+| `.github/workflows/mono-smoke.yml` | **New.** The mono image build and smoke, lifted out of `dev-ci.yml`'s `build-docker`. The GHCR **push step and its `packages: write` grant stay behind in `dev-ci.yml`** — a nightly Tier 2 run must not publish a dev image, and leaving the push out is what lets this workflow declare only `contents: read`. `dev-ci.yml`'s caller job keeps `needs: [artifact-smoke]`, preserving the existing ordering. |
+| `.github/workflows/tier2.yml` | **New.** `name: Tier 2 (composed)`, matching `Fleet (Tier 3)`. Nightly cron, `workflow_dispatch`, `workflow_call`. Carries a `concurrency` group so a manual dispatch and the nightly cannot interleave two runs whose artifacts the triage would then read as one. |
 | `.github/workflows/e2e.yml` | Thin caller of `composed-e2e.yml`. Keeps its tag and path-filtered PR triggers; **drops its nightly schedule**, which `tier2.yml` takes over. |
 | `.github/workflows/dev-ci.yml` | `build-docker` becomes a caller of `mono-smoke.yml`. |
 | `.github/workflows/release.yml`, `release-dry-run.yml` | Call `tier2.yml` with `suites: '["browser","composed"]'` instead of `browser-e2e.yml` directly. Mono smoke is redundant on the release path: it builds the real images and already asserts `runtime_digest` parity. |
-| `Makefile` | `make verify-composed` — the laptop entry point §4 of the programme design anticipated but never named. |
+| `Makefile` | `make verify-composed` — the laptop entry point §4 of the programme design anticipated but never named. It exports `CI=1`, because `playwright.config.ts` selects its JUnit reporter on `process.env.CI`; without that a local run writes no `junit.xml` and cannot be triaged, which would make the local and CI forms of the tier differ in exactly the way P1 forbids. |
 
 `tier2.yml` selects suites with a `suites` JSON-array input and `if: contains(fromJSON(inputs.suites), 'browser')`
 on each call job — the established pattern from `artifact-smoke.yml`'s `arches`.
@@ -160,7 +160,7 @@ scope (§8).
 | `scripts/ci/maintainer_digest.py` | **New.** The nightly roll-up. Takes `gh api` JSON on stdin, emits a Discord body. Pure. |
 | `scripts/ci/review_alert.py` | **New.** Builds the "a PR needs your review" message. One definition of how a PR is described; imported by the digest for its PR section. |
 | `.github/workflows/maintainer-digest.yml` | **New.** Nightly 13:15 UTC, plus `workflow_dispatch`. Read-only. |
-| `.github/workflows/review-alert.yml` | **New.** Fires the review message for human and Dependabot PRs. |
+| `.github/workflows/review-alert.yml` | **New.** Hourly sweep plus `workflow_dispatch`, firing M5 for human and Dependabot PRs. `pull-requests: write` for the `review-alerted` label only — the narrowest write in the design (§6.1 for why this is not a pull-request-event workflow). |
 | `.github/workflows/tier2.yml` | Two triage jobs, `if: always()`, `needs:` every suite job (§3.3). |
 | `.github/workflows/notify.yml` | `Tier 2 (composed)` added to the watched list. |
 | `make lint` | The three new scripts added to its ruff and mypy lines. |
@@ -188,6 +188,15 @@ split so that the side holding the model holds no write access:
 This is the strongest available form of the `cb-automation` rule that a reader of untrusted input must not
 also hold write access: here the reader has no write path to hold.
 
+**Both triage jobs are gated on a `triage` boolean input defaulting to `false`.** `tier2.yml` is both a
+scheduled workflow and a called one, and inside a called workflow the `github` context is the **caller's** —
+`github.event_name` during a release reads `workflow_dispatch` or `push`, never `workflow_call`. No event test
+can therefore distinguish "the nightly" from "the release". Only the schedule and manual-dispatch paths set
+`triage: true`; `release.yml` and `release-dry-run.yml` leave it alone. Without that gate a release candidate
+could open a quarantine pull request in the middle of a release, which is the single worst thing this design
+could do. The Discord secrets are declared optional on the `workflow_call` interface for the same reason: the
+release path never passes them, and a missing webhook is already a logged no-op.
+
 ---
 
 ## 4. Triage decision rules
@@ -204,11 +213,21 @@ days, so 7 nightlies sits inside the window with margin.
 | Verdict | Condition | Action |
 |---|---|---|
 | **NEW** | Fails now; passed in the previous run | Discord (ping) + issue. **No row** — a new failure is a bug to fix, not to park. |
+| **PERSISTING** | Fails now and in the previous run, but on fewer than 3 consecutive runs | Comments the new occurrence on the issue `NEW` already opened. **No ping, no second issue, no row** — it is the same failure one night older. |
 | **CONSISTENT** | Fails now and in every one of the last ≥ 3 runs that collected it | Issue + **quarantine row PR**. The only verdict that drafts a row. |
 | **FLAKY** | Fails now; mixed pass/fail across the window | Discord (ping) + issue, **no row**. Rule 2 of CLAUDE.md says "probably flaky" is not an outcome; a flake needs an owner and an investigation, not an expiry date. |
 | **RECOVERED** | Passes now; failed in the previous run | Recovery message, no ping. If a register row names it, **propose deleting the row** — quarantines need a retirement path, not only renewal. |
 | **NOT_COLLECTED** | The test is absent from this run's JUnit, or a suite's collected count fell below the previous run's | Treated as a **failure regardless of exit code**. §1.2 of the programme design: an unregistered `e2e` marker collected zero tests and the job was green. |
 | **NO VERDICT** | Cancellation, `startup_failure`, image-pull failure, or a timeout with no JUnit | Reported as infrastructure. Never quarantined, never counted as history. |
+
+**Granularity differs by suite, and the verdict records which was used.** Playwright writes
+`playwright-report/junit.xml` (`playwright.config.ts`) and the composed journey writes `junit-agent-e2e.xml`
+(`e2e.yml`), so both support test-id verdicts. The mono image smoke emits **no JUnit at all** — it is a docker
+build plus a provenance export — so it is judged at **job granularity**: the same verdicts computed over the
+job conclusion rather than a test list, `NOT_COLLECTED` inapplicable, and a row drafted for it naming the job
+in `scope` instead of test ids. A future T2 suite that emits JUnit gets test granularity for free; one that
+does not is judged as a job, and `verdict.json` states which, so a reader never mistakes a job-level verdict
+for a test-level one.
 
 Two idempotence rules, per the `cb-automation` checklist:
 
@@ -254,6 +273,10 @@ triage-emit (contents: write, issues: write, pull-requests: write)
 `test_every_owner_is_named_in_the_owner_map`); `tracking` is the issue just opened; `opened` is today;
 `expiry` is today + 90 days; `notes` carries the run URL, the verdict and how the row was produced.
 `reason` is the model's only output.
+
+**The PR targets `dev`**, like every other change here; the row reaches `main` through the normal promotion.
+That is correct even when the failing nightly ran on `main`, because `test_quarantine_register.py` runs in
+Tier 0 on both branches and an unexpired row blocks neither.
 
 ---
 
@@ -321,19 +344,40 @@ holds, and the message says so rather than letting it be rediscovered at merge t
 
 When nothing is outstanding it still sends: one line, `success` level, no ping. That is information too.
 
+**Why M1–M3 are sent from inside `tier2.yml` rather than left to `notify.yml`.** A called workflow produces no
+`workflow_run` event of its own — the caller's run is the run — so `notify.yml`'s watch covers the standalone
+nightly and dispatch only, and would say nothing about a Tier 2 failure during a release. The tier therefore
+sends its own verdict messages, and `notify.yml`'s entry is the backstop for the case where the tier fails
+before the triage jobs are reached. Both are wanted; neither is redundant.
+
 Thresholds are named constants in `maintainer_digest.py`: a PR awaiting review more than **3 days**, an
 issue with no activity for more than **14 days**, a quarantine expiring within **14 days**. Only a tripped
 threshold pings.
 
 ### 6.1 Two consequences worth stating plainly
 
-**`review-alert.yml` must use `pull_request_target`.** A plain `pull_request` trigger receives no secrets on
-a fork pull request, so `DISCORD_WEBHOOK_URL` would be absent and the alert would silently never fire —
-exactly the "a gate that passes by not running" class this repo keeps closing. `pull_request_target` has the
-secrets and a writable token, so per `cb-automation` rule 4 it checks out the **base** SHA only, never the
-head, executes only scripts restored from the base, and guards on the actor. The triage's own PR cannot use
-this path at all — a `GITHUB_TOKEN`-created PR triggers no `pull_request` event — so `triage-emit` sends M5
-itself, through the same builder in `review_alert.py`, so the two are byte-identical in format.
+**`review-alert.yml` is an hourly sweep, not a pull-request-event workflow.** Both obvious designs fail, and
+the second fails silently:
+
+- A plain `pull_request` trigger receives no secrets on a fork pull request, so `DISCORD_WEBHOOK_URL` would be
+  absent and the alert would never fire.
+- `pull_request_target` does hand out a writable token even for Dependabot — that is exactly why
+  `dependabot-lockfile-sync.yml` uses it. But a run **triggered by a Dependabot event reads the Dependabot
+  secret store, not the Actions one**, so the webhook would be missing for precisely the pull requests that
+  most need the alert: the `major-update` ones nothing auto-merges. That is why every Discord message about a
+  Dependabot pull request in this repo today travels through `notify.yml`'s `workflow_run` rather than being
+  sent from the Dependabot-triggered run itself.
+
+So M5 is delivered by an **hourly sweep over open pull requests**, with idempotency carried by a
+`review-alerted` label the job applies once — the same labelling mechanism `dependabot-automerge.yml` already
+uses for `major-update`. No `pull_request_target`, no writable token on an untrusted trigger, and no second
+copy of the webhook in the Dependabot secret store. The cost is up to an hour of latency on "this PR needs
+review", which is the right trade for a queue a human reads between other things.
+
+The triage's own pull request cannot use that path either way — a `GITHUB_TOKEN`-created PR triggers no
+pull-request event, and waiting an hour to be told about a PR the same run just opened would be absurd — so
+`triage-emit` sends M5 immediately, through the same builder in `review_alert.py`. The sweep then sees the
+label already applied and does not repeat it. One builder, one format, no double notification.
 
 **The digest deliberately breaks the pager doctrine.** `cb-automation` says notify on state changes, not
 every run; a nightly digest is per-run by construction. That exception is considered, and it is written both
@@ -401,12 +445,29 @@ part of it, and must not be offered as such (CLAUDE.md, rule 1). The covering ev
   force each verdict path. **This is the only thing that proves the automation works**, and it happens before
   the pull request, not after it.
 
-### 7.4 Existing guards each new file must satisfy
+### 7.4 Existing guards — which pass unchanged, and which must be edited
 
-`test_workflow_job_graph.py`, `test_workflow_run_blocks.py`, `test_workflow_wiring_resolves.py`,
-`test_scheduled_workflows_pin_their_ref.py`, `test_ci_evidence_retention.py`, `test_discord_notify.py`,
-`test_ci_script_contract.py`, `test_quarantine_register.py`, `test_repo_governance.py`. None is expected to
-need editing; each is expected to pass.
+Expected to pass with no change: `test_workflow_job_graph.py`, `test_workflow_run_blocks.py`,
+`test_workflow_wiring_resolves.py`, `test_discord_notify.py`, `test_ci_script_contract.py`,
+`test_quarantine_register.py`, `test_repo_governance.py`, `test_plan_references.py`.
+
+**`test_ci_evidence_retention.py` must be edited, and the edit is part of the slice that causes it.** It is a
+registry, not an inference: `SEEDED_WORKFLOWS`, `EVIDENCE_OWING_JOBS` and `ARTIFACT_SOURCE_WORKFLOWS`
+enumerate workflows and job ids by name, so moving the composed journey out of `e2e.yml` silently drops the
+requirement that it upload diagnostics unless `composed-e2e.yml` is added to `ARTIFACT_SOURCE_WORKFLOWS` in
+the same commit. `mono-smoke.yml` and `tier2.yml` join the same maps. Slice A1 is not complete without those
+entries; a green run of that test proves nothing if the workflow it was watching has been renamed out from
+under it.
+
+**`test_scheduled_workflows_pin_their_ref.py`** covers the two new crons, which carry
+`# scheduled-ref: default-branch-intentional`.
+
+**Check-run names change on the release path, and nothing asserts them today.** `release.yml` currently calls
+`browser-e2e.yml` directly, so its checks read `Browser E2E / browser-e2e (shard 1/2)`. Calling `tier2.yml`
+instead nests one level deeper — `Tier 2 / Browser E2E / browser-e2e (shard 1/2)` — which is three levels of
+reusable-workflow nesting, inside GitHub's limit of four. No test and no ruleset names those strings
+(`required_checks.py` does not list Browser E2E at all), so nothing breaks; it is recorded here because a
+future reader wondering why the release's check names grew a prefix deserves the answer.
 
 ---
 
@@ -432,11 +493,11 @@ read-only against real nightlies.
 
 | # | Slice | Delivers | Write access |
 |---|---|---|---|
-| A1 | Extract `mono-smoke.yml` and `composed-e2e.yml`; `e2e.yml` and `dev-ci.yml` become callers; QUAR-001 becomes a visible `SKIPPED` | No behaviour change, fewer lines, an honest skip | none |
+| A1 | Extract `mono-smoke.yml` and `composed-e2e.yml`; `e2e.yml` and `dev-ci.yml` become callers; QUAR-001 becomes a visible `SKIPPED`; the `test_ci_evidence_retention.py` registry gains both workflows (§7.4) | No behaviour change, fewer lines, an honest skip | none |
 | A2 | `tier2.yml` aggregator, `make verify-composed`, the drift guard; `release.yml` and `release-dry-run.yml` call it | Tier 2 exists, is runnable locally, and is nameable | none |
 | B1 | `tier2_triage.py` + tests + `triage-decide` | Verdicts, `verdict.json`, M1–M3 | none |
 | B2 | `triage-emit`, and `review_alert.py` as the message builder it calls | M4, M5 for the bot's own PR, the issue and the row PR | first write access in the programme |
-| B3 | `maintainer_digest.py`, `maintainer-digest.yml`, `review-alert.yml` | M5 for human and Dependabot PRs, M6 nightly | read-only (digest), `pull_request_target` (review alert) |
+| B3 | `maintainer_digest.py`, `maintainer-digest.yml`, `review-alert.yml` (hourly sweep) | M5 for human and Dependabot PRs, M6 nightly | read-only (digest); `pull-requests: write` for the label only (review alert) |
 | B4 | The model prose step in `triage-decide` | The narrative field | none |
 
 **Prerequisite, already met.** A2 edits the `browser-e2e.yml` call sites PR #182 introduced; that PR merged
