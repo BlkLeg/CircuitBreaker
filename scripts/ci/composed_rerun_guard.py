@@ -14,6 +14,20 @@ verdict failed and the failures were neither
 These are the two outcomes CLAUDE.md rule 2 permits. There is deliberately no
 force switch.
 
+Two limits, stated rather than hidden:
+
+  - "Never runs twice" is best-effort across concurrent runs on the same
+    fingerprint. Two runs can both pass the guard before either records a
+    verdict. tier2.yml's concurrency group serialises its own runs, but
+    e2e.yml's tag and pull-request runs are outside it.
+  - Verdict artifacts are retained for 90 days. After that the verdict is gone
+    and an unaddressed failure may run once more, which records a fresh one.
+
+Only verdicts from this repository's own runs count. The artifact listing's
+`workflow_run.head_repository_id` is a first pass; each candidate's run is then
+fetched and must have head_repository.full_name == repository.full_name
+(`run_is_same_repo`), so a fork's pull_request run cannot plant a verdict.
+
 Subcommands:
   fingerprint  print the fingerprint of HEAD's suite inputs
   check        fetch the previous verdict (gh api) and exit 1 if unaddressed
@@ -34,7 +48,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -237,18 +251,71 @@ def merge_artifact_pages(pages: list[Mapping[str, object]]) -> dict[str, object]
     return {"total_count": total_count, "artifacts": merged}
 
 
-def pick_verdict_artifact(listing: Mapping[str, object], repo_id: int) -> dict[str, object] | None:
-    """Return the newest unexpired verdict artifact produced by a run of THIS repository, or None."""
+def verdict_candidates(listing: Mapping[str, object], repo_id: int) -> list[dict[str, object]]:
+    """Return unexpired verdict artifacts whose run claims THIS repository as head, newest first.
+
+    `workflow_run.head_repository_id` is only a first pass: whether a fork's
+    pull_request run reports the fork's id there is not verified, so every
+    candidate is re-checked against its run (`verified_verdict_artifact`).
+    """
     artifacts = listing.get("artifacts")
     if not isinstance(artifacts, list):
-        return None
+        return []
     trusted = [
         artifact for artifact in artifacts
         if isinstance(artifact, dict)
         and not artifact.get("expired")
         and (artifact.get("workflow_run") or {}).get("head_repository_id") == repo_id
     ]
-    return max(trusted, key=lambda artifact: str(artifact["created_at"]), default=None)
+    return sorted(trusted, key=lambda artifact: str(artifact["created_at"]), reverse=True)
+
+
+def pick_verdict_artifact(listing: Mapping[str, object], repo_id: int) -> dict[str, object] | None:
+    """Return the newest first-pass candidate (`verdict_candidates`), or None."""
+    candidates = verdict_candidates(listing, repo_id)
+    return candidates[0] if candidates else None
+
+
+def _full_name(value: object) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    name = value.get("full_name")
+    return name if isinstance(name, str) and name else None
+
+
+def run_is_same_repo(run: Mapping[str, object]) -> bool:
+    """True only when a workflow run's head repository IS the repository it ran in.
+
+    A fork's pull_request run has head_repository = the fork. A run missing
+    either name is not trusted: that fails closed, towards "not our verdict".
+    """
+    head = _full_name(run.get("head_repository"))
+    repo = _full_name(run.get("repository"))
+    return head is not None and repo is not None and head == repo
+
+
+def verified_verdict_artifact(
+    candidates: Sequence[Mapping[str, object]],
+    fetch_run: Callable[[int], Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    """Return the first candidate whose run `run_is_same_repo`, or None.
+
+    `fetch_run` returns `repos/{repo}/actions/runs/{id}`. Its errors propagate:
+    an API failure is a lookup that did not answer, never "no verdict".
+    """
+    for artifact in candidates:
+        workflow_run = artifact.get("workflow_run")
+        run_id = workflow_run.get("id") if isinstance(workflow_run, Mapping) else None
+        if not isinstance(run_id, int):
+            # ValueError (TRY004): `check` turns ValueError into a closed ::error::.
+            raise ValueError(f"verdict artifact {artifact.get('name')!r} has no workflow_run.id to verify")  # noqa: TRY004
+        if run_is_same_repo(fetch_run(run_id)):
+            return artifact
+        print(
+            f"::warning::skipping verdict artifact from run {run_id}: its head repository is not this repository",
+            file=sys.stderr,
+        )
+    return None
 
 
 def deselect_args(quarantined: frozenset[str]) -> list[str]:
@@ -275,10 +342,20 @@ def _gh_api_paginated(path: str) -> list[Mapping[str, object]]:
     return pages
 
 
+def _gh_api_json(path: str) -> Mapping[str, object]:
+    data = json.loads(_gh_api(path))
+    if not isinstance(data, dict):
+        raise ValueError(f"gh api did not return a JSON object for {path}")  # noqa: TRY004
+    return data
+
+
 def _fetch_previous(repo: str, repo_id: int, fp: str) -> Verdict | None:
     pages = _gh_api_paginated(f"repos/{repo}/actions/artifacts?name={ARTIFACT_PREFIX}{fp}&per_page=100")
     listing = merge_artifact_pages(pages)
-    artifact = pick_verdict_artifact(listing, repo_id)
+    artifact = verified_verdict_artifact(
+        verdict_candidates(listing, repo_id),
+        lambda run_id: _gh_api_json(f"repos/{repo}/actions/runs/{run_id}"),
+    )
     if artifact is None:
         return None
     archive = zipfile.ZipFile(io.BytesIO(_gh_api(str(artifact["archive_download_url"]))))

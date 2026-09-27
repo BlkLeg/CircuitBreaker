@@ -28,6 +28,9 @@ from composed_rerun_guard import (  # noqa: E402
     merge_artifact_pages,
     pick_verdict_artifact,
     quarantined_tests,
+    run_is_same_repo,
+    verdict_candidates,
+    verified_verdict_artifact,
 )
 
 HEADER = "quarantine_id,check,scope,reason,owner,tracking,opened,expiry,notes\n"
@@ -199,13 +202,13 @@ def test_a_malformed_verdict_is_an_error_not_a_pass(text):
 
 
 # ── artifact choice ─────────────────────────────────────────────────────────
-def _artifact(created: str, repo_id: int = 7, expired: bool = False) -> dict:
+def _artifact(created: str, repo_id: int = 7, expired: bool = False, run_id: int = 1) -> dict:
     return {
         "name": ARTIFACT_PREFIX + "fp",
         "created_at": created,
         "expired": expired,
         "archive_download_url": f"https://api.invalid/{created}",
-        "workflow_run": {"head_repository_id": repo_id},
+        "workflow_run": {"id": run_id, "head_repository_id": repo_id},
     }
 
 
@@ -221,6 +224,89 @@ def test_pick_prefers_the_newest_trusted_unexpired_artifact():
 
 def test_pick_returns_none_when_nothing_is_trusted():
     assert pick_verdict_artifact({"artifacts": [_artifact("2026-09-27T00:00:00Z", repo_id=999)]}, 7) is None
+
+
+# ── run verification: head_repository_id alone is not trusted ───────────────
+def _run(head: str | None, repo: str | None) -> dict:
+    run: dict = {}
+    if head is not None:
+        run["head_repository"] = {"full_name": head}
+    if repo is not None:
+        run["repository"] = {"full_name": repo}
+    return run
+
+
+def test_a_same_repo_run_is_trusted():
+    assert run_is_same_repo(_run("BlkLeg/circuitbreaker", "BlkLeg/circuitbreaker")) is True
+
+
+def test_a_fork_run_is_not_trusted():
+    assert run_is_same_repo(_run("someone/circuitbreaker", "BlkLeg/circuitbreaker")) is False
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        _run(None, "BlkLeg/circuitbreaker"),
+        _run("BlkLeg/circuitbreaker", None),
+        _run(None, None),
+        {"head_repository": None, "repository": {"full_name": "BlkLeg/circuitbreaker"}},
+        {"head_repository": {"full_name": ""}, "repository": {"full_name": ""}},
+        {"head_repository": {"full_name": 7}, "repository": {"full_name": 7}},
+    ],
+)
+def test_a_run_missing_either_repository_is_not_trusted(run):
+    assert run_is_same_repo(run) is False
+
+
+def test_candidates_are_newest_first_and_prefiltered_by_repo_id():
+    listing = {"artifacts": [
+        _artifact("2026-09-25T00:00:00Z", run_id=1),
+        _artifact("2026-09-27T00:00:00Z", repo_id=999, run_id=2),
+        _artifact("2026-09-26T00:00:00Z", run_id=3),
+        _artifact("2026-09-26T06:00:00Z", expired=True, run_id=4),
+    ]}
+    assert [a["workflow_run"]["id"] for a in verdict_candidates(listing, 7)] == [3, 1]
+
+
+def test_verification_skips_a_candidate_whose_run_is_a_fork():
+    listing = {"artifacts": [_artifact("2026-09-26T00:00:00Z", run_id=10), _artifact("2026-09-25T00:00:00Z", run_id=11)]}
+    runs = {10: _run("fork/cb", "BlkLeg/cb"), 11: _run("BlkLeg/cb", "BlkLeg/cb")}
+    chosen = verified_verdict_artifact(verdict_candidates(listing, 7), runs.__getitem__)
+    assert chosen is not None and chosen["workflow_run"]["id"] == 11
+
+
+def test_no_surviving_candidate_means_no_previous_verdict():
+    listing = {"artifacts": [_artifact("2026-09-26T00:00:00Z", run_id=10)]}
+    assert verified_verdict_artifact(verdict_candidates(listing, 7), lambda _run_id: _run("fork/cb", "BlkLeg/cb")) is None
+
+
+def test_the_newest_verified_candidate_stops_the_search():
+    seen: list[int] = []
+
+    def fetch(run_id: int) -> dict:
+        seen.append(run_id)
+        return _run("BlkLeg/cb", "BlkLeg/cb")
+
+    listing = {"artifacts": [_artifact("2026-09-25T00:00:00Z", run_id=1), _artifact("2026-09-26T00:00:00Z", run_id=2)]}
+    assert verified_verdict_artifact(verdict_candidates(listing, 7), fetch)["workflow_run"]["id"] == 2
+    assert seen == [2]
+
+
+def test_an_api_error_while_verifying_propagates():
+    def fetch(run_id: int) -> dict:
+        raise subprocess.CalledProcessError(1, ["gh", "api", f"runs/{run_id}"])
+
+    listing = {"artifacts": [_artifact("2026-09-26T00:00:00Z")]}
+    with pytest.raises(subprocess.CalledProcessError):
+        verified_verdict_artifact(verdict_candidates(listing, 7), fetch)
+
+
+def test_a_candidate_without_a_run_id_is_an_error_not_a_skip():
+    artifact = _artifact("2026-09-26T00:00:00Z")
+    del artifact["workflow_run"]["id"]
+    with pytest.raises(ValueError):
+        verified_verdict_artifact([artifact], lambda _run_id: _run("BlkLeg/cb", "BlkLeg/cb"))
 
 
 # ── pagination: a fork cannot crowd the real verdict off page 1 ─────────────
@@ -323,7 +409,7 @@ def test_the_journey_tests_exactly_the_tree_the_guard_fingerprinted():
     guard = jobs["rerun-guard"]
     assert guard["outputs"]["sha"] == "${{ steps.fingerprint.outputs.sha }}"
     fp_run = next(s for s in guard["steps"] if s.get("id") == "fingerprint")["run"]
-    assert re.search(r'^\s*sha="\$\(git rev-parse HEAD\)"\s*$', fp_run, re.M), fp_run
+    assert re.search(r'^\s*sha="\$\(git rev-parse HEAD\)"\s*$', fp_run, re.MULTILINE), fp_run
     assert 'echo "sha=${sha}" >> "$GITHUB_OUTPUT"' in fp_run
     checkouts = [
         s for s in jobs["composed-journey"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout")
