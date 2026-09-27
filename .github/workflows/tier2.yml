@@ -1,0 +1,129 @@
+name: Tier 2 (composed)
+
+# T2 of the verification ladder (docs/design/2026-09-27-tier2-composed-and-triage-design.md):
+# browser E2E and the composed agent journey, with the mono image smoke joining
+# in slice A3. Each suite keeps its own reusable workflow (design D1); this file
+# only chooses which to run and gives the tier one verdict.
+#
+# Three ways in:
+#   schedule          — the nightly, moved here from e2e.yml. It loads from the
+#                       default branch and tests `dev` (design D2); tier2_gate.py
+#                       makes that decision, not an inline expression.
+#   workflow_dispatch — a manual run of the whole tier or part of it.
+#   workflow_call     — the release and the release dry run. Inside a called
+#                       workflow the `github` context is the CALLER's, so no event
+#                       test can tell "the nightly" from "the release"; inputs do.
+#
+# Not a required check (D2). A red T2 blocks a release and reports nightly.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      # checkov:skip=CKV_GHA_7: selects which existing suites run, and nothing
+      # about what is built. tier2_gate.py rejects any name it does not know.
+      suites:
+        description: 'JSON array of suites, e.g. ["browser"]. Empty runs the whole tier.'
+        required: false
+        type: string
+        default: ""
+      # checkov:skip=CKV_GHA_7: chooses the tree under test. tier2_gate.py rejects
+      # anything but a plain branch, tag or SHA.
+      ref:
+        description: "Ref to test. Empty means the ref this run was dispatched on."
+        required: false
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      suites:
+        description: "JSON array of suites. Empty runs the whole tier."
+        required: false
+        type: string
+        default: ""
+      ref:
+        description: "Ref to test. Empty means the caller's ref."
+        required: false
+        type: string
+        default: ""
+
+# A manual dispatch and the nightly must not interleave: B1's triage will read
+# one run's artifacts as one run. Queue rather than cancel, because a cancelled
+# nightly is a night with no signal. `github.workflow` is the caller's name when
+# this is called, so a release queues only behind its own earlier run.
+concurrency:
+  group: tier2-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      suites: ${{ steps.plan.outputs.suites }}
+      ref: ${{ steps.plan.outputs.ref }}
+    steps:
+      # Pinned the same way the suites are, so a nightly reads `dev`'s copy of
+      # the plan logic alongside `dev`'s tree (test_scheduled_workflows_pin_their_ref.py).
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      - id: plan
+        shell: bash
+        env:
+          SUITES: ${{ inputs.suites }}
+          REF: ${{ inputs.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: python3 scripts/ci/tier2_gate.py plan
+
+  browser:
+    name: Browser E2E
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.suites), 'browser')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/browser-e2e.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+
+  # `quarantined` is left to composed-e2e.yml's own default (true), so QUAR-001
+  # is reported by its register row until the day that default flips.
+  composed:
+    name: Composed Agent E2E
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.suites), 'composed')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/composed-e2e.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+
+  # The tier's one verdict. always(), so that a failed plan or a skipped suite
+  # still produces an answer. A selected suite that ended `skipped` is a failure
+  # here, because everything downstream reads `skipped` as satisfied.
+  result:
+    name: Tier 2 result
+    needs: [plan, browser, composed]
+    if: always()
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+      - shell: bash
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          SUITES: ${{ needs.plan.outputs.suites }}
+        run: python3 scripts/ci/tier2_gate.py result

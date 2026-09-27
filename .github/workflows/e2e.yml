@@ -1,13 +1,16 @@
 name: Composed Agent E2E
 
-# AGT-01: the composed journey runs per RC (tag push) and nightly. It is
-# deliberately NOT a release gate — the agent has open development, and gating
-# would hold every artifact of an otherwise-green release.
+# AGT-01: the composed journey runs per RC (tag push) and nightly (through
+# tier2.yml since slice A2). It is deliberately NOT a release gate — the agent
+# has open development, and gating would hold every artifact of an otherwise-
+# green release.
 #
-# The suite itself now lives in composed-e2e.yml (slice A1 of
-# docs/design/2026-09-27-tier2-composed-and-triage-design.md). This file is the
-# day-to-day trigger surface for it; `tier2.yml` becomes the second caller in
-# slice A2 and takes over the nightly then.
+# The suite itself lives in composed-e2e.yml, and its nightly lives in
+# tier2.yml (slice A2 of
+# docs/design/2026-09-27-tier2-composed-and-triage-design.md). This file keeps
+# the triggers that belong to the agent specifically: a tag push, and pull
+# requests that touch the agent. The release calls tier2.yml with the browser
+# suite only; the composed journey is not a release gate.
 #
 # `workflow_call` is gone from this file on purpose: the reason it existed —
 # "so re-gating is one job in release.yml when that changes" — is now served by
@@ -36,8 +39,6 @@ on:
       - 'docker/supervisord.mono.conf'
       - '.github/workflows/e2e.yml'
       - '.github/workflows/composed-e2e.yml'
-  schedule:
-    - cron: "0 3 * * *"
   # checkov:skip=CKV_GHA_7: the input selects nothing about what is built — it
   # only decides whether the operator wants to pay 75 minutes to watch QUAR-001
   # fail on purpose. The default is the safe value.
@@ -62,7 +63,3 @@ jobs:
     uses: ./.github/workflows/composed-e2e.yml
     with:
       quarantined: ${{ github.event_name != 'workflow_dispatch' || inputs.quarantined }}
-      # `schedule` fires only from the default branch's copy of this file, and
-      # `main` trails the integration branch, so a nightly on its own ref would
-      # test frozen code. Every other trigger tests the ref that fired it.
-      ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}

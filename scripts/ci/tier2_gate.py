@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Tier 2's two decisions that must not live in workflow YAML.
 
 `plan` turns the caller's inputs into the list of suites to run and the ref they

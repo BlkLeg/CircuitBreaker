@@ -9,8 +9,10 @@ sees that until one of them goes red and the other does not.
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,15 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 MAKEFILE = REPO_ROOT / "Makefile"
 BROWSER_SCRIPT = "scripts/ci/tier2-browser.sh"
 AGENT_SCRIPT = "scripts/ci/tier2-agent-journey.sh"
+
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "ci"))
+from tier2_gate import KNOWN_SUITES  # noqa: E402
+
+_GATED = re.compile(r"contains\(fromJSON\(needs\.plan\.outputs\.suites\),\s*'([a-z0-9-]+)'\)")
+
+
+def _triggers(workflow: dict) -> dict:
+    return workflow.get("on", workflow.get(True)) or {}
 
 
 def _load(name: str) -> dict:
@@ -137,3 +148,68 @@ def test_local_quarantine_default_matches_the_workflow():
     match = re.search(r"^CB_COMPOSED_QUARANTINED\s*\?=\s*(\d)\s*$", MAKEFILE.read_text(encoding="utf-8"), re.M)
     assert match, "Makefile has no `CB_COMPOSED_QUARANTINED ?= 0|1`"
     assert (match.group(1) == "1") == ci_default
+
+
+def test_tier2_is_named_and_triggered_as_the_design_says():
+    workflow = _load("tier2.yml")
+    assert workflow["name"] == "Tier 2 (composed)"
+    triggers = _triggers(workflow)
+    assert set(triggers) >= {"schedule", "workflow_dispatch", "workflow_call"}
+    assert triggers["schedule"] == [{"cron": "0 3 * * *"}]
+
+
+def test_every_suite_job_is_gated_on_its_own_name_and_the_sets_agree():
+    jobs = _load("tier2.yml")["jobs"]
+    gated = {}
+    for job_id, job in jobs.items():
+        match = _GATED.search(str(job.get("if", "")))
+        if match:
+            gated[job_id] = match.group(1)
+    assert all(job_id == suite for job_id, suite in gated.items()), gated
+    assert set(gated.values()) == set(KNOWN_SUITES), (
+        f"tier2.yml gates {sorted(gated.values())} but tier2_gate.py knows {sorted(KNOWN_SUITES)}"
+    )
+
+
+def test_result_job_needs_the_plan_and_every_suite_and_always_runs():
+    result = _load("tier2.yml")["jobs"]["result"]
+    assert set(result["needs"]) == {"plan", *KNOWN_SUITES}
+    assert "always()" in str(result["if"])
+
+
+def test_tier2_passes_the_planned_ref_to_every_suite():
+    jobs = _load("tier2.yml")["jobs"]
+    for suite in KNOWN_SUITES:
+        assert jobs[suite]["with"]["ref"] == "${{ needs.plan.outputs.ref }}", suite
+
+
+def test_tier2_runs_serially_without_cancelling():
+    concurrency = _load("tier2.yml")["concurrency"]
+    assert concurrency["cancel-in-progress"] is False
+
+
+def test_the_nightly_has_exactly_one_home():
+    """One cron cannot live in two files: both would run the composed suite."""
+    assert "schedule" not in _triggers(_load("e2e.yml"))
+
+
+def test_the_composed_journey_is_still_scheduled():
+    """AGT-01: the composed journey runs on a schedule. Moving the cron must not drop it."""
+    tier2 = _load("tier2.yml")
+    assert "schedule" in _triggers(tier2)
+    assert tier2["jobs"]["composed"]["uses"] == "./.github/workflows/composed-e2e.yml"
+
+
+def test_browser_e2e_checks_out_the_ref_it_was_given():
+    workflow = _load("browser-e2e.yml")
+    assert _triggers(workflow)["workflow_call"]["inputs"]["ref"]["default"] == ""
+    checkouts = [
+        s for s in workflow["jobs"]["browser-e2e"]["steps"]
+        if str(s.get("uses", "")).startswith("actions/checkout")
+    ]
+    assert checkouts and all(s["with"]["ref"] == "${{ inputs.ref }}" for s in checkouts)
+
+
+def test_notify_watches_tier2():
+    watched = _triggers(_load("notify.yml"))["workflow_run"]["workflows"]
+    assert "Tier 2 (composed)" in watched
