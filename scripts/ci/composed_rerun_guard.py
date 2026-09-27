@@ -49,18 +49,37 @@ CHECK = "Composed Agent E2E / composed-journey"
 NODE_PREFIX = "apps/agent/e2e/test_agent_e2e.py::"
 ARTIFACT_PREFIX = "composed-journey-verdict-"
 
-# What the journey exercises: the agent and its E2E harness, the backend and
-# the mono image it runs in, and the suite's own invocation. A change under any
-# of these counts as an attempt to fix a failure. apps/frontend is left out on
-# purpose: the journey drives the API, and counting every UI commit as a "fix"
-# would let a known failure re-run nightly on dev.
+# What the journey exercises: the agent and its E2E harness, the backend, the
+# suite's own invocation, and every build-context path Dockerfile.mono's
+# COPY/ADD instructions read from — enumerated, not guessed:
+# test_every_dockerfile_mono_copy_source_is_a_suite_input_or_frontend parses
+# the Dockerfile itself and fails if a COPY source is added here without a
+# matching entry. A change under any of these counts as an attempt to fix a
+# failure.
+#
+# apps/frontend is the one deliberate exception, even though the mono image
+# DOES contain it (Dockerfile.mono's frontend-builder stage bakes its build
+# into the same runtime tree as everything else here): the journey drives the
+# API, never the UI, so a frontend-caused crash still records as fix-only and
+# a frontend-only commit never counts as a fix on its own. Without that
+# exception, the daily UI commits on dev would each change the fingerprint and
+# let a known agent failure re-run every night, defeating maintainer
+# decision 2.
 SUITE_INPUTS: tuple[str, ...] = (
     ".github/workflows/composed-e2e.yml",
     "Dockerfile.mono",
+    "VERSION",
     "apps/agent",
     "apps/backend",
+    "cb",
+    "deploy",
     "docker",
+    "docker-compose.yml",
+    "packaging",
+    "pytest.ini",
+    "scripts/ci/lib/common.sh",
     "scripts/ci/tier2-agent-journey.sh",
+    "scripts/pbs_tree.py",
 )
 
 _OUTCOMES = ("success", "failure")
@@ -134,12 +153,31 @@ def quarantined_tests(register: Path, today: date) -> frozenset[str]:
 
 
 def failed_tests_from_junit(path: Path) -> list[str]:
-    """Return the sorted names of test cases with a <failure> or <error>. A missing file means none were recorded."""
+    """Return the sorted names of test cases with a <failure> or <error>.
+
+    A missing file means none were recorded. So does one that exists but will
+    not parse: a job killed mid-write (a timeout, an OOM) can leave
+    junit-agent-e2e.xml truncated, and ET.ParseError escaping from here would
+    crash `record` before it writes a verdict at all — which fails open, since
+    the next run finds no verdict and simply proceeds. Reporting zero
+    test-level failures instead means `record` still writes outcome=failure
+    with failed_tests=(), the same "crash, not a named failure" verdict
+    decide() already requires a suite-input change to clear.
+    """
     if not path.is_file():
+        return []
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError as exc:
+        print(
+            f"::warning::{path} exists but did not parse as XML ({exc}); "
+            "treating it as no test-level failures recorded",
+            file=sys.stderr,
+        )
         return []
     failed = {
         case.get("name", "")
-        for case in ET.parse(path).getroot().iter("testcase")
+        for case in root.iter("testcase")
         if case.find("failure") is not None or case.find("error") is not None
     }
     return sorted(name for name in failed if name)
@@ -170,6 +208,35 @@ def decide(previous: Verdict | None, quarantined: frozenset[str]) -> tuple[bool,
     return True, f"all failures from {previous.run_url} are quarantined: {', '.join(previous.failed_tests)}"
 
 
+def merge_artifact_pages(pages: list[Mapping[str, object]]) -> dict[str, object]:
+    """Merge every page of a `gh api --paginate --slurp` artifact listing into one.
+
+    Raises ValueError when the merged artifact count falls short of the first
+    page's `total_count`. `gh api ...&per_page=100` alone reads only page 1: the
+    artifacts API lists every run in the repository, including `pull_request`
+    runs from forks, and a fork can upload any number of its own artifacts
+    under the same (public, computable) verdict name. Enough of those crowd
+    the real verdict off page 1, and `pick_verdict_artifact` would then see a
+    listing that looks complete but is missing the one artifact that matters —
+    `check` would report "no earlier verdict" and let an unaddressed failure
+    re-run. A short count is the one signal that distinguishes that case from
+    an actually-empty listing, so it is treated as failure, not as "found
+    nothing".
+    """
+    merged: list[object] = []
+    for page in pages:
+        artifacts = page.get("artifacts")
+        if isinstance(artifacts, list):
+            merged.extend(artifacts)
+    total_count = pages[0].get("total_count") if pages else 0
+    if isinstance(total_count, int) and len(merged) < total_count:
+        raise ValueError(
+            f"artifact listing incomplete: the API reported {total_count} artifact(s) "
+            f"but only {len(merged)} came back across {len(pages)} page(s)"
+        )
+    return {"total_count": total_count, "artifacts": merged}
+
+
 def pick_verdict_artifact(listing: Mapping[str, object], repo_id: int) -> dict[str, object] | None:
     """Return the newest unexpired verdict artifact produced by a run of THIS repository, or None."""
     artifacts = listing.get("artifacts")
@@ -197,8 +264,20 @@ def _gh_api(path: str) -> bytes:
     return subprocess.run(["gh", "api", path], capture_output=True, check=True).stdout
 
 
+def _gh_api_paginated(path: str) -> list[Mapping[str, object]]:
+    """Every page of `path`, via `gh api --paginate --slurp` (a JSON array of page objects)."""
+    raw = subprocess.run(["gh", "api", "--paginate", "--slurp", path], capture_output=True, check=True).stdout
+    pages = json.loads(raw)
+    if not isinstance(pages, list):
+        # ValueError, not TypeError (TRY004): `check`'s ValueError handler is
+        # what turns this into a clear ::error:: instead of a bare traceback.
+        raise ValueError(f"gh api --slurp did not return a JSON array for {path}")  # noqa: TRY004
+    return pages
+
+
 def _fetch_previous(repo: str, repo_id: int, fp: str) -> Verdict | None:
-    listing = json.loads(_gh_api(f"repos/{repo}/actions/artifacts?name={ARTIFACT_PREFIX}{fp}&per_page=100"))
+    pages = _gh_api_paginated(f"repos/{repo}/actions/artifacts?name={ARTIFACT_PREFIX}{fp}&per_page=100")
+    listing = merge_artifact_pages(pages)
     artifact = pick_verdict_artifact(listing, repo_id)
     if artifact is None:
         return None
@@ -246,7 +325,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     # check
     fp = fingerprint(git_listing(REPO_ROOT))
-    previous = _fetch_previous(os.environ["REPO"], int(os.environ["REPO_ID"]), fp)
+    try:
+        previous = _fetch_previous(os.environ["REPO"], int(os.environ["REPO_ID"]), fp)
+    except ValueError as exc:
+        # An incomplete artifact listing (merge_artifact_pages) or a verdict
+        # artifact that won't parse (Verdict.from_json) both mean the lookup
+        # did not answer trustworthily. Failing closed here, with a specific
+        # reason, is what stops either case from being read as "no earlier
+        # verdict" and letting an unaddressed failure re-run.
+        print(f"::error::rerun guard could not read the previous verdict: {exc}")
+        return 1
     if previous is not None and previous.fingerprint != fp:
         print(f"::error::verdict artifact for {fp} records fingerprint {previous.fingerprint}")
         return 1

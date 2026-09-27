@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from datetime import date
@@ -24,6 +25,7 @@ from composed_rerun_guard import (  # noqa: E402
     failed_tests_from_junit,
     fingerprint,
     git_listing,
+    merge_artifact_pages,
     pick_verdict_artifact,
     quarantined_tests,
 )
@@ -65,6 +67,46 @@ def test_every_suite_input_exists_in_the_tree():
         )
 
 
+# `--from=<stage>` copies an earlier build stage's output, never a path from
+# the build context, so those lines carry nothing SUITE_INPUTS needs to cover.
+_DOCKERFILE_COPY_RE = re.compile(r"^\s*(?:COPY|ADD)\s+(.*)$")
+
+
+def _dockerfile_copy_sources(text: str) -> list[str]:
+    """Every build-context path a Dockerfile's COPY/ADD instructions read from."""
+    sources: list[str] = []
+    for line in text.splitlines():
+        match = _DOCKERFILE_COPY_RE.match(line)
+        if not match:
+            continue
+        tokens = match.group(1).split()
+        if any(token.startswith("--from=") for token in tokens):
+            continue
+        tokens = [token for token in tokens if not token.startswith("--")]
+        if len(tokens) < 2:  # a destination-only or malformed line: nothing to check
+            continue
+        sources.extend(tokens[:-1])  # the last token is always the destination
+    return sources
+
+
+def test_every_dockerfile_mono_copy_source_is_a_suite_input_or_frontend():
+    """The image the journey exercises is built from Dockerfile.mono's COPY/ADD
+    sources. Enumerated from the file itself rather than guessed, so a source
+    added later without a matching SUITE_INPUTS entry is caught here, not
+    discovered as a rerun that silently fingerprinted nothing new."""
+    sources = _dockerfile_copy_sources((REPO_ROOT / "Dockerfile.mono").read_text(encoding="utf-8"))
+    assert sources, "no COPY/ADD sources found — Dockerfile.mono changed shape; update the parser"
+    uncovered = []
+    for source in sources:
+        source = source.rstrip("/")
+        if source == "apps/frontend" or source.startswith("apps/frontend/"):
+            continue  # excluded on purpose: see the comment above SUITE_INPUTS
+        covered = any(source == inp or source.startswith(f"{inp.rstrip('/')}/") for inp in SUITE_INPUTS)
+        if not covered:
+            uncovered.append(source)
+    assert not uncovered, f"Dockerfile.mono COPYs from paths not in SUITE_INPUTS: {uncovered}"
+
+
 def test_git_listing_fails_loudly_outside_a_repo(tmp_path):
     with pytest.raises(subprocess.CalledProcessError):
         git_listing(tmp_path)
@@ -102,6 +144,17 @@ def test_failed_tests_from_junit(tmp_path):
 
 def test_missing_junit_means_no_test_level_failures(tmp_path):
     assert failed_tests_from_junit(tmp_path / "absent.xml") == []
+
+
+def test_a_truncated_junit_means_no_test_level_failures_not_a_crash(tmp_path):
+    """A killed `Run the composed journey` step can leave junit-agent-e2e.xml
+    truncated mid-write. `record` must still produce a verdict (outcome=failure,
+    failed_tests=()) rather than raising ET.ParseError and uploading nothing —
+    an unrecorded run is indistinguishable from "no earlier verdict", which
+    would let the next run start on a failure nobody addressed."""
+    junit = tmp_path / "junit.xml"
+    junit.write_text('<testsuites><testsuite><testcase name="test_x">', encoding="utf-8")
+    assert failed_tests_from_junit(junit) == []
 
 
 # ── decide ──────────────────────────────────────────────────────────────────
@@ -170,6 +223,31 @@ def test_pick_returns_none_when_nothing_is_trusted():
     assert pick_verdict_artifact({"artifacts": [_artifact("2026-09-27T00:00:00Z", repo_id=999)]}, 7) is None
 
 
+# ── pagination: a fork cannot crowd the real verdict off page 1 ─────────────
+def test_merge_artifact_pages_combines_every_page():
+    page1 = {"total_count": 3, "artifacts": [_artifact("2026-09-25T00:00:00Z")]}
+    page2 = {"total_count": 3, "artifacts": [_artifact("2026-09-26T00:00:00Z"), _artifact("2026-09-27T00:00:00Z")]}
+    merged = merge_artifact_pages([page1, page2])
+    assert len(merged["artifacts"]) == 3
+    assert pick_verdict_artifact(merged, 7)["created_at"] == "2026-09-27T00:00:00Z"
+
+
+def test_merge_artifact_pages_raises_when_the_api_reports_more_than_it_returned():
+    """total_count > len(merged artifacts) means the listing is partial — the
+    exact shape a page of fork-uploaded decoys crowding the real artifact off
+    page 1 would produce. Silently treating that as complete is the fail-open
+    this guards against."""
+    page = {"total_count": 5, "artifacts": [_artifact("2026-09-25T00:00:00Z")]}
+    with pytest.raises(ValueError):
+        merge_artifact_pages([page])
+
+
+def test_merge_artifact_pages_accepts_an_empty_listing():
+    assert merge_artifact_pages([]) == {"total_count": 0, "artifacts": []}
+    empty = merge_artifact_pages([{"total_count": 0, "artifacts": []}])
+    assert empty["artifacts"] == []
+
+
 # ── deselection really deselects ────────────────────────────────────────────
 def test_deselect_args_use_the_rootdir_relative_prefix():
     assert deselect_args(frozenset({"test_b", "test_a"})) == [
@@ -211,6 +289,17 @@ def test_the_verdict_is_named_by_the_guards_fingerprint():
     upload = next(s for s in steps if s.get("name") == "Upload the verdict")
     assert upload["with"]["name"] == ARTIFACT_PREFIX + "${{ needs.rerun-guard.outputs.fingerprint }}"
     assert "steps.journey.outcome != 'skipped'" in upload["if"]
+
+
+def test_the_verdict_is_recorded_only_when_the_journey_ran():
+    """An install step failing before `Run the composed journey` is an
+    infrastructure problem, not a verdict on these inputs — recording one
+    anyway would let an unrelated pip failure look like a suite failure the
+    next run then has to address."""
+    steps = _composed()["jobs"]["composed-journey"]["steps"]
+    record = next(s for s in steps if s.get("name") == "Record the verdict for these inputs")
+    assert "!cancelled()" in record["if"]
+    assert "steps.journey.outcome != 'skipped'" in record["if"]
 
 
 def test_the_journey_step_times_out_before_the_job_does():
