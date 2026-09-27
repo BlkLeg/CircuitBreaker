@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from datetime import date, timedelta
@@ -352,3 +353,20 @@ def test_the_real_ledgers_parse() -> None:
     )
     assert result.returncode == 0, result.stderr
     json.loads(result.stdout)
+
+
+def test_the_workflow_ensures_its_label_without_listing_first() -> None:
+    """`gh label list --search` prints nothing when nothing matches, not `[]`.
+
+    The first live run (2026-09-27) computed an empty count, skipped creating
+    the label, and failed on `gh issue create --label`. `--force` makes the
+    create idempotent, so no existence check is needed.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ledger-watch.yml").read_text(
+        encoding="utf-8"
+    )
+    commands = "\n".join(
+        line for line in workflow.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "gh label list" not in commands
+    assert re.search(r'gh label create "\$LABEL" --force', workflow)
