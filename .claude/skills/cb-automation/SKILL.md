@@ -19,6 +19,7 @@ babysitting). Everything that needs a human reaches them through **Discord**.
 | `ledger-watch.yml` | Nightly 06:23 UTC | `scripts/ci/ledger_watch.py`: one `release-control` issue listing ledger rows expiring within 30 days and risks past `next_review`; closes it when clear | When a new issue opens (ping) |
 | `branch-cleanup.yml` | Sundays 05:00 UTC; manual dispatch defaults to dry run | `scripts/ci/branch_cleanup.py`: deletes branches fully contained in main/dev, idle > 14 days, not the head or base of an open PR | Via notify.yml on failure |
 | `dependabot-lockfile-sync.yml` | Dependabot pip PR into dev/main | Regenerates `requirements.txt` from `poetry.lock` with the **base** branch's generator, pushes, then dispatches required checks | Via notify.yml on failure |
+| `dependabot-automerge.yml` | Dependabot PR opened/updated | Queues `gh pr merge --auto` for patch/minor updates into `dev` (the ruleset's 21 checks still decide); labels majors `major-update` and comments; never touches PRs into `main` | — |
 | `security.yml`, `codeql.yml` | Weekly + push/PR + dispatch | Scanners | Via notify.yml on failure |
 | `e2e.yml` | Disabled (`if: false`, QUAR-001, issue #162) | Composed agent journey | — |
 
