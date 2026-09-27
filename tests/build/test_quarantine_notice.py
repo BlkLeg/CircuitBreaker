@@ -125,12 +125,91 @@ def test_an_expired_row_is_an_error(tmp_path: Path, capsys: pytest.CaptureFixtur
     assert "expired" in capsys.readouterr().err
 
 
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+
+
+def _is_literal_false(value: object) -> bool:
+    """True only for an actual `false`, never for an unresolved expression.
+
+    `${{ github.event_name != 'workflow_dispatch' || inputs.quarantined }}` is
+    a string and is not this; only a YAML boolean `false` (or the quoted
+    string `"false"`, in case a caller ever quotes it) counts.
+    """
+    if value is False:
+        return True
+    return isinstance(value, str) and value.strip().lower() == "false"
+
+
+def _quarantine_still_skippable() -> list[str]:
+    """Reasons the composed journey can still be skipped, read from the live
+    call sites rather than assumed.
+
+    The rule: the skip is still possible if composed-e2e.yml's `quarantined`
+    input defaults to true, OR any workflow calling composed-e2e.yml passes a
+    `with.quarantined` value that is not a literal `false`. Callers are found
+    by scanning every `.github/workflows/*.yml` file for a job whose `uses:`
+    ends in `composed-e2e.yml`, rather than hardcoding `e2e.yml`, so a second
+    caller (`tier2.yml`, in slice A2) is covered the moment it exists.
+    """
+    yaml = pytest.importorskip(
+        "yaml", reason="PyYAML parses the workflow files; it arrives with the backend dev extra"
+    )
+    composed = yaml.safe_load((WORKFLOWS_DIR / "composed-e2e.yml").read_text(encoding="utf-8"))
+    # PyYAML reads an unquoted `on:` key as the boolean True (YAML 1.1), not
+    # the string "on" — `.get("on", .get(True))` is this repo's house pattern
+    # for it (see test_workflow_wiring_resolves.py and its siblings).
+    triggers = composed.get("on", composed.get(True))
+    default = triggers["workflow_call"]["inputs"]["quarantined"].get("default")
+
+    reasons = []
+    if not _is_literal_false(default):
+        reasons.append(
+            "composed-e2e.yml's `quarantined` input default is "
+            f"{default!r}, not a literal false"
+        )
+
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        if path.name == "composed-e2e.yml":
+            continue
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for job_id, job in (workflow.get("jobs") or {}).items():
+            if not str(job.get("uses", "")).endswith("composed-e2e.yml"):
+                continue
+            with_block = job.get("with") or {}
+            if "quarantined" not in with_block:
+                # No override: this caller inherits composed-e2e.yml's own
+                # default, already accounted for above.
+                continue
+            value = with_block["quarantined"]
+            if not _is_literal_false(value):
+                reasons.append(
+                    f"{path.name}:{job_id} passes quarantined={value!r}, "
+                    "not a literal false"
+                )
+    return reasons
+
+
 def test_the_real_register_still_covers_the_composed_journey() -> None:
-    """Binds the script to reality: if QUAR-001 is retired without the workflow's
-    `quarantined` input flipping to false, the job would fail on a missing row.
-    This says so here, in a fast test, instead of on a nightly."""
+    """Binds the script to reality, but only while reality still needs it.
+
+    QUAR-001 was expressed as `if: false` in e2e.yml; this test's earlier
+    version unconditionally required a QUAR-001 row, which meant the very
+    commit that ends the quarantine — flipping the last `quarantined: true`
+    to `false` and deleting the row in the same change — would fail this
+    test and block itself. This version instead derives whether a row is
+    required from the live call sites (see `_quarantine_still_skippable`):
+    if the composed journey can still be skipped, a row must exist naming
+    the call site that still demands it; once every call site is a literal
+    `false`, the row is no longer required and this test passes with none.
+    That makes "the quarantine outlived its row" a static failure inside
+    `Lint`, not only something a nightly run would eventually notice.
+    """
+    reasons = _quarantine_still_skippable()
+    if not reasons:
+        return
     assert rows_for_check(REGISTER, CHECK), (
-        f"{REGISTER} has no row for {CHECK!r}. If the quarantine is over, set "
-        "`quarantined: false` in .github/workflows/e2e.yml's call to composed-e2e.yml "
-        "in the same commit that removes the row."
+        f"{REGISTER} has no row for {CHECK!r}, but the composed journey can still "
+        f"be skipped: {'; '.join(reasons)}. If the quarantine is truly over, flip "
+        "the last such call site to `quarantined: false` in the same commit that "
+        "removes the row."
     )
