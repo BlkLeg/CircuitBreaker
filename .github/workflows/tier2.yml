@@ -111,6 +111,7 @@ jobs:
     needs: plan
     if: contains(fromJSON(needs.plan.outputs.suites), 'composed')
     permissions:
+      actions: read      # the rerun guard in composed-e2e.yml reads earlier verdict artifacts
       contents: read
     uses: ./.github/workflows/composed-e2e.yml
     with:

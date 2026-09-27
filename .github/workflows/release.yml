@@ -202,6 +202,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
     needs: [version, gate]
     permissions:
+      actions: read      # the rerun guard in composed-e2e.yml reads earlier verdict artifacts
       contents: read
     uses: ./.github/workflows/tier2.yml
     with:

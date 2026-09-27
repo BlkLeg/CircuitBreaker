@@ -55,6 +55,9 @@ permissions:
 
 jobs:
   composed:
+    permissions:
+      actions: read      # the rerun guard in composed-e2e.yml reads earlier verdict artifacts
+      contents: read
     # Only a deliberate dispatch can lift the quarantine. For a tag push or a
     # pull request, `inputs` is null, so the first clause is
     # true and the suite stays skipped — written as `!=` plus `or` rather than

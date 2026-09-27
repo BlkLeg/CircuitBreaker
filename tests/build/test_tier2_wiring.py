@@ -262,7 +262,9 @@ def test_the_release_does_not_gate_on_the_composed_journey():
 
 def test_tier2_callers_grant_read_only():
     for where, job in _tier2_callers().items():
-        assert job.get("permissions") == {"contents": "read"}, where
+        # actions: read, because composed-e2e.yml's rerun guard reads earlier verdict
+        # artifacts (test_reusable_workflow_permissions.py checks the whole chain).
+        assert job.get("permissions") == {"actions": "read", "contents": "read"}, where
 
 
 def test_release_waits_for_tier2():
