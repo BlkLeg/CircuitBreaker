@@ -69,6 +69,7 @@ def _run_script(
         text=True,
         cwd=REPO_ROOT,
         env=env,
+        check=False,
     )
     calls = [line.split(" ") for line in log.read_text(encoding="utf-8").splitlines()]
     return result, calls
@@ -81,7 +82,9 @@ def _dispatched_workflows(tmp_path: Path, *args: str) -> list[str]:
     workflows: list[str] = []
     for call in calls:
         assert call[:2] == ["workflow", "run"], f"unexpected gh call: {call}"
-        assert call[3:] == ["--ref", args[0]], f"dispatch not pinned to the branch: {call}"
+        assert call[3:] == ["--ref", args[0]], (
+            f"dispatch not pinned to the branch: {call}"
+        )
         workflows.append(call[2])
     return workflows
 
@@ -117,12 +120,16 @@ def _expand_job_names(job: dict[str, Any], job_id: str) -> list[str]:
     combos = list(itertools.product(*(matrix[key] for key in keys)))
     names: list[str] = []
     for combo in combos:
-        expanded = re.sub(r"\$\{\{\s*strategy\.job-total\s*\}\}", str(len(combos)), name)
+        expanded = re.sub(
+            r"\$\{\{\s*strategy\.job-total\s*\}\}", str(len(combos)), name
+        )
         for key, value in zip(keys, combo):
             expanded = re.sub(
                 r"\$\{\{\s*matrix\." + re.escape(key) + r"\s*\}\}", str(value), expanded
             )
-        assert "${{" not in expanded, f"job {job_id}: unexpanded expression in {expanded!r}"
+        assert "${{" not in expanded, (
+            f"job {job_id}: unexpanded expression in {expanded!r}"
+        )
         names.append(expanded)
     return names
 
@@ -163,7 +170,9 @@ def test_every_required_check_is_produced_by_a_dispatched_workflow(
 
 
 @pytest.mark.parametrize("base", ["dev", "main"])
-def test_every_dispatched_workflow_accepts_workflow_dispatch(tmp_path: Path, base: str) -> None:
+def test_every_dispatched_workflow_accepts_workflow_dispatch(
+    tmp_path: Path, base: str
+) -> None:
     for workflow in _dispatched_workflows(tmp_path, "feature/x", base):
         assert "workflow_dispatch" in _triggers(_load(workflow)), (
             f"{workflow} is dispatched by {SCRIPT.name} but has no workflow_dispatch "
@@ -187,7 +196,9 @@ def _job_chain(workflow: str, job_id: str) -> list[tuple[str, dict[str, Any]]]:
 
 
 @pytest.mark.parametrize("base", ["dev", "main"])
-def test_no_required_job_is_skipped_on_workflow_dispatch(tmp_path: Path, base: str) -> None:
+def test_no_required_job_is_skipped_on_workflow_dispatch(
+    tmp_path: Path, base: str
+) -> None:
     """A job-level `if:` naming the event must admit workflow_dispatch.
 
     Walks `needs` too: a required job downstream of a job skipped on dispatch
@@ -199,12 +210,19 @@ def test_no_required_job_is_skipped_on_workflow_dispatch(tmp_path: Path, base: s
         workflow, job_id, _ = produced[check]
         for chain_id, job in _job_chain(workflow, job_id):
             condition = str(job.get("if", ""))
-            if "github.event_name" in condition and "workflow_dispatch" not in condition:
+            if (
+                "github.event_name" in condition
+                and "workflow_dispatch" not in condition
+            ):
                 offenders.append(f"{check} <- {workflow}:{chain_id} if: {condition}")
-    assert not offenders, f"required jobs that would be skipped on dispatch: {offenders}"
+    assert not offenders, (
+        f"required jobs that would be skipped on dispatch: {offenders}"
+    )
 
 
-def test_a_failed_dispatch_fails_the_script_and_names_the_workflow(tmp_path: Path) -> None:
+def test_a_failed_dispatch_fails_the_script_and_names_the_workflow(
+    tmp_path: Path,
+) -> None:
     result, calls = _run_script(tmp_path, "feature/x", "dev", fail="security.yml")
     assert result.returncode != 0
     assert "security.yml" in result.stderr

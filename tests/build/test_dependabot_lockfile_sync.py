@@ -64,7 +64,11 @@ def test_every_executed_script_is_restored_from_the_base_commit() -> None:
     run = str(restore["run"])
     assert restore["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
     assert 'git restore --source="$BASE_SHA"' in run
-    for path in ("scripts/gen_requirements.py", DISPATCH_SCRIPT, "scripts/ci/lib/common.sh"):
+    for path in (
+        "scripts/gen_requirements.py",
+        DISPATCH_SCRIPT,
+        "scripts/ci/lib/common.sh",
+    ):
         assert path in run, f"{path} is executed but not restored from the base commit"
     steps = _steps()
     restore_index = steps.index(restore)
