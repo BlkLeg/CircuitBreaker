@@ -133,3 +133,8 @@ export const getServerKeyStatus = () => client.get('/agents/server-key/status');
 // server allows exactly one rotation in flight.
 export const rotateServerKey = () => client.post('/agents/server-key/rotate');
 export const getServerKeyPendingAgents = () => client.get('/agents/server-key/pending');
+
+// RISK-011: active agents whose service sandbox (a systemd unit written before
+// the installer granted AF_NETLINK) refuses the netlink socket, so discovery
+// and probing are dead on them. Admin-only; an empty list means nothing to fix.
+export const getNetlinkBlockedAgents = () => client.get('/agents/netlink-blocked');

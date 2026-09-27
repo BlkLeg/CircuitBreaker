@@ -27,6 +27,7 @@ import Panel from '../components/common/Panel';
 import AgentApprovalModal from '../components/agents/AgentApprovalModal';
 import AddAgentPanel from '../components/agents/AddAgentPanel';
 import ServerKeyRotationPanel from '../components/agents/ServerKeyRotationPanel';
+import NetlinkRemediationPanel from '../components/agents/NetlinkRemediationPanel';
 import FleetTable from '../components/agents/FleetTable';
 import '../styles/agents.css';
 
@@ -489,6 +490,7 @@ export default function AgentsPage() {
       </header>
 
       {isAdmin && <ServerKeyRotationPanel />}
+      {isAdmin && <NetlinkRemediationPanel />}
 
       {/* The panel owns its own collapsed state and its own "Add agent" trigger,
           so the page deliberately renders no button of its own here. */}

@@ -28,6 +28,19 @@ const MethodNeighborCache = "neighbor_cache"
 // successful run.
 var ErrNeighborsUnsupported = errors.New("discover: the kernel neighbor cache is unavailable on this platform")
 
+// ErrNetlinkBlocked reports that the process is not allowed to open an AF_NETLINK socket at all:
+// the kernel refused socket() itself, before any netlink traffic, with EAFNOSUPPORT (systemd's
+// RestrictAddressFamilies, which is how an agent installed from a pre-AF_NETLINK unit fails) or
+// EPERM/EACCES (a seccomp or LSM policy).
+//
+// It is separated from every other neighbor-dump failure because it is the one with a known,
+// host-local cause and a known fix, and because it silently disables more than this collector:
+// Go's net.Interfaces() needs the same socket, so such a host also reports no networks and its
+// discovery and probe scope is empty. Readiness turns it into a remediation the operator can
+// paste, and a machine-readable Missing entry the server uses to list the hosts still affected.
+// The platform's own errno stays wrapped alongside it, so errors.Is still finds that too.
+var ErrNetlinkBlocked = errors.New("the agent's sandbox does not permit AF_NETLINK sockets")
+
 // Neighbor is one usable entry of the kernel's neighbor cache.
 //
 // MAC is empty whenever the kernel gave no link-layer address worth reporting. It is deliberately
