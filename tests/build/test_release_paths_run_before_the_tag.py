@@ -101,6 +101,12 @@ def _pre_tag_callers() -> dict[str, set[str]]:
             events.discard("push")
         if not (PRE_TAG_EVENTS & events):
             continue
+        # A workflow can also be its own pre-tag caller: one that carries a
+        # qualifying trigger directly (e.g. tier2.yml's own path-filtered
+        # pull_request, added so its plan/result/concurrency graph runs before
+        # a tag whenever that graph itself changes) runs its whole job graph
+        # pre-tag with no other file needing to call it.
+        callers.setdefault(path.name, set()).add(path.name)
         for name in _called_workflows(document):
             callers.setdefault(name, set()).add(path.name)
     return callers

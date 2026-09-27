@@ -16,6 +16,17 @@ name: Tier 2 (composed)
 #
 # Not a required check (D2). A red T2 blocks a release and reports nightly.
 on:
+  # Path-filtered, and not a merge gate (design D2 — T2 is not a required
+  # check). It exists so tier2.yml's own job graph runs before a tag whenever
+  # it changes: release.yml depends on this workflow, and
+  # tests/build/test_release_paths_run_before_the_tag.py requires every release
+  # dependency to be reachable from a push or a pull request. Changes to the
+  # suites themselves are already exercised pre-tag by ci.yml/dev-ci.yml
+  # (browser-e2e.yml) and e2e.yml (composed-e2e.yml).
+  pull_request:
+    paths:
+      - '.github/workflows/tier2.yml'
+      - 'scripts/ci/tier2_gate.py'
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:

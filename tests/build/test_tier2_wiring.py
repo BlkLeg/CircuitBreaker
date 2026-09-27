@@ -154,7 +154,7 @@ def test_tier2_is_named_and_triggered_as_the_design_says():
     workflow = _load("tier2.yml")
     assert workflow["name"] == "Tier 2 (composed)"
     triggers = _triggers(workflow)
-    assert set(triggers) >= {"schedule", "workflow_dispatch", "workflow_call"}
+    assert set(triggers) >= {"pull_request", "schedule", "workflow_dispatch", "workflow_call"}
     assert triggers["schedule"] == [{"cron": "0 3 * * *"}]
 
 
@@ -213,6 +213,14 @@ def test_browser_e2e_checks_out_the_ref_it_was_given():
 def test_notify_watches_tier2():
     watched = _triggers(_load("notify.yml"))["workflow_run"]["workflows"]
     assert "Tier 2 (composed)" in watched
+
+
+def test_tier2_runs_before_a_tag_when_it_changes():
+    """release.yml depends on tier2.yml, so its own graph must run pre-tag
+    (test_release_paths_run_before_the_tag.py). A path filter keeps that to the
+    pull requests that change it."""
+    paths = set(_triggers(_load("tier2.yml"))["pull_request"]["paths"])
+    assert paths == {".github/workflows/tier2.yml", "scripts/ci/tier2_gate.py"}
 
 
 def _tier2_callers() -> dict[str, dict]:
