@@ -140,7 +140,7 @@ and a human merge.
 | `.github/workflows/tier2.yml` | **New.** `name: Tier 2 (composed)`, matching `Fleet (Tier 3)`. Nightly cron, `workflow_dispatch`, `workflow_call`. Carries a `concurrency` group so a manual dispatch and the nightly cannot interleave two runs whose artifacts the triage would then read as one. |
 | `.github/workflows/e2e.yml` | Thin caller of `composed-e2e.yml`. Keeps its tag and path-filtered PR triggers; **drops its nightly schedule**, which `tier2.yml` takes over. |
 | `.github/workflows/dev-ci.yml` | `build-docker` becomes a caller of `mono-smoke.yml`. |
-| `.github/workflows/release.yml`, `release-dry-run.yml` | Call `tier2.yml` with `suites: '["browser","composed"]'` instead of `browser-e2e.yml` directly. Mono smoke is redundant on the release path: it builds the real images and already asserts `runtime_digest` parity. |
+| `.github/workflows/release.yml`, `release-dry-run.yml` | Call `tier2.yml` with all three suites (the default `suites`) instead of `browser-e2e.yml` directly. **Decided 2026-09-27:** the release runs the whole tier. The alternative was to drop `"mono"` as redundant against the `runtime_digest` parity check the release already performs; running it costs one extra mono image build on the release path, and buys a boot-level signal that parity alone does not give — the digest proves the image and the package were built from the same tree, not that the image starts. |
 | `Makefile` | `make verify-composed` — the laptop entry point §4 of the programme design anticipated but never named. It exports `CI=1`, because `playwright.config.ts` selects its JUnit reporter on `process.env.CI`; without that a local run writes no `junit.xml` and cannot be triaged, which would make the local and CI forms of the tier differ in exactly the way P1 forbids. |
 
 `tier2.yml` selects suites with a `suites` JSON-array input and `if: contains(fromJSON(inputs.suites), 'browser')`
@@ -510,11 +510,13 @@ reference rather than all six being planned at once.
 
 ---
 
-## 10. Open questions
+## 10. Decisions that were open during design
 
-1. **Digest delivery time.** 13:15 UTC is chosen to follow every other cron and land mid-morning locally. If
-   the maintainer would rather read it the previous evening, the constraint is only that it must run after
-   `ledger-watch.yml` at 06:23 UTC.
-2. **Mono smoke on the release path.** Excluded as redundant against `runtime_digest` parity. If a future
-   defect shows the image can boot-fail while matching the digest, the release's `suites` input gains
-   `"mono"` and nothing else changes.
+Both were settled on 2026-09-27 and are recorded here so a later reader does not reopen them by accident.
+
+1. **Digest delivery time: 13:15 UTC**, chosen to follow every other scheduled workflow and land mid-morning
+   in the maintainer's timezone. The only hard constraint is that it runs after `ledger-watch.yml` at 06:23
+   UTC, so its ledger line can reference that night's issue.
+2. **The release calls all three suites.** Mono smoke is not skipped on the release path. It costs a second
+   mono image build there, and the reason it is worth paying is in §3.1: `runtime_digest` parity proves the
+   image and the package came from the same tree, not that the image boots.
