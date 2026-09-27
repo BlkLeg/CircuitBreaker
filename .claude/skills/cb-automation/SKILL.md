@@ -55,7 +55,11 @@ in main), by design of the containment rule.
   info|success|warning|failure --title … [--body|--body-file] [--url]
   [--field k=v] [--mention]`). Never `curl` the webhook.
 - Secrets: `DISCORD_WEBHOOK_URL` (required for anything to send) and
-  `DISCORD_MENTION_USER_ID` (numeric; used only with `--mention`). Pass them
+  `DISCORD_MENTION_USER_ID` (the numeric user id — Developer Mode, right-click
+  your name, Copy User ID — never the username; used only with `--mention`,
+  and a bad value costs only the ping, not the message). Both must be
+  **repository** secrets: environment secrets are invisible to every job
+  without that `environment:`. Pass them
   through step `env:`, never interpolated into `run:` — a test enforces it.
 - Unset webhook or a Discord outage = logged no-op, exit 0. A notification is
   never a reason for a job to fail.
