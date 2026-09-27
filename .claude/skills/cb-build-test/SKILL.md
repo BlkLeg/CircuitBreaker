@@ -28,11 +28,18 @@ a real start would surface.
 ## Testing
 
 ```bash
-make test-backend   # tests/integration — provisions the test DB first
-make test-frontend  # vitest
-make test           # both
-make verify         # the pre-push gate
+make test-backend    # tests/integration — provisions the test DB first
+make test-frontend   # vitest
+make test            # both
+make verify          # the pre-push gate
+make verify-composed # Tier 2: the browser suite and the composed journey
 ```
+
+`make verify-composed` — Tier 2: the browser suite and the composed journey through the same
+`scripts/ci/tier2-*.sh` scripts CI calls; `CB_COMPOSED_QUARANTINED=0` lifts QUAR-001 locally. In CI, the
+composed journey will not re-run on the same inputs after a failure until each failed test is fixed or has a
+register row (`scripts/ci/composed_rerun_guard.py`). Local runs are not guarded, since they are how a fix
+gets made.
 
 Test code lives in four places, and putting a test in the wrong one is how it
 silently never runs:

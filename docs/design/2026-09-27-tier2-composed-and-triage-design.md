@@ -1,7 +1,7 @@
 # Tier 2 (Composed) and Its Automated Triage — Design
 
 **Date:** 2026-09-27
-**Status:** Approved in design; no slice implemented
+**Status:** Approved in design; slices A1 and A2 implemented
 **Version at writing:** 0.4.5
 **ADR:** [0005 — Verification Tiers and Platform Support](../adr/0005-verification-tiers-and-platform-support.md)
 **Programme:** [2026-08-27-verification-strategy-design.md](./2026-08-27-verification-strategy-design.md) — this is that
@@ -147,7 +147,7 @@ and a human merge.
 | `.github/workflows/tier2.yml` | **New.** `name: Tier 2 (composed)`, matching `Fleet (Tier 3)`. Nightly cron, `workflow_dispatch`, `workflow_call`. Carries a `concurrency` group so a manual dispatch and the nightly cannot interleave two runs whose artifacts the triage would then read as one. |
 | `.github/workflows/e2e.yml` | Thin caller of `composed-e2e.yml`. Keeps its tag and path-filtered PR triggers; **drops its nightly schedule**, which `tier2.yml` takes over. |
 | `.github/workflows/dev-ci.yml` | `build-docker` becomes a caller of `mono-smoke.yml`. |
-| `.github/workflows/release.yml`, `release-dry-run.yml` | Call `tier2.yml` instead of `browser-e2e.yml` directly — with `["browser","composed"]` from A2, and the default all-three set once A3 adds the mono suite. **Decided 2026-09-27:** the release runs the whole tier. The alternative was to drop `"mono"` as redundant against the `runtime_digest` parity check the release already performs; running it costs one extra mono image build on the release path, and buys a boot-level signal that parity alone does not give — the digest proves the image and the package were built from the same tree, not that the image starts. |
+| `.github/workflows/release.yml`, `release-dry-run.yml` | Call `tier2.yml` instead of `browser-e2e.yml` directly — with `["browser","composed"]` from A2, and the default all-three set once A3 adds the mono suite. **Superseded 2026-09-27 by the maintainer:** the release calls `tier2.yml` with `["browser"]` only. The composed journey is not a release gate (AGT-01 stands), because making it reliably green is a steep hill that should not block releases. Whether A3 adds `"mono"` to the release is decided in A3. |
 | `Makefile` | `make verify-composed` — the laptop entry point §4 of the programme design anticipated but never named. It exports `CI=1`, because `playwright.config.ts` selects its JUnit reporter on `process.env.CI`; without that a local run writes no `junit.xml` and cannot be triaged, which would make the local and CI forms of the tier differ in exactly the way P1 forbids. |
 
 `tier2.yml` selects suites with a `suites` JSON-array input and `if: contains(fromJSON(inputs.suites), 'browser')`
@@ -169,7 +169,7 @@ scope (§8).
 | `.github/workflows/maintainer-digest.yml` | **New.** Nightly 13:15 UTC, plus `workflow_dispatch`. Read-only. |
 | `.github/workflows/review-alert.yml` | **New.** Hourly sweep plus `workflow_dispatch`, firing M5 for human and Dependabot PRs. `pull-requests: write` for the `review-alerted` label only — the narrowest write in the design (§6.1 for why this is not a pull-request-event workflow). |
 | `.github/workflows/tier2.yml` | Two triage jobs, `if: always()`, `needs:` every suite job (§3.3). |
-| `.github/workflows/notify.yml` | `Tier 2 (composed)` added to the watched list. |
+| `.github/workflows/notify.yml` | `Tier 2 (composed)` added to the watched list. Landed early, in A2, because A2 moves the watched nightly. |
 | `make lint` | The three new scripts added to its ruff and mypy lines. |
 
 No new nag path is needed for quarantine expiry: `ledger_watch.py` already reads
@@ -203,6 +203,22 @@ can therefore distinguish "the nightly" from "the release". Only the schedule an
 could open a quarantine pull request in the middle of a release, which is the single worst thing this design
 could do. The Discord secrets are declared optional on the `workflow_call` interface for the same reason: the
 release path never passes them, and a missing webhook is already a logged no-op.
+
+### 3.4 The composed journey's rerun guard
+
+The composed journey never runs twice on the same inputs while a previous failure is unaddressed:
+"addressed" means either **fixed** (something under `SUITE_INPUTS` changed since the failed run, so the
+inputs fingerprint is new) or **quarantined** (every failed test has a live register row for
+`Composed Agent E2E / composed-journey`, and the journey deselects exactly those tests). There is
+deliberately no force switch. See `scripts/ci/composed_rerun_guard.py`'s docstring for the full contract —
+the `fingerprint`/`check`/`record`/`deselect` subcommands, the artifact lookup that reads every page and
+fails closed if the listing is incomplete, trusting only artifacts from runs of this repository, and the
+exact input set the fingerprint covers (the agent, the backend, `docker/`, `Dockerfile.mono` and its
+build-context `COPY` sources, root `docker-compose.yml`, `pytest.ini`, the journey script and
+`scripts/ci/lib/common.sh`, and `composed-e2e.yml` itself — deliberately excluding `apps/frontend`, so a
+daily UI commit is never mistaken for a fix to an agent failure; a frontend-caused crash is therefore
+fix-only). Register rows for `Composed Agent E2E / composed-journey` now quarantine individual tests by
+deselection whenever the suite runs, rather than only the whole suite.
 
 ---
 
@@ -421,9 +437,10 @@ one job that pushes; `# checkov:skip=CKV_GHA_7` with a reason on every dispatch 
 ### 7.2 Failure modes designed for rather than discovered
 
 - **The cron is inert until `tier2.yml` reaches the default branch.** `schedule` and `workflow_run` fire only
-  from the default branch's copy. The file carries `# scheduled-ref: default-branch-intentional`
-  (`test_scheduled_workflows_pin_their_ref.py`) and the sequencing in §9 puts the merge before anyone expects
-  a nightly.
+  from the default branch's copy. The file pins every checkout's ref instead of carrying the
+  `default-branch-intentional` marker, so `test_scheduled_workflows_pin_their_ref.py` checks it rather than
+  exempting it (A2 plan, deviation 3), and the sequencing in §9 puts the merge before anyone expects a
+  nightly.
 - **A `GITHUB_TOKEN` PR gets no checks.** Followed by `dispatch_required_checks.sh`. Per PR #176 those
   dispatches can still park as `action_required` holds on a bot-opened PR; M5 reports the count.
 - **A row PR every night for the same failure.** Prevented by the two idempotence rules and the deterministic
@@ -444,9 +461,8 @@ part of it, and must not be offered as such (CLAUDE.md, rule 1). The covering ev
   idempotence rules.
 - `tests/build/test_maintainer_digest.py`, `tests/build/test_review_alert.py` — one fixture per message
   shape, including the overflow case and the nothing-outstanding case.
-- New guards: the `suites` values every caller passes are real; `Tier 2 (composed)` appears in
-  `notify.yml`'s watched list; and the P1 drift guard asserting `make verify-composed` and the workflow step
-  invoke the same command.
+- `tests/build/test_tier2_wiring.py`: each suite has one script under `scripts/ci/`, called by both the
+  workflow and the `make` target, and neither re-inlines it.
 - `checkov -f` on each new workflow, locally, before pushing.
 - A real `workflow_dispatch` of `tier2.yml` on the branch, with the triage pointed at fixture directories to
   force each verdict path. **This is the only thing that proves the automation works**, and it happens before
@@ -462,9 +478,10 @@ Expected to pass with no change: `test_workflow_job_graph.py`, `test_workflow_ru
 registry, not an inference: `SEEDED_WORKFLOWS`, `EVIDENCE_OWING_JOBS` and `ARTIFACT_SOURCE_WORKFLOWS`
 enumerate workflows and job ids by name, so moving the composed journey out of `e2e.yml` silently drops the
 requirement that it upload diagnostics unless `composed-e2e.yml` is added to `ARTIFACT_SOURCE_WORKFLOWS` in
-the same commit. `tier2.yml` joins the same maps in A2 and `mono-smoke.yml` in A3. Slice A1 is not complete without its
-entry; a green run of that test proves nothing if the workflow it was watching has been renamed out from
-under it.
+the same commit. `tier2.yml` joins the same maps in A2 — deferred to B1, since `tier2.yml` executes no
+suite until its triage jobs exist (A2 plan, deviation 4) — and `mono-smoke.yml` in A3. Slice A1 is not
+complete without its entry; a green run of that test proves nothing if the workflow it was watching has been
+renamed out from under it.
 
 **`test_scheduled_workflows_pin_their_ref.py`** covers the two new crons, which carry
 `# scheduled-ref: default-branch-intentional`.
@@ -516,6 +533,25 @@ a programme, not one implementation plan**, in the same sense as the verificatio
 first slice that needs a written plan, and each later slice is planned against this document as the shared
 reference rather than all six being planned at once.
 
+### Implementation notes (slice A2)
+
+Rulings made during A2's execution that this document did not anticipate:
+
+- **`tier2.yml`'s pre-tag trigger.** It carries a path-filtered `pull_request` trigger on its own two files
+  (`.github/workflows/tier2.yml`, `scripts/ci/tier2_gate.py`), so its job graph runs before a tag whenever
+  either changes. `tests/build/test_release_paths_run_before_the_tag.py` now counts a workflow as its own
+  pre-tag caller only when a qualifying trigger has no `paths:`/`paths-ignore:` filter, or its `paths:`
+  filter includes the workflow's own file (`_self_qualifies`). T2 is still not a required check (D2).
+- **The browser suite's JUnit report stopped disappearing.** `playwright.config.ts`'s HTML reporter now
+  writes to `playwright-report/html` rather than `playwright-report/`, because sharing that directory with
+  the JUnit file deleted `junit.xml` on every CI run. The JUnit path this document names above,
+  `playwright-report/junit.xml`, is unchanged; a local `npx playwright show-report` now needs the path
+  `playwright-report/html`.
+- **The composed journey's rerun guard** is documented in §3.4.
+- **`e2e.yml`'s stale comment.** The `composed:` job's inline comment said "For a tag push, a pull request or
+  the nightly, `inputs` is null" — `e2e.yml` no longer has a `schedule` trigger, since the nightly moved to
+  `tier2.yml` in this slice, so the comment was corrected to drop "or the nightly".
+
 ---
 
 ## 10. Decisions that were open during design
@@ -525,6 +561,6 @@ Both were settled on 2026-09-27 and are recorded here so a later reader does not
 1. **Digest delivery time: 13:15 UTC**, chosen to follow every other scheduled workflow and land mid-morning
    in the maintainer's timezone. The only hard constraint is that it runs after `ledger-watch.yml` at 06:23
    UTC, so its ledger line can reference that night's issue.
-2. **The release calls all three suites.** Mono smoke is not skipped on the release path. It costs a second
+2. **Superseded** (see §3.1): **The release calls all three suites.** Mono smoke is not skipped on the release path. It costs a second
    mono image build there, and the reason it is worth paying is in §3.1: `runtime_digest` parity proves the
    image and the package came from the same tree, not that the image boots.

@@ -55,8 +55,8 @@ permissions:
 
 jobs:
   composed:
-    # Only a deliberate dispatch can lift the quarantine. For a tag push, a
-    # pull request or the nightly, `inputs` is null, so the first clause is
+    # Only a deliberate dispatch can lift the quarantine. For a tag push or a
+    # pull request, `inputs` is null, so the first clause is
     # true and the suite stays skipped — written as `!=` plus `or` rather than
     # `&&` plus `or` because `false && x || true` evaluates to true and would
     # silently ignore an operator who asked for the real run.
