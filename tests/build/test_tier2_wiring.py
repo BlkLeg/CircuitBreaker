@@ -89,3 +89,19 @@ def test_browser_script_rejects_a_malformed_shard_before_doing_anything(shard):
 def test_browser_script_forces_the_ci_reporter():
     """playwright.config.ts writes junit.xml only when process.env.CI is set."""
     assert 'export CI="${CI:-1}"' in (REPO_ROOT / BROWSER_SCRIPT).read_text(encoding="utf-8")
+
+
+def test_the_html_reporter_cannot_clear_the_junit_report():
+    """playwright.config.ts: the HTML reporter empties its outputFolder when it
+    writes. When it shared playwright-report/ with junit.xml, every CI run lost
+    its JUnit report, silently. Tier 2 triage reads that file."""
+    config = (REPO_ROOT / "apps" / "frontend" / "playwright.config.ts").read_text(encoding="utf-8")
+    junit = re.search(r"\['junit',\s*\{\s*outputFile:\s*'([^']+)'", config)
+    html = re.search(r"\['html',\s*\{[^}]*outputFolder:\s*'([^']+)'", config)
+    assert junit, "no junit reporter with an outputFile in playwright.config.ts"
+    assert html, "the html reporter must name its own outputFolder"
+    junit_path = Path(junit.group(1))
+    html_folder = Path(html.group(1))
+    assert html_folder not in junit_path.parents and html_folder != junit_path.parent, (
+        f"html outputFolder {html_folder} would clear {junit_path}"
+    )
