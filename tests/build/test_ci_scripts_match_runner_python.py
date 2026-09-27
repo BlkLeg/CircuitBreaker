@@ -13,12 +13,30 @@ The rule, mechanically: for every job in every `.github/workflows/*.yml` file
 that has no `actions/setup-python` step, every `scripts/ci/*.py` script its
 `run:` blocks invoke must not import or reference a stdlib name newer than
 the runner baseline (Python 3.10 — what `ubuntu-22.04` ships as `python3`).
+
+The rule is checked twice, on purpose:
+
+  * `FORBIDDEN_STDLIB_SYMBOLS` below is a stdlib-only `ast` scan. It needs no
+    tooling, so it cannot fail open, but it only knows the names it is seeded
+    with — and a list of "names newer than 3.10" that a human maintains is a
+    list that goes stale.
+  * `vermin` computes the minimum Python version a source file actually
+    requires, across every version-gated name it knows. That is the check that
+    stays complete without anyone maintaining it. It is a declared dev
+    dependency and this module fails rather than skips when it is absent,
+    because a gate that passes because its tool is missing is not a gate
+    (ADR 0005, P2).
+
+Neither subsumes the other: the `ast` scan survives a broken environment, and
+vermin survives a maintainer forgetting to add a name.
 """
 
 from __future__ import annotations
 
 import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -220,3 +238,114 @@ def test_ci_scripts_run_without_setup_python_stay_on_the_runner_baseline() -> No
                 f"add actions/setup-python to the {job_id} job."
             )
     assert not problems, "\n".join(sorted(problems))
+
+
+# ── The same rule, via vermin ────────────────────────────────────────────────
+
+# Passed to vermin as `-t=3.10-`: "the minimum version this file requires must
+# be 3.10 or lower". Same baseline as the ast scan above, named once.
+RUNNER_BASELINE = "3.10"
+
+
+def _vermin_binary() -> Path:
+    """The `vermin` console script beside the interpreter running these tests.
+
+    `python -m vermin` does not work — the distribution ships a package with no
+    `__main__` — so the console script is the entry point, and it lives in the
+    same `bin/` as the `pytest` that is executing this.
+    """
+    candidate = Path(sys.executable).parent / "vermin"
+    assert candidate.is_file(), (
+        f"vermin not found at {candidate}. It is declared in "
+        "apps/backend/pyproject.toml's [dev] extra for this guard; rebuild the "
+        "dev environment with `make install`. This asserts rather than skips "
+        "deliberately: a gate that passes because its tool is missing is not a "
+        "gate (ADR 0005, P2)."
+    )
+    return candidate
+
+
+def vermin_baseline_report(path: Path) -> tuple[int, str]:
+    """`(exit status, report)` from vermin checking *path* against the baseline.
+
+    A non-zero status means the file requires a Python newer than the runner
+    provides; the report names the offending construct and the version that
+    introduced it.
+    """
+    result = subprocess.run(
+        [
+            str(_vermin_binary()),
+            f"-t={RUNNER_BASELINE}-",
+            "--no-tips",
+            "--violations",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(REPO_ROOT),
+    )
+    return result.returncode, f"{result.stdout}{result.stderr}".strip()
+
+
+def test_vermin_flags_a_name_newer_than_the_runner_baseline(tmp_path: Path) -> None:
+    """Non-vacuity: vermin must actually reject the construct that broke
+    quarantine-notice, or the guard below proves nothing."""
+    sample = tmp_path / "sample.py"
+    sample.write_text("from datetime import UTC\n\nprint(UTC)\n", encoding="utf-8")
+    status, report = vermin_baseline_report(sample)
+    assert status != 0, f"vermin accepted datetime.UTC at {RUNNER_BASELINE}:\n{report}"
+    assert "3.11" in report, report
+
+
+def test_vermin_accepts_the_portable_form(tmp_path: Path) -> None:
+    """And it must accept the fix, or the guard would forbid its own remedy."""
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "from datetime import datetime, timezone\n\n"
+        "print(datetime.now(timezone.utc))\n",
+        encoding="utf-8",
+    )
+    status, report = vermin_baseline_report(sample)
+    assert status == 0, report
+
+
+def test_vermin_catches_what_the_seeded_list_would_miss(tmp_path: Path) -> None:
+    """The reason vermin is here at all: a 3.11+ name that
+    FORBIDDEN_STDLIB_SYMBOLS does not carry is still caught.
+
+    `tomllib` is a real example — scripts/validate_security_suppressions.py
+    uses it, and its job pins 3.12 precisely because of that — and it is
+    deliberately absent from the seeded set.
+    """
+    assert "tomllib" not in FORBIDDEN_STDLIB_SYMBOLS
+    sample = tmp_path / "sample.py"
+    sample.write_text("import tomllib\n\nprint(tomllib)\n", encoding="utf-8")
+    assert forbidden_symbols_used(sample) == []
+    status, report = vermin_baseline_report(sample)
+    assert status != 0, f"vermin accepted tomllib at {RUNNER_BASELINE}:\n{report}"
+
+
+def test_ci_scripts_without_setup_python_pass_vermin() -> None:
+    """The comprehensive form of the guard above.
+
+    Same scope — jobs with no `actions/setup-python` — but the verdict comes
+    from vermin's version database rather than a hand-seeded list, so a name
+    nobody thought to forbid is caught too.
+    """
+    problems: list[str] = []
+    for filename, job_id, script_rel in jobs_running_ci_scripts_without_setup_python():
+        script_path = REPO_ROOT / script_rel
+        if not script_path.is_file():
+            continue
+        status, report = vermin_baseline_report(script_path)
+        if status != 0:
+            problems.append(
+                f"{filename}:{job_id} invokes {script_rel} without "
+                f"actions/setup-python, so it runs on ubuntu-22.04's system "
+                f"python3 ({RUNNER_BASELINE}), but vermin reports:\n"
+                f"{report}\n"
+                f"Either make {script_rel} portable, or add "
+                f"actions/setup-python to the {job_id} job."
+            )
+    assert not problems, "\n\n".join(sorted(problems))
