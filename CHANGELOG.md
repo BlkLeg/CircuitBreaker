@@ -15,7 +15,33 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
-## [0.4.4] — unreleased
+## [0.4.4] — 2026-09-27
+
+Replaces the PyInstaller onefile that 0.4.3 still shipped with a hermetic
+python-build-standalone tree shared by the tarball, packages and mono image,
+adds stage/activate/rollback for upgrades, and publishes through
+nightly → candidate → stable channels (tag last).
+
+### Added
+
+- Hermetic native runtime: a pinned python-build-standalone tree under
+  `/opt/circuitbreaker/` (own interpreter, wheels, launcher). Packages symlink
+  `/usr/local/bin/circuit-breaker` into that tree; the mono image rebuilds from
+  the same pins and must share `runtime_digest`.
+- Installer stage → activate → verify → finalise, with `python.prev` held until
+  `/readyz` succeeds; `install.sh --channel stable|candidate`; uninstall via
+  install-identity on both layouts.
+- Release channels: `:nightly` from green `dev`, draft `candidate`, and
+  `stable` promote that retags the same digest (tag created last).
+
+### Fixed
+
+- A `stable` promote can see the draft release it verifies. The
+  `promote-verify` job ran with `contents: read`, and GitHub lists draft
+  releases only to tokens with push access, so every promote failed with
+  "has no draft to promote".
+
+## [0.4.3] — 2026-09-23
 
 Fixes the defect that made 0.4.2 unusable, and closes the gap in the release
 pipeline that let it ship.
@@ -27,11 +53,6 @@ release gate was green, because the only thing any of them executed was
 `--version` — which `start.py` resolves from an embedded file and returns on
 before the application is ever imported. The artifact was signed, attested,
 SBOM'd, scanned and version-parity-checked, and empty.
-
-This unreleased cut also replaces that PyInstaller onefile with a hermetic
-python-build-standalone tree shared by the tarball, packages and mono image,
-adds stage/activate/rollback for upgrades, and publishes through
-nightly → candidate → stable channels (tag last).
 
 ### Fixed
 
@@ -52,18 +73,18 @@ nightly → candidate → stable channels (tag last).
   around three seconds into every run.
 - The pre-flight phase is written to the install log. It previously reached no
   file at all, so a failure there named a log that did not exist.
+- `cb info` and `cb doctor` tell a missing install identity apart from one
+  they are not permitted to read, naming the path and suggesting `sudo`; the
+  JSON output carries the unreadable path.
+- A Docker socket proxy timeout at startup is a warning, no longer fatal: the
+  proxy only feeds opt-in container telemetry.
+- Worker services are granted the ambient capabilities they exec into, and a
+  worker exiting no longer deletes the backend's runtime directory.
+- The security scan distinguishes a scanner that failed from one that found
+  something, rather than reporting an engine crash as findings.
 
 ### Added
 
-- Hermetic native runtime: a pinned python-build-standalone tree under
-  `/opt/circuitbreaker/` (own interpreter, wheels, launcher). Packages symlink
-  `/usr/local/bin/circuit-breaker` into that tree; the mono image rebuilds from
-  the same pins and must share `runtime_digest`.
-- Installer stage → activate → verify → finalise, with `python.prev` held until
-  `/readyz` succeeds; `install.sh --channel stable|candidate`; uninstall via
-  install-identity on both layouts.
-- Release channels: `:nightly` from green `dev`, draft `candidate`, and
-  `stable` promote that retags the same digest (tag created last).
 - `circuit-breaker --selftest` resolves the ASGI target the way uvicorn does
   and imports every worker module and the migration entrypoint. It needs no
   database, broker or network. The build refuses to stage a binary that fails
@@ -83,6 +104,10 @@ nightly → candidate → stable channels (tag last).
   from its own URLs, and a release-readiness checklist blocks publication.
 - The installer is now executed end to end in CI, across Ubuntu, Debian,
   Fedora, Arch and Rocky.
+- Non-interactive uninstall options (`--purge`, `--keep-data`, `--help`),
+  covering both native and packaged installs.
+- A release dry run that exercises packaging, install, startup, authentication,
+  upgrade and cleanup without publishing anything.
 
 ### Security
 

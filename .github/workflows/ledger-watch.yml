@@ -1,0 +1,102 @@
+# scheduled-ref: default-branch-intentional
+#
+# The release-control ledgers are reported as they stand on the default branch
+# (main). A release is cut from main, and main's own build checks go red the
+# day a row there expires, so a renewal that has landed on dev but not yet
+# reached main has not removed the risk this issue exists to announce.
+#
+# GitHub fires `schedule` only from the default branch, so the cron below does
+# nothing until this file is on main. workflow_dispatch works from any branch.
+name: Ledger watch
+
+on:
+  schedule:
+    # Daily at 06:23 UTC — off the hour, when the shared runner queue is quieter.
+    - cron: "23 6 * * *"
+  # No inputs: the horizon is fixed below, so a manual run reports exactly what
+  # the nightly would (and CKV_GHA_7 keeps dispatch inputs empty).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ledger-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Release-control ledger expiry
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      HORIZON_DAYS: "30"
+      LABEL: release-control
+      TITLE_PREFIX: "Release-control ledgers:"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build the report
+        # A non-zero exit means a ledger could not be parsed; the job fails
+        # rather than closing the issue on a report it could not produce.
+        run: |
+          python scripts/ci/ledger_watch.py --days "$HORIZON_DAYS" > "$RUNNER_TEMP/ledger-report.md"
+          python scripts/ci/ledger_watch.py --days "$HORIZON_DAYS" --json > "$RUNNER_TEMP/ledger-report.json"
+          cat "$RUNNER_TEMP/ledger-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update or close the tracking issue
+        run: |
+          set -euo pipefail
+          report_json="$RUNNER_TEMP/ledger-report.json"
+          anything_due="$(jq -r '.anything_due' "$report_json")"
+          title="$(jq -r '.issue_title' "$report_json")"
+
+          # Only an issue this workflow wrote is ever edited or closed, even if
+          # someone else applies the same label to an unrelated issue.
+          existing="$(gh issue list --state open --label "$LABEL" --limit 100 \
+            --json number,title \
+            --jq "[.[] | select(.title | startswith(env.TITLE_PREFIX))] | sort_by(.number) | .[0].number // empty")"
+
+          if [ "$anything_due" = "true" ]; then
+            body="$RUNNER_TEMP/issue-body.md"
+            {
+              cat "$RUNNER_TEMP/ledger-report.md"
+              echo
+              echo "---"
+              echo "Maintained by \`.github/workflows/ledger-watch.yml\` from \`scripts/ci/ledger_watch.py\`."
+              echo "This issue is rewritten on every run and closed automatically once nothing is due."
+              echo "Last run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            } > "$body"
+
+            if [ -n "$existing" ]; then
+              gh issue edit "$existing" --title "$title" --body-file "$body"
+              echo "Updated issue #$existing: $title"
+            else
+              label_exists="$(gh label list --search "$LABEL" --limit 100 --json name \
+                --jq '[.[] | select(.name == env.LABEL)] | length')"
+              if [ "$label_exists" = "0" ]; then
+                gh label create "$LABEL" --color "B60205" \
+                  --description "Release-control ledger rows expiring or risks overdue for review"
+              fi
+              gh issue create --title "$title" --label "$LABEL" --body-file "$body"
+            fi
+          elif [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Nothing in the release-control ledgers expires within ${HORIZON_DAYS} days and no risk review is overdue. Closing. (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            gh issue close "$existing"
+            echo "Closed issue #$existing"
+          else
+            echo "Nothing due and no open tracking issue."
+          fi

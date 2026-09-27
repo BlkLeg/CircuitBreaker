@@ -317,10 +317,11 @@ lint: ## Run backend and frontend linters (fast subset for pre-commit; see comme
 # scripts/pbs_tree.py is the only code that assembles the hermetic runtime
 # tree (native build, Dockerfile.mono's builder stage, the installer
 # journey); scripts/ci/assert_runtime_parity.py is what proves the native
-# and image artifacts are identical. Both are stdlib-only and outside
+# and image artifacts are identical. scripts/ci/ledger_watch.py drives the
+# nightly release-control expiry issue. All are stdlib-only and outside
 # src/app, so they need naming here too or they lint on nobody's path.
-	$(CURDIR)/.venv/bin/ruff check scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py
-	$(CURDIR)/.venv/bin/mypy scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py
+	$(CURDIR)/.venv/bin/ruff check scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py
+	$(CURDIR)/.venv/bin/mypy scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py
 	cd $(FRONTEND_DIR) && npm run lint
 
 format: ## Format backend and frontend code
