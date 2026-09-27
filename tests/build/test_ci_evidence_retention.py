@@ -41,12 +41,25 @@ from tests.build.backend_shard import CI_SHARD_TOTAL  # noqa: E402
 # their own gates.
 TEST_WORKFLOWS = ("ci.yml", "dev-ci.yml")
 
+# browser-e2e.yml holds the Playwright suite that ci.yml and dev-ci.yml used to
+# declare inline, and release.yml now gates on. It owes the same determinism and
+# the same evidence, but it has no backend matrix, so it joins the rules that
+# apply to it rather than TEST_WORKFLOWS wholesale.
+SEEDED_WORKFLOWS = TEST_WORKFLOWS + ("browser-e2e.yml",)
+
 # Jobs that execute a suite, and therefore owe evidence. Keyed by workflow so a
 # job renamed in one file cannot silently drop the requirement in the other.
 EVIDENCE_OWING_JOBS = {
-    "ci.yml": ("lint", "backend-tests", "fresh-install-migrations", "test", "browser-e2e"),
+    "ci.yml": ("lint", "backend-tests", "fresh-install-migrations", "test"),
     "dev-ci.yml": ("lint", "backend-tests", "fresh-install-migrations", "test"),
+    "browser-e2e.yml": ("browser-e2e",),
 }
+
+# Where the artifact classes below are allowed to live. e2e.yml carries the
+# composed journey's diagnostics; browser-e2e.yml carries Playwright's traces,
+# screenshots and video, which is why scanning ci.yml alone stopped being
+# enough once the suite moved out of it.
+ARTIFACT_SOURCE_WORKFLOWS = ("ci.yml", "e2e.yml", "browser-e2e.yml")
 
 
 def _load(name: str) -> dict:
@@ -75,7 +88,7 @@ def _retained_paths(workflow: dict) -> str:
 # ── determinism ─────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", TEST_WORKFLOWS)
+@pytest.mark.parametrize("name", SEEDED_WORKFLOWS)
 def test_the_seeds_are_pinned_at_the_workflow_level(name: str):
     """PYTHONHASHSEED unset means CPython salts str hashing per process, so two
     runs of the same commit can order things differently for no visible reason.
@@ -89,7 +102,7 @@ def test_the_seeds_are_pinned_at_the_workflow_level(name: str):
     assert env.get("CB_TEST_SEED"), f"{name} declares no CB_TEST_SEED"
 
 
-@pytest.mark.parametrize("name", TEST_WORKFLOWS)
+@pytest.mark.parametrize("name", SEEDED_WORKFLOWS)
 def test_the_seed_is_fixed_rather_than_derived_from_the_run(name: str):
     """A seed that changes every run is recorded, not fixed. Recording it makes
     a failure reproducible only for whoever reads that run's log; fixing it
@@ -149,7 +162,7 @@ def test_the_shard_selection_comes_from_the_tested_module(name: str):
 # ── retention ───────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", TEST_WORKFLOWS)
+@pytest.mark.parametrize("name", tuple(EVIDENCE_OWING_JOBS))
 def test_every_test_job_retains_something_on_failure(name: str):
     workflow = _load(name)
     missing = []
@@ -193,10 +206,10 @@ def test_every_named_artifact_class_is_retained_somewhere():
     playwright.config.ts writes into test-results/ on failure, so retaining
     that directory is how those three are kept; the seed is in the run
     manifest each job writes."""
-    retained = _retained_paths(_load("ci.yml")) + _retained_paths(_load("e2e.yml"))
+    retained = "".join(_retained_paths(_load(name)) for name in ARTIFACT_SOURCE_WORKFLOWS)
     steps = "\n".join(
         str(step.get("run", ""))
-        for workflow in ("ci.yml", "e2e.yml")
+        for workflow in ARTIFACT_SOURCE_WORKFLOWS
         for job in _load(workflow)["jobs"].values()
         for step in job.get("steps") or []
     )

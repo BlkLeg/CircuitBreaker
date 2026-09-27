@@ -173,6 +173,28 @@ jobs:
     with:
       previous_release: ${{ vars.CB_PREVIOUS_PYINSTALLER_RELEASE }}
 
+  # ── Browser E2E (Playwright against the candidate commit) ────────────────────
+  # The gap this closes: every other gate here covers packaging — artifact
+  # smoke, the installer journey, runtime parity — so a release could publish
+  # having never rendered a page. `make verify` and `make verify-full` run no
+  # browser either, and `Browser E2E` is not a required check on `main`, so a
+  # red Playwright run blocks no merge. Without this job nothing stands between
+  # a frontend regression and a published tag.
+  #
+  # `needs: [version, gate]` rather than waiting on the build: this runs from
+  # source, not from an artifact, so it starts alongside installer-journey and
+  # the image legs instead of queueing behind them. The image build and merge
+  # dominate the critical path, so the release should not get longer.
+  #
+  # The composed agent journey is deliberately absent: e2e.yml is disabled under
+  # QUAR-001 (issue #162, expiry 2026-12-21) and would make every release red.
+  # browser-e2e.yml's header records what closing that half would take.
+  browser-e2e:
+    name: Browser E2E
+    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
+    needs: [version, gate]
+    uses: ./.github/workflows/browser-e2e.yml
+
   # ── Container image, built natively per architecture ─────────────────────────
   # One runner per architecture, never a single emulated
   # `buildx --platform linux/amd64,linux/arm64`: buildx runs both platforms and
@@ -420,7 +442,7 @@ jobs:
   release:
     name: Stage Draft Release
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
-    needs: [version, build, artifact-smoke, installer-journey, image-merge, runtime-parity]
+    needs: [version, build, artifact-smoke, browser-e2e, installer-journey, image-merge, runtime-parity]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
