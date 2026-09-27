@@ -131,6 +131,7 @@ jobs:
       - name: Record the run manifest
         env:
           CB_E2E_SEED: "20260826"
+          PYTEST_ADDOPTS: "-k test_agent_uninstall_marks_server_revoked_and_removes_local_files"  # TEMP
         run: |
           mkdir -p diagnostics
           {
@@ -189,7 +190,7 @@ jobs:
         shell: bash
         env:
           FINGERPRINT: ${{ needs.rerun-guard.outputs.fingerprint }}
-          OUTCOME: ${{ steps.journey.outcome }}
+          OUTCOME: failure  # TEMP: rerun-guard proof
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 scripts/ci/composed_rerun_guard.py record \
