@@ -16,8 +16,12 @@ name: Dependabot lockfile sync
 
 on:
   pull_request_target:
+    # Version updates target `dev` (.github/dependabot.yml), but Dependabot
+    # raises *security* updates against the default branch, `main`, and those
+    # have exactly the same stale requirements.txt. Both protected bases.
     branches:
       - dev
+      - main
     paths:
       - "apps/backend/poetry.lock"
 
@@ -25,8 +29,13 @@ on:
 # writable. That is the whole reason for it: a `pull_request` run triggered by
 # Dependabot gets a read-only token and cannot push the regenerated file back
 # to the branch.
+#
+# `actions: write` is for the dispatch step at the end: the commit this job
+# pushes is made with GITHUB_TOKEN, which triggers no `push`/`pull_request`
+# workflow, so the required checks have to be started by `workflow_dispatch`.
 permissions:
   contents: write
+  actions: write
 
 jobs:
   sync:
@@ -58,10 +67,17 @@ jobs:
       # Left modified in the working tree on purpose: the commit below names
       # its path explicitly, so the restored generator is never staged and
       # never pushed.
-      - name: Restore the generator from the base commit
+      #
+      # The dispatch helper is restored for the same reason: it runs with a
+      # token that can start workflows, so it must be this repository's copy.
+      - name: Restore the generator and dispatch helper from the base commit
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: git restore --source="$BASE_SHA" -- scripts/gen_requirements.py
+        run: |
+          git restore --source="$BASE_SHA" -- \
+            scripts/gen_requirements.py \
+            scripts/ci/dispatch_required_checks.sh \
+            scripts/ci/lib/common.sh
 
       - name: Regenerate apps/backend/requirements.txt
         run: python3 scripts/gen_requirements.py
@@ -72,11 +88,13 @@ jobs:
       # injection starts — the actor guard on this job is not a reason to also
       # get the quoting wrong.
       - name: Push the result if the generator moved it
+        id: push
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           if git diff --quiet -- apps/backend/requirements.txt; then
             echo "requirements.txt already matches poetry.lock — nothing to push"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -86,3 +104,21 @@ jobs:
           git commit -m "chore(deps): regenerate requirements.txt from poetry.lock" \
             -- apps/backend/requirements.txt
           git push origin "HEAD:refs/heads/$HEAD_REF"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      # The commit above was pushed with GITHUB_TOKEN, so GitHub starts no
+      # `push`/`pull_request` run for it and none of the 21 required checks
+      # would ever appear on the new head SHA — the PR would be unmergeable.
+      # `workflow_dispatch` is permitted from GITHUB_TOKEN, and a dispatched
+      # run's check runs attach to the head SHA of the ref it runs on.
+      #
+      # Skipped when nothing was pushed: the head is then Dependabot's own
+      # commit, which already received the normal pull_request runs.
+      - name: Dispatch the required checks on the new head
+        if: steps.push.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: bash scripts/ci/dispatch_required_checks.sh "$HEAD_REF" "$BASE_REF"

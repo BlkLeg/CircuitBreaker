@@ -180,7 +180,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-in-release-image build-release build-from-source release-candidate release-promote version-sync release-untag agent-signing-key docker-build docker-push sign sbom
+.PHONY: build build-deps build-in-release-image build-release build-from-source release-candidate release-stage-only release-promote version-sync release-untag agent-signing-key docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -209,13 +209,20 @@ build-from-source: ## Full power-user path: deps + venv + build (clean machine �
 	$(MAKE) --no-print-directory install
 	$(MAKE) --no-print-directory build
 
-release-candidate: ## Build, gate and stage a DRAFT release for VERSION from HEAD (HEAD must be on origin)
+release-candidate: ## Build, gate and stage a DRAFT for VERSION from HEAD, then promote it once approved on the `release` environment
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
-	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate
-	@echo "Dispatched. Watch with: gh run watch. Soak the draft with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' && install.sh --local-bundle ..."
+	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=true
+	@echo "Dispatched. When the draft is staged the run waits for your approval on the 'release' environment (gh run watch, or Review deployments on the run page)."
+	@echo "Soak the draft before approving with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' && install.sh --local-bundle ..."
 
-release-promote: ## Promote the draft for VERSION to stable (no rebuild; the promote creates the tag)
+release-stage-only: ## Build, gate and stage a DRAFT for VERSION from HEAD without promoting it (promote later with release-promote)
+	@git fetch -q origin
+	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
+	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=false
+	@echo "Dispatched. Soak the draft with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' && install.sh --local-bundle ..., then: make release-promote"
+
+release-promote: ## Promote the staged draft for VERSION to stable once approved on `release` (no rebuild; the promote creates the tag)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first"; exit 1)
 	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=stable -f version="$$(cat VERSION)"
@@ -310,10 +317,13 @@ lint: ## Run backend and frontend linters (fast subset for pre-commit; see comme
 # scripts/pbs_tree.py is the only code that assembles the hermetic runtime
 # tree (native build, Dockerfile.mono's builder stage, the installer
 # journey); scripts/ci/assert_runtime_parity.py is what proves the native
-# and image artifacts are identical. Both are stdlib-only and outside
+# and image artifacts are identical. scripts/ci/ledger_watch.py drives the
+# nightly release-control expiry issue; notify_discord.py, workflow_alert.py,
+# branch_cleanup.py and post_release_bump.py run unattended in workflows
+# (see the cb-automation skill). All are stdlib-only and outside
 # src/app, so they need naming here too or they lint on nobody's path.
-	$(CURDIR)/.venv/bin/ruff check scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py
-	$(CURDIR)/.venv/bin/mypy scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py
+	$(CURDIR)/.venv/bin/ruff check scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/post_release_bump.py
+	$(CURDIR)/.venv/bin/mypy scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/post_release_bump.py
 	cd $(FRONTEND_DIR) && npm run lint
 
 format: ## Format backend and frontend code

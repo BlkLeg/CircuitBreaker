@@ -4,9 +4,22 @@ name: Release
 #
 #   channel=candidate  build → gate → smoke → journey → image → parity → scan →
 #                      sign → DRAFT release vX + candidate.json. No tag exists.
+#                      With promote=true (the default) the same run then goes
+#                      on to the stable steps below, and `promote` waits for a
+#                      human to approve it on the `release` environment. One
+#                      dispatch, one approval. promote=false stops at the draft.
 #   channel=stable     verify the draft against this ref and the registry,
 #                      retag the candidate's image digest, publish the draft —
-#                      which is the step that creates the tag. No build.
+#                      which is the step that creates the tag. No build. Also
+#                      behind the `release` environment's approval.
+#
+# The approval is only real if the `release` environment exists AND has a
+# required reviewer: GitHub silently creates a missing environment with no
+# protection and runs the job straight through. release-environment-guard
+# refuses to let anything promote unless that rule is in place.
+#
+# After publication, post-publish dispatches e2e.yml on the new tag and
+# release-followup.yml on dev, which opens the next patch in a PR.
 #
 # A tag pushed by hand runs only tag-verify, which asserts a published release
 # already exists for it: a tag is the result of a release, never its cause.
@@ -15,7 +28,7 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    # checkov:skip=CKV_GHA_7: the release captain chooses the channel and, for a promote, names the draft.
+    # checkov:skip=CKV_GHA_7: the release captain chooses the channel, whether a candidate goes on to promote, and, for a stable promote, names the draft.
     inputs:
       channel:
         description: "candidate: build, gate and stage a draft. stable: promote an existing draft (no build)."
@@ -27,6 +40,11 @@ on:
         required: false
         type: string
         default: ""
+      promote:
+        description: "candidate only: after the draft is staged, wait for approval on the `release` environment and promote it."
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write    # create GitHub Release, upload assets
@@ -47,14 +65,20 @@ jobs:
       # checkout because it only ever read the ref name.
       - uses: actions/checkout@v5
 
+      # Inputs reach the shell through env: and are quoted on use; a dispatch
+      # input is free text, and interpolating it into the script body is how a
+      # workflow injection starts.
       - name: Derive version string
         id: ver
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           VERSION="$(tr -d '[:space:]' < VERSION)"
-          if [ "${{ inputs.channel }}" = "stable" ]; then
-            [ "${{ inputs.version }}" = "${VERSION}" ] \
-              || { echo "::error::inputs.version='${{ inputs.version }}' must equal VERSION='${VERSION}' at this ref"; exit 1; }
+          if [ "${CHANNEL}" = "stable" ]; then
+            [ "${REQUESTED_VERSION}" = "${VERSION}" ] \
+              || { echo "::error::inputs.version='${REQUESTED_VERSION}' must equal VERSION='${VERSION}' at this ref"; exit 1; }
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -682,12 +706,82 @@ jobs:
             install.sh \
             setup.sh \
             packaging/circuit-breaker-release-key.asc
-          echo "draft v${VERSION} staged at ${GITHUB_SHA}; promote with: make release-promote"
+          echo "draft v${VERSION} staged at ${GITHUB_SHA}"
+          echo "with promote=true this run now waits for approval on the 'release' environment; otherwise promote later with: make release-promote"
 
+      - name: Tell the maintainer the draft is ready
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PROMOTE: ${{ inputs.promote }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "${PROMOTE}" = "true" ]; then
+            BODY="Every gate passed. Soak the draft if you want to, then approve the \`release\` environment on the run to publish."
+          else
+            BODY="Every gate passed. Staged only; publish later with \`make release-promote\`."
+          fi
+          python3 scripts/ci/notify_discord.py --level info --mention \
+            --title "v${VERSION} draft staged, waiting for you" \
+            --body "${BODY}" --url "${RUN_URL}" \
+            --field "Commit=${GITHUB_SHA:0:10}"
+
+  # ── The approval must be real before anything waits on it ───────────────────
+  # `promote` is gated by `environment: release`. If that environment does not
+  # exist, GitHub creates it on the fly with NO protection rules and runs the
+  # job immediately — a release published with no human in the loop, looking
+  # exactly like an approved one. So this asserts, before promote-verify, that
+  # the environment exists and carries a required-reviewers rule.
+  #
+  # It depends on nothing, so a missing rule fails the run in the first minute
+  # rather than after a 20-minute build; the draft is still staged, and nothing
+  # promotes. `actions: read` is the scope GitHub documents for
+  # GET /repos/{owner}/{repo}/environments/{name}.
+  release-environment-guard:
+    name: Assert the release environment requires a reviewer
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && (inputs.channel == 'stable'
+          || (inputs.channel == 'candidate' && inputs.promote == true))
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+    steps:
+      - name: Require a required-reviewers rule on the release environment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! ENVIRONMENT="$(gh api "repos/${GITHUB_REPOSITORY}/environments/release" 2>/tmp/env-error)"; then
+            echo "::error::could not read the 'release' environment ($(tr -d '\n' < /tmp/env-error)). Create it under Settings → Environments with yourself as a required reviewer; without it GitHub would create it unprotected and publish with no approval."
+            exit 1
+          fi
+          REVIEWER_RULES="$(printf '%s' "${ENVIRONMENT}" \
+            | jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')"
+          if [ "${REVIEWER_RULES}" -lt 1 ]; then
+            echo "::error::the 'release' environment has no required reviewers, so promote would publish without anyone approving it. Add a required reviewer under Settings → Environments → release."
+            exit 1
+          fi
+          echo "release environment requires reviewer approval (${REVIEWER_RULES} rule)"
+
+  # Runs for channel=stable, and for channel=candidate with promote=true once
+  # the draft is staged. `needs` is static, so `release` is listed for both
+  # channels: on stable it is skipped, which is why the condition is
+  # `!cancelled() && !failure()` rather than the implicit success(). The
+  # candidate branch additionally demands that `release` SUCCEEDED, so a
+  # candidate that failed or was skipped anywhere upstream never promotes.
   promote-verify:
     name: Verify the candidate before promoting
-    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
-    needs: version
+    if: >-
+      !cancelled() && !failure()
+      && github.event_name == 'workflow_dispatch'
+      && needs.version.result == 'success'
+      && needs.release-environment-guard.result == 'success'
+      && (inputs.channel == 'stable'
+          || (inputs.channel == 'candidate' && inputs.promote == true
+              && needs.release.result == 'success'))
+    needs: [version, release, release-environment-guard]
     runs-on: ubuntu-22.04
     permissions:
       # write, although this job only reads: GitHub hides draft releases from
@@ -748,10 +842,20 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: python3 scripts/release_checklist.py --version "${VERSION}"
 
+  # The human gate. The job does not start until a required reviewer of the
+  # `release` environment approves it; release-environment-guard (upstream,
+  # via promote-verify) has already proven that reviewer rule exists.
   promote:
     name: Promote the candidate to stable
-    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
+    if: >-
+      !cancelled() && !failure()
+      && github.event_name == 'workflow_dispatch'
+      && needs.version.result == 'success'
+      && needs.promote-verify.result == 'success'
+      && (inputs.channel == 'stable'
+          || (inputs.channel == 'candidate' && inputs.promote == true))
     needs: [version, promote-verify]
+    environment: release
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -790,7 +894,13 @@ jobs:
 
   post-publish:
     name: Verify the published release
-    if: github.event_name == 'workflow_dispatch' && inputs.channel == 'stable'
+    if: >-
+      !cancelled() && !failure()
+      && github.event_name == 'workflow_dispatch'
+      && needs.version.result == 'success'
+      && needs.promote.result == 'success'
+      && (inputs.channel == 'stable'
+          || (inputs.channel == 'candidate' && inputs.promote == true))
     needs: [version, promote]
     runs-on: ubuntu-22.04
     permissions:
@@ -878,6 +988,26 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: gh workflow run e2e.yml --ref "v${VERSION}"
 
+      # Opening the next patch on dev (VERSION bump, CHANGELOG rotation, stale
+      # draft cleanup) is its own workflow so it can be re-run on its own. A
+      # `release: published` trigger would never fire here: events caused by
+      # GITHUB_TOKEN start no workflows, except workflow_dispatch.
+      - name: Dispatch the post-release follow-up on dev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: gh workflow run release-followup.yml --ref dev -f version="${VERSION}"
+
+      - name: Announce the release
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 scripts/ci/notify_discord.py --level success \
+            --title "Circuit Breaker v${VERSION} is published" \
+            --body "Published tarball, checksums, selftest and install.sh discovery all verified. The follow-up PR opening the next patch is on its way to dev." \
+            --url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
+
   # A hand-pushed tag proves nothing and builds nothing. It is accepted only
   # when it names a release that promote already published.
   tag-verify:
@@ -896,6 +1026,6 @@ jobs:
             echo "${GITHUB_REF_NAME} is a published release; nothing to do"
             exit 0
           fi
-          echo "::error::${GITHUB_REF_NAME} was pushed by hand. Releases are made with 'make release-candidate' then 'make release-promote'; the promote creates the tag. Delete this tag: git push origin :refs/tags/${GITHUB_REF_NAME}"
+          echo "::error::${GITHUB_REF_NAME} was pushed by hand. Releases are made with 'make release-candidate' and approved on the 'release' environment (or 'make release-promote' for a staged draft); the promote creates the tag. Delete this tag: git push origin :refs/tags/${GITHUB_REF_NAME}"
           exit 1
 

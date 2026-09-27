@@ -1,0 +1,79 @@
+{
+  "comment": "A frozen snapshot of GitHub API responses for scripts/ci/branch_cleanup.py, trimmed to the fields it reads. `now` is the evaluation instant. `branches` and `pulls` are `gh api --paginate --slurp` output (a list of pages). `branch_details` is GET /repos/{r}/branches/{name}; `ahead_by` is the compare API's ahead_by for base...sha. `expected` is the decision per branch with a 14-day minimum age.",
+  "repo": "BlkLeg/CircuitBreaker",
+  "now": "2026-09-26T00:00:00Z",
+  "branches": [
+    [
+      {"name": "dev", "commit": {"sha": "d000000000000000000000000000000000000001"}},
+      {"name": "feat/open-pr", "commit": {"sha": "a000000000000000000000000000000000000002"}},
+      {"name": "feat/stack-base", "commit": {"sha": "a000000000000000000000000000000000000003"}},
+      {"name": "feat/unmerged-old", "commit": {"sha": "a000000000000000000000000000000000000004"}},
+      {"name": "fix/merged-into-dev-only", "commit": {"sha": "a000000000000000000000000000000000000005"}}
+    ],
+    [
+      {"name": "fix/merged-old", "commit": {"sha": "a000000000000000000000000000000000000006"}},
+      {"name": "fix/merged-young", "commit": {"sha": "a000000000000000000000000000000000000007"}},
+      {"name": "fix/just-under-fourteen-days", "commit": {"sha": "a000000000000000000000000000000000000008"}},
+      {"name": "fix/typo", "commit": {"sha": "a000000000000000000000000000000000000009"}},
+      {"name": "gh-pages", "commit": {"sha": "e000000000000000000000000000000000000010"}},
+      {"name": "main", "commit": {"sha": "f000000000000000000000000000000000000011"}}
+    ]
+  ],
+  "pulls": [
+    [
+      {
+        "number": 170,
+        "head": {"ref": "feat/open-pr", "repo": {"full_name": "BlkLeg/CircuitBreaker"}},
+        "base": {"ref": "dev"}
+      },
+      {
+        "number": 171,
+        "head": {"ref": "feat/stacked-on-top", "repo": {"full_name": "BlkLeg/CircuitBreaker"}},
+        "base": {"ref": "feat/stack-base"}
+      },
+      {
+        "number": 172,
+        "head": {"ref": "fix/typo", "repo": {"full_name": "someone-else/CircuitBreaker"}},
+        "base": {"ref": "dev"}
+      },
+      {
+        "number": 173,
+        "head": {"ref": "fix/merged-old", "repo": null},
+        "base": {"ref": "dev"}
+      }
+    ]
+  ],
+  "branch_details": {
+    "feat/open-pr": {"commit": {"sha": "a000000000000000000000000000000000000002", "commit": {"committer": {"date": "2026-08-01T00:00:00Z"}}}},
+    "feat/stack-base": {"commit": {"sha": "a000000000000000000000000000000000000003", "commit": {"committer": {"date": "2026-08-01T00:00:00Z"}}}},
+    "feat/unmerged-old": {"commit": {"sha": "a000000000000000000000000000000000000004", "commit": {"committer": {"date": "2026-08-20T10:00:00Z"}}}},
+    "fix/merged-into-dev-only": {"commit": {"sha": "a000000000000000000000000000000000000005", "commit": {"committer": {"date": "2026-09-01T00:00:00Z"}}}},
+    "fix/merged-old": {"commit": {"sha": "a000000000000000000000000000000000000006", "commit": {"committer": {"date": "2026-09-05T12:00:00Z"}}}},
+    "fix/merged-young": {"commit": {"sha": "a000000000000000000000000000000000000007", "commit": {"committer": {"date": "2026-09-21T00:00:00Z"}}}},
+    "fix/just-under-fourteen-days": {"commit": {"sha": "a000000000000000000000000000000000000008", "commit": {"committer": {"date": "2026-09-12T00:00:01Z"}}}},
+    "fix/typo": {"commit": {"sha": "a000000000000000000000000000000000000009", "commit": {"committer": {"date": "2026-09-10T00:00:00+00:00"}}}}
+  },
+  "ahead_by": {
+    "main...a000000000000000000000000000000000000004": 2,
+    "dev...a000000000000000000000000000000000000004": 1,
+    "main...a000000000000000000000000000000000000005": 3,
+    "dev...a000000000000000000000000000000000000005": 0,
+    "main...a000000000000000000000000000000000000006": 0,
+    "main...a000000000000000000000000000000000000007": 0,
+    "main...a000000000000000000000000000000000000008": 0,
+    "main...a000000000000000000000000000000000000009": 0
+  },
+  "expected": {
+    "dev": false,
+    "feat/open-pr": false,
+    "feat/stack-base": false,
+    "feat/unmerged-old": false,
+    "fix/merged-into-dev-only": true,
+    "fix/merged-old": true,
+    "fix/merged-young": false,
+    "fix/just-under-fourteen-days": false,
+    "fix/typo": true,
+    "gh-pages": false,
+    "main": false
+  }
+}
