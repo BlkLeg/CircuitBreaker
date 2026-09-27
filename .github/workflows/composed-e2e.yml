@@ -1,0 +1,175 @@
+name: Composed Agent E2E (suite)
+
+# The composed agent journey, defined once. It lived inline in e2e.yml; Tier 2
+# needs a second caller (docs/design/2026-09-27-tier2-composed-and-triage-design.md,
+# slice A1), and a 75-minute suite is not a thing to copy.
+#
+# Two inputs, and both exist because a called workflow cannot read the caller's
+# situation for itself:
+#
+#   ref — `schedule` fires only from the default branch's copy of a workflow
+#     file, and `main` trails the integration branch, so a nightly that checked
+#     out its own ref would test frozen code. e2e.yml redirected the scheduled
+#     run to `dev` with an inline expression; inside a called workflow
+#     `github.event_name` is the CALLER's event, so that expression cannot live
+#     here. The caller decides and passes a ref.
+#
+#   quarantined — defaults to TRUE, which is deliberate. QUAR-001 is a property
+#     of this suite, not of any caller, so the safe value has to be the default:
+#     a new caller that forgets the input inherits the quarantine rather than
+#     running a suite that is known red. Flipping the default to false is the
+#     one-line change that ends the quarantine, and
+#     tests/build/test_quarantine_notice.py fails if the register row goes away
+#     while the default still says true.
+#
+# The aggregate that branch protection could require stays in the CALLING
+# workflow, as it does in browser-e2e.yml: a called workflow's jobs report as
+# `<caller job> / <called job>`, so an aggregate here would be renamed by every
+# caller and stop being the stable name it exists to be.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Ref to check out. Empty means the ref that triggered the caller."
+        required: false
+        type: string
+        default: ""
+      quarantined:
+        description: "When true, skip the suite and report the register row instead."
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── The suite ───────────────────────────────────────────────────────────────
+  composed-journey:
+    name: Composed agent journey
+    if: ${{ !inputs.quarantined }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # httpx (all HTTP), websockets (presence and discovery streams) and
+      # cryptography (Ed25519 signing in the tampered-binary test) are all
+      # imported by the suite. A missing one fails deep into a test that has
+      # already built containers, so it reads as a product defect.
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-timeout httpx websockets cryptography
+
+      # `.env` is untracked but every compose call interpolates its
+      # ${VAR:?...} guards, so without it even `config` exits 1. conftest.py
+      # does the same for a local pytest; doing it here too covers this job's
+      # non-pytest steps and fails on a step that names itself. `config` is
+      # the smoke check that the materialised file satisfies every guard.
+      - name: Materialise the e2e env file
+        run: |
+          cd apps/agent/e2e
+          python ensure_env.py
+          docker compose -f docker-compose.yml config >/dev/null
+
+      # REL-20: seed and PYTHONHASHSEED are constants, not derived from the
+      # run id, so a green run can be used to characterise a red one. Both are
+      # recorded below, making a change to them visible.
+      - name: Record the run manifest
+        env:
+          CB_E2E_SEED: "20260826"
+        run: |
+          mkdir -p diagnostics
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "job=composed-journey"
+            echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
+            echo "python=$(python -V 2>&1)"
+            echo "PYTHONHASHSEED=0"
+            echo "CB_E2E_SEED=${CB_E2E_SEED}"
+            echo "docker=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unavailable)"
+            echo "compose=$(docker compose version 2>&1)"
+          } | tee diagnostics/run-manifest.txt
+
+      - name: Run the composed journey
+        shell: bash
+        env:
+          CB_E2E_SEED: "20260826"
+          PYTHONHASHSEED: "0"
+          # Each test tears its own stack down in a `finally`, so a later
+          # workflow step has nothing left to collect. `_dump_compose_logs`
+          # writes here from inside `_down()`, while containers still exist.
+          CB_E2E_DIAGNOSTICS_DIR: ${{ github.workspace }}/diagnostics
+        run: |
+          cd apps/agent/e2e
+          python -m pytest test_agent_e2e.py -v \
+            --junitxml=junit-agent-e2e.xml \
+            --timeout=3600 \
+            2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/composed-journey.log"
+
+      # Backstop only, for a run killed before any `_down()`. The logs that
+      # explain a failure come from CB_E2E_DIAGNOSTICS_DIR above.
+      - name: Collect surviving container diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker ps -a > diagnostics/containers.txt 2>&1 || true
+          docker version > diagnostics/docker-version.txt 2>&1 || true
+          for c in $(docker ps -aq); do
+            docker logs "$c" > "diagnostics/surviving-${c}.log" 2>&1 || true
+            docker inspect "$c" > "diagnostics/surviving-${c}.json" 2>&1 || true
+          done
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: composed-agent-e2e
+          path: |
+            apps/agent/e2e/junit-agent-e2e.xml
+            diagnostics/
+          retention-days: 30
+
+  # ── The quarantine, said out loud ───────────────────────────────────────────
+  # This job is why the `if: false` could be removed. It is cheap (a checkout
+  # and one Python call), and it fails when the register stops justifying the
+  # skip, so the quarantine cannot outlive its row unnoticed.
+  quarantine-notice:
+    name: Composed agent journey — quarantined
+    if: ${{ inputs.quarantined }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # The register's `check` column is a stable identifier, not a live check
+      # run name: after this extraction the real check run for this job
+      # renders as `<caller job> / composed-journey — quarantined`-shaped
+      # names that vary per caller, while the register still spells the
+      # pre-extraction name `Composed Agent E2E / composed-journey`. That is
+      # deliberate — the register is a governance ledger and this refactor is
+      # not the place to rewrite its row — so do not "fix" this string to
+      # match a current check run name.
+      #
+      # `shell: bash` matters here: a default `run:` on Linux is `bash -e`
+      # without `-o pipefail`, so `python3 ... | tee ...` would report the
+      # exit status of `tee`, not of the script, and a missing or expired
+      # register row would be silently swallowed — the job would report
+      # success for the exact silent pass this slice exists to remove.
+      - name: Report the register row that permits the skip
+        shell: bash
+        run: |
+          python3 scripts/ci/quarantine_notice.py \
+            --check "Composed Agent E2E / composed-journey" \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
