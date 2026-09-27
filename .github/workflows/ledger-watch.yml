@@ -90,12 +90,11 @@ jobs:
               gh issue edit "$existing" --title "$title" --body-file "$body"
               echo "Updated issue #$existing: $title"
             else
-              label_exists="$(gh label list --search "$LABEL" --limit 100 --json name \
-                --jq '[.[] | select(.name == env.LABEL)] | length')"
-              if [ "$label_exists" = "0" ]; then
-                gh label create "$LABEL" --color "B60205" \
-                  --description "Release-control ledger rows expiring or risks overdue for review"
-              fi
+              # --force creates the label or updates it in place. A list-then-
+              # create check does not work: `gh label list --search` prints
+              # nothing at all (not `[]`) when nothing matches.
+              gh label create "$LABEL" --force --color "B60205" \
+                --description "Release-control ledger rows expiring or risks overdue for review"
               issue_url="$(gh issue create --title "$title" --label "$LABEL" --body-file "$body")"
               python3 scripts/ci/notify_discord.py --level warning --mention \
                 --title "$title" --url "$issue_url" \
