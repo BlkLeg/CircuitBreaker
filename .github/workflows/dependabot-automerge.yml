@@ -59,7 +59,15 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           set -euo pipefail
-          gh label create major-update --force --color "D93F0B" \
+          # --repo is load-bearing: this job never checks out, and `gh label
+          # create` resolves the repository from the git remote, so without it
+          # the call dies with "fatal: not a git repository" and `set -e` takes
+          # the whole step down before the label, the edit or the comment
+          # happens. Every major Dependabot PR went unlabelled and uncommented
+          # while the step looked like it ran (runs 36326829559 and two
+          # siblings, 2026-09-27). The three calls below address the PR by its
+          # full URL, which resolves without a remote, so they need no --repo.
+          gh label create major-update --repo "${GITHUB_REPOSITORY}" --force --color "D93F0B" \
             --description "Dependabot major bump: needs a migration, never auto-merged"
           gh pr edit "$PR_URL" --add-label major-update
           if [ "$(gh pr view "$PR_URL" --json comments \

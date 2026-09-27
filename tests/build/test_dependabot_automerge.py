@@ -79,3 +79,32 @@ def test_untrusted_values_reach_the_shell_only_through_env() -> None:
 def test_permissions_are_granted_per_job_only() -> None:
     assert _workflow()["permissions"] == {}
     assert _job()["permissions"] == {"contents": "write", "pull-requests": "write"}
+
+
+def test_gh_calls_name_a_repository_when_the_job_does_not_check_out() -> None:
+    """Every `gh` call resolves a repository, since this job has no checkout.
+
+    `gh` infers the repository from the git remote. This job runs
+    `dependabot/fetch-metadata` and nothing else, so there is no checkout and no
+    remote: `gh label create` without `--repo` exits 1 with "fatal: not a git
+    repository", and `set -e` takes the whole step down before the label, the
+    `gh pr edit` or the comment happens. Runs 36326829559 and its two siblings
+    failed that way on 2026-09-27, so every major Dependabot PR sat unlabelled
+    and uncommented while the step looked as though it had run.
+
+    A call that names the pull request by full URL resolves without a remote,
+    which is why those need no `--repo`. Anything else must pass one.
+    """
+    job = _job()
+    if any("actions/checkout" in str(step.get("uses", "")) for step in job["steps"]):
+        return  # a checkout gives gh its remote back; the guard is moot
+    for step in job["steps"]:
+        run = str(step.get("run", ""))
+        starts = [match.start() for match in re.finditer(r"\bgh\s+[a-z]", run)]
+        for index, start in enumerate(starts):
+            end = starts[index + 1] if index + 1 < len(starts) else len(run)
+            call = run[start:end].strip()
+            assert "--repo" in call or "PR_URL" in call, (
+                f"{step.get('name')}: this gh call names no repository and the job "
+                f"does not check out, so it will die with 'not a git repository':\n{call}"
+            )
