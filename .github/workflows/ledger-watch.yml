@@ -58,6 +58,11 @@ jobs:
           cat "$RUNNER_TEMP/ledger-report.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Open, update or close the tracking issue
+        # Discord is told only when a new issue opens, not on every nightly
+        # rewrite of an existing one.
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
         run: |
           set -euo pipefail
           report_json="$RUNNER_TEMP/ledger-report.json"
@@ -91,7 +96,10 @@ jobs:
                 gh label create "$LABEL" --color "B60205" \
                   --description "Release-control ledger rows expiring or risks overdue for review"
               fi
-              gh issue create --title "$title" --label "$LABEL" --body-file "$body"
+              issue_url="$(gh issue create --title "$title" --label "$LABEL" --body-file "$body")"
+              python3 scripts/ci/notify_discord.py --level warning --mention \
+                --title "$title" --url "$issue_url" \
+                --body "Rows in specs/1.0.0/release-control expire soon; the build goes red on the day they do."
             fi
           elif [ -n "$existing" ]; then
             gh issue comment "$existing" --body "Nothing in the release-control ledgers expires within ${HORIZON_DAYS} days and no risk review is overdue. Closing. (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"

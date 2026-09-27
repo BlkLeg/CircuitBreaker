@@ -709,6 +709,24 @@ jobs:
           echo "draft v${VERSION} staged at ${GITHUB_SHA}"
           echo "with promote=true this run now waits for approval on the 'release' environment; otherwise promote later with: make release-promote"
 
+      - name: Tell the maintainer the draft is ready
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PROMOTE: ${{ inputs.promote }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "${PROMOTE}" = "true" ]; then
+            BODY="Every gate passed. Soak the draft if you want to, then approve the \`release\` environment on the run to publish."
+          else
+            BODY="Every gate passed. Staged only; publish later with \`make release-promote\`."
+          fi
+          python3 scripts/ci/notify_discord.py --level info --mention \
+            --title "v${VERSION} draft staged, waiting for you" \
+            --body "${BODY}" --url "${RUN_URL}" \
+            --field "Commit=${GITHUB_SHA:0:10}"
+
   # ── The approval must be real before anything waits on it ───────────────────
   # `promote` is gated by `environment: release`. If that environment does not
   # exist, GitHub creates it on the fly with NO protection rules and runs the
@@ -979,6 +997,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}
         run: gh workflow run release-followup.yml --ref dev -f version="${VERSION}"
+
+      - name: Announce the release
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 scripts/ci/notify_discord.py --level success \
+            --title "Circuit Breaker v${VERSION} is published" \
+            --body "Published tarball, checksums, selftest and install.sh discovery all verified. The follow-up PR opening the next patch is on its way to dev." \
+            --url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}"
 
   # A hand-pushed tag proves nothing and builds nothing. It is accepted only
   # when it names a release that promote already published.
