@@ -131,7 +131,6 @@ jobs:
       - name: Record the run manifest
         env:
           CB_E2E_SEED: "20260826"
-          PYTEST_ADDOPTS: "-k test_agent_uninstall_marks_server_revoked_and_removes_local_files"  # TEMP
         run: |
           mkdir -p diagnostics
           {
@@ -152,6 +151,7 @@ jobs:
         shell: bash
         env:
           CB_E2E_SEED: "20260826"
+          PYTEST_ADDOPTS: "-k test_agent_uninstall_marks_server_revoked_and_removes_local_files"  # TEMP
           PYTHONHASHSEED: "0"
           # Each test tears its own stack down in a `finally`, so a later
           # workflow step has nothing left to collect. `_dump_compose_logs`
