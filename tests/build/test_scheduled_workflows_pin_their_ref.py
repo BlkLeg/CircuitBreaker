@@ -114,7 +114,15 @@ def test_scheduled_workflows_pin_a_ref_or_declare_intent() -> None:
             uses = str(job.get("uses", ""))
             if not uses.startswith("./") and not uses.startswith("../"):
                 continue
-            called_path = (path.parent / uses).resolve()
+            # `uses:` for a local reusable workflow is always relative to the
+            # REPO ROOT, not to the calling file's directory — every caller in
+            # this repo writes it as `./.github/workflows/<file>.yml`. Joining
+            # onto `path.parent` (already `.../.github/workflows`) doubled that
+            # segment and always missed. Nothing caught it until now because
+            # this branch only runs for a workflow that is both `schedule`-
+            # triggered and has a job-level local `uses:`, and e2e.yml is the
+            # first workflow in the repo to be both.
+            called_path = (REPO_ROOT / uses).resolve()
             if not called_path.exists():
                 offenders.append(
                     f"{path.name} calls reusable workflow {uses!r} which does not exist"

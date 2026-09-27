@@ -322,8 +322,8 @@ lint: ## Run backend and frontend linters (fast subset for pre-commit; see comme
 # branch_cleanup.py and post_release_bump.py run unattended in workflows
 # (see the cb-automation skill). All are stdlib-only and outside
 # src/app, so they need naming here too or they lint on nobody's path.
-	$(CURDIR)/.venv/bin/ruff check scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/post_release_bump.py
-	$(CURDIR)/.venv/bin/mypy scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/post_release_bump.py
+	$(CURDIR)/.venv/bin/ruff check scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/ci/quarantine_notice.py scripts/post_release_bump.py
+	$(CURDIR)/.venv/bin/mypy scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/ci/quarantine_notice.py scripts/post_release_bump.py
 	cd $(FRONTEND_DIR) && npm run lint
 
 format: ## Format backend and frontend code
