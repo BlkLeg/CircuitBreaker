@@ -6,6 +6,10 @@ on:
     branches: [main, dev]
   pull_request:
     branches: [main, dev]
+  # Dispatched by scripts/ci/dispatch_required_checks.sh when a commit lands on a
+  # PR branch via GITHUB_TOKEN (which triggers no push/pull_request runs), so
+  # the required checks this workflow produces still attach to the head SHA.
+  workflow_dispatch:
   schedule:
     - cron: '0 4 * * 1'  # Weekly Monday 04:00 UTC
 

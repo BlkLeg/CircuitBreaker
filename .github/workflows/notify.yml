@@ -1,0 +1,72 @@
+name: Discord notify
+
+# The maintainer's pager. Every watched workflow that finishes is judged by
+# scripts/ci/workflow_alert.py: a failure on main/dev (or of a scheduled or
+# dispatched run) posts to Discord and pings, a green run after a red one posts
+# a recovery, anything else stays quiet. Pull-request runs never notify.
+#
+# `workflow_run` only fires from the copy of this file on the default branch,
+# and runs in the base repository's context whatever triggered the watched
+# run. This job therefore checks out the default branch and never the watched
+# run's head: the event payload is data, and the only code executed is ours.
+#
+# Needs repository secrets DISCORD_WEBHOOK_URL and (optional)
+# DISCORD_MENTION_USER_ID. Without the webhook every run is a logged no-op.
+on:
+  workflow_run:
+    # Names, not files: `workflow_run` matches on `name:`.
+    # tests/build/test_discord_notify.py fails when one of these stops
+    # matching a workflow, which is how a rename would otherwise silence it.
+    workflows:
+      - CI
+      - Dev CI
+      - Release
+      - Release follow-up
+      - Security Scan
+      - CodeQL
+      - Docs
+      - Deploy Pages
+      - Installer Journey
+      - Composed Agent E2E
+      - Ledger watch
+      - Branch cleanup
+      - Dependabot lockfile sync
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  notify:
+    name: Notify on state change
+    # Saves a runner per PR run; workflow_alert.py ignores them anyway.
+    if: github.event.workflow_run.event != 'pull_request'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Find the previous run's conclusion on this branch
+        id: previous
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          conclusion="$(gh api -X GET "repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_ID}/runs" \
+            -f branch="${HEAD_BRANCH}" -f status=completed -F per_page=5 \
+            --jq "[.workflow_runs[] | select(.id != ${RUN_ID})][0].conclusion // \"\"")"
+          echo "conclusion=${conclusion}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide and send
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
+          PREVIOUS: ${{ steps.previous.outputs.conclusion }}
+        run: python3 scripts/ci/workflow_alert.py --previous-conclusion "${PREVIOUS}"
