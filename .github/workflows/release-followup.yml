@@ -1,0 +1,182 @@
+name: Release follow-up
+
+# Opens the next patch on dev after a stable release is published:
+#
+#   1. VERSION moves to the next patch and every manifest/doc that copies it is
+#      resynced (scripts/check_version_parity.py --write, i.e. make version-sync);
+#   2. CHANGELOG.md's "## [<released>] — unreleased" heading takes the release
+#      date, and "## [<next>] — unreleased" opens above it;
+#   3. stale DRAFT releases at or below the released version are deleted
+#      (never a published release, never a draft for a later version);
+#   4. the result lands on chore/post-release-v<version> with a PR into dev,
+#      and the workflows behind the required checks are dispatched on it.
+#
+# Dispatched by release.yml's post-publish job. `release: published` cannot be
+# the trigger: the release is published with GITHUB_TOKEN, and events caused
+# by GITHUB_TOKEN start no workflow except workflow_dispatch. For the same
+# reason the push and the PR below start no CI on their own, which is why step
+# 4 dispatches the required checks explicitly.
+#
+# Re-running for the same version is safe: the script is a no-op on a tree it
+# already opened, an existing branch is updated rather than recreated, and an
+# existing PR is reused.
+on:
+  workflow_dispatch:
+    # checkov:skip=CKV_GHA_7: release.yml's post-publish names the version it just published; the job validates it before use.
+    inputs:
+      version:
+        description: "The version just published (X.Y.Z, no leading v)."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-followup-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  open-next:
+    name: Open the next patch on dev
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write        # push the follow-up branch, delete stale drafts
+      pull-requests: write   # open the PR into dev
+      actions: write         # dispatch the required checks on the branch
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASED: ${{ inputs.version }}
+    steps:
+      # The input names a git branch and reaches `gh` and `git` below, so it is
+      # held to a plain X.Y.Z before anything uses it.
+      - name: Validate the version
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${RELEASED}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version '${RELEASED}' is not X.Y.Z. A prerelease has no mechanical next patch; open the next version on dev by hand."
+            exit 1
+          fi
+          echo "BRANCH=chore/post-release-v${RELEASED}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Read the published release date
+        run: |
+          set -euo pipefail
+          IS_DRAFT="$(gh release view "v${RELEASED}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft)"
+          if [ "${IS_DRAFT}" != "false" ]; then
+            echo "::error::v${RELEASED} is not a published release; nothing to follow up"
+            exit 1
+          fi
+          PUBLISHED_AT="$(gh release view "v${RELEASED}" --repo "${GITHUB_REPOSITORY}" --json publishedAt --jq .publishedAt)"
+          echo "v${RELEASED} published at ${PUBLISHED_AT}"
+          echo "PUBLISHED_AT=${PUBLISHED_AT}" >> "$GITHUB_ENV"
+
+      # Never touches a published release, nor a draft for a later version:
+      # the script lists only drafts at or below RELEASED, and each id is
+      # re-read and required to still be a draft immediately before deletion.
+      # Deleted by id rather than by tag, because a draft and a published
+      # release can share a tag name and `gh release delete <tag>` resolves
+      # the tag to whichever GitHub returns.
+      - name: Delete stale draft releases
+        run: |
+          set -euo pipefail
+          STALE="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | {id, tag_name, draft} | @json' \
+            | python3 scripts/post_release_bump.py stale-drafts --released "${RELEASED}")"
+          if [ -z "${STALE}" ]; then
+            echo "no stale drafts"
+            exit 0
+          fi
+          for ID in ${STALE}; do
+            SUMMARY="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${ID}" --jq '"\(.draft) \(.tag_name)"')"
+            case "${SUMMARY}" in
+              "true "*)
+                echo "deleting draft ${ID} (${SUMMARY#true })"
+                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${ID}"
+                ;;
+              *)
+                echo "::warning::release ${ID} is no longer a draft (${SUMMARY}); left alone"
+                ;;
+            esac
+          done
+
+      # If dev is already open (an earlier run merged, or someone bumped by
+      # hand), there is nothing to propose and the job ends here.
+      - name: Check whether dev is already open
+        id: dev
+        run: |
+          set -euo pipefail
+          python3 scripts/post_release_bump.py open-next \
+            --released "${RELEASED}" --published-at "${PUBLISHED_AT}" > /dev/null
+          python3 scripts/check_version_parity.py --write
+          if git diff --quiet; then
+            echo "dev already opens the version after v${RELEASED}; nothing to propose"
+            echo "open=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "open=false" >> "$GITHUB_OUTPUT"
+          fi
+          git reset --hard --quiet HEAD
+
+      - name: Bump VERSION, rotate CHANGELOG.md and resync every copy
+        if: steps.dev.outputs.open == 'false'
+        run: |
+          set -euo pipefail
+          # An earlier run's branch is continued rather than recreated, so a
+          # re-run never force-pushes over anything added to it since.
+          if git ls-remote --exit-code --heads origin "${BRANCH}" > /dev/null; then
+            git fetch --quiet origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+            git checkout -B "${BRANCH}" "origin/${BRANCH}"
+          else
+            git checkout -B "${BRANCH}" origin/dev
+          fi
+          NEXT="$(python3 scripts/post_release_bump.py open-next \
+            --released "${RELEASED}" --published-at "${PUBLISHED_AT}")"
+          python3 scripts/check_version_parity.py --write
+          echo "NEXT=${NEXT}" >> "$GITHUB_ENV"
+          git status --short
+
+      - name: Commit and push the follow-up branch
+        if: steps.dev.outputs.open == 'false'
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "${BRANCH} already carries the follow-up"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --all --quiet \
+              -m "chore(release): open v${NEXT} after v${RELEASED}" \
+              -m "Dates the v${RELEASED} CHANGELOG entry and opens [${NEXT}] above it."
+          fi
+          git push origin "HEAD:refs/heads/${BRANCH}"
+
+      - name: Open or reuse the PR into dev
+        if: steps.dev.outputs.open == 'false'
+        run: |
+          set -euo pipefail
+          EXISTING="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${BRANCH}" --base dev \
+            --state open --json url --jq '.[0].url // empty')"
+          if [ -n "${EXISTING}" ]; then
+            echo "PR already open: ${EXISTING}"
+            exit 0
+          fi
+          gh pr create --repo "${GITHUB_REPOSITORY}" \
+            --base dev \
+            --head "${BRANCH}" \
+            --title "chore(release): open v${NEXT} after v${RELEASED}" \
+            --body "Opened by release-followup.yml after v${RELEASED} was published: VERSION -> ${NEXT} (resynced with scripts/check_version_parity.py --write), the [${RELEASED}] CHANGELOG entry dated, and [${NEXT}] opened above it. Stale draft releases at or below v${RELEASED} were deleted."
+
+      # A push and a PR made with GITHUB_TOKEN start no workflows, so the
+      # required checks would never report on this PR without this.
+      - name: Dispatch the required checks on the follow-up branch
+        if: steps.dev.outputs.open == 'false'
+        run: bash scripts/ci/dispatch_required_checks.sh "${BRANCH}"
