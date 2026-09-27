@@ -68,11 +68,11 @@ Never lower the coverage gate to make a build green.
 
 `make verify` and `make verify-full` run unit suites, lint, and the security
 gate. **Neither runs a browser, the agent, the installer, or the packaged
-binary itself.** Six whole suites sit outside them:
+binary itself.** Five whole suites sit outside them:
 
 | Suite | Covers | How to run it |
 |---|---|---|
-| Tier 2 (composed) | browser E2E + composed agent journey, as CI runs them | `make verify-composed` (nightly: `tier2.yml`) |
+| Tier 2 (composed) | the next two rows together, as CI runs them (not a separate suite) | `make verify-composed` (nightly: `tier2.yml`) |
 | Browser E2E (Playwright) | the real frontend in a real browser | `cd apps/frontend && npx playwright test` |
 | Composed Agent E2E | the agent against the mono image | `make e2e-local` |
 | Installer journey | `install.sh` end to end on a real host | `bash install.sh --local-bundle <tarball> --unattended --no-tls` |
