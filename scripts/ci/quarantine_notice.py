@@ -25,7 +25,13 @@ import argparse
 import csv
 import sys
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime
+
+# `timezone.utc`, not the `datetime.UTC` alias: `UTC` only exists from Python
+# 3.11 onward, and quarantine-notice's job in composed-e2e.yml has no
+# actions/setup-python step, so it runs on ubuntu-22.04's system `python3`,
+# which is 3.10. `timezone.utc` has been available since 3.2 and satisfies
+# ruff's DTZ011 the same way `UTC` does — do not "modernise" this back.
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -107,7 +113,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--register", default=str(REGISTER))
     parser.add_argument(
         "--today",
-        default=datetime.now(UTC).date().isoformat(),
+        default=datetime.now(timezone.utc).date().isoformat(),
         help="ISO date the expiry is measured against; defaults to today (UTC)",
     )
     args = parser.parse_args(argv)
