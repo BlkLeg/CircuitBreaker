@@ -60,17 +60,24 @@ jobs:
       contents: read
     outputs:
       fingerprint: ${{ steps.fingerprint.outputs.fingerprint }}
+      # The commit the fingerprint describes. `inputs.ref` can be a moving
+      # branch (the nightly passes `dev`), so the journey checks out this SHA
+      # rather than the ref: otherwise a push between the two checkouts would
+      # record tree B's result under tree A's fingerprint.
+      sha: ${{ steps.fingerprint.outputs.sha }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      # An assignment on its own line: `echo "x=$(cmd)"` would swallow a failing cmd.
+      # Assignments on their own lines: `echo "x=$(cmd)"` would swallow a failing cmd.
       - id: fingerprint
         shell: bash
         run: |
           fp="$(python3 scripts/ci/composed_rerun_guard.py fingerprint)"
+          sha="$(git rev-parse HEAD)"
           echo "fingerprint=${fp}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
       - name: Refuse to repeat an unaddressed failure
         shell: bash
         env:
@@ -87,9 +94,11 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 75
     steps:
+      # The guard's SHA, not `inputs.ref`: the tree tested must be the tree
+      # fingerprinted (see rerun-guard's `sha` output).
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.rerun-guard.outputs.sha }}
           persist-credentials: false
 
       - uses: actions/setup-python@v6
@@ -205,13 +214,14 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
-      # Pinned to the same `ref` the caller passed in, for the same reason
-      # `composed-journey` above pins it: on `schedule`, this file is loaded
-      # from the default branch, but the caller redirects a scheduled run to
-      # `dev`. Without `ref:` here, a nightly would read `main`'s copy of the
-      # register and this script while speaking for a suite run against
-      # `dev` — announcing `main`'s stale quarantine (or silence) for a
-      # suite that may no longer be quarantined on the branch under test.
+      # Pinned to the `ref` the caller passed in, for the same reason
+      # `composed-journey` above pins one (the guard's SHA of it): on
+      # `schedule`, this file is loaded from the default branch, but the
+      # caller redirects a scheduled run to `dev`. Without `ref:` here, a
+      # nightly would read `main`'s copy of the register and this script
+      # while speaking for a suite run against `dev` — announcing `main`'s
+      # stale quarantine (or silence) for a suite that may no longer be
+      # quarantined on the branch under test.
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref }}

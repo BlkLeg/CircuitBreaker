@@ -312,3 +312,20 @@ def test_the_guard_has_no_force_switch():
     """Maintainer decision 2026-09-27: no override input."""
     triggers = _composed().get("on", _composed().get(True))
     assert set(triggers["workflow_call"]["inputs"]) == {"ref", "quarantined"}
+
+
+def test_the_journey_tests_exactly_the_tree_the_guard_fingerprinted():
+    """`ref` can be a moving branch (the nightly passes `dev`). Two separate
+    checkouts of it could land on two commits, recording tree B's result under
+    tree A's fingerprint — failing open. The guard publishes the SHA it
+    fingerprinted, and the journey checks out that SHA."""
+    jobs = _composed()["jobs"]
+    guard = jobs["rerun-guard"]
+    assert guard["outputs"]["sha"] == "${{ steps.fingerprint.outputs.sha }}"
+    fp_run = next(s for s in guard["steps"] if s.get("id") == "fingerprint")["run"]
+    assert re.search(r'^\s*sha="\$\(git rev-parse HEAD\)"\s*$', fp_run, re.M), fp_run
+    assert 'echo "sha=${sha}" >> "$GITHUB_OUTPUT"' in fp_run
+    checkouts = [
+        s for s in jobs["composed-journey"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout")
+    ]
+    assert [s["with"]["ref"] for s in checkouts] == ["${{ needs.rerun-guard.outputs.sha }}"]
