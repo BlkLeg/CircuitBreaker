@@ -15,6 +15,8 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
+## [0.4.5] — unreleased
+
 ## [0.4.4] — 2026-09-27
 
 Replaces the PyInstaller onefile that 0.4.3 still shipped with a hermetic
