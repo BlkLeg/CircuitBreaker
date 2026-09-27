@@ -136,6 +136,14 @@ The Fernet vault key auto-rotates via an APScheduler daily job (04:30):
 
 When modifying vault-related code, ensure the rotation path remains functional and tested.
 
+**Anything newly stored with `vault.encrypt` must be added to `rotate_vault_key`.**
+A location the rotation skips survives as ciphertext the new key cannot read.
+The agent server keys were skipped, and the first rotation broke every agent
+handshake (issue #168). `tests/services/test_vault_rotation_coverage.py` fails
+when a module that encrypts with the vault is missing from its
+`ROTATED_BY_MODULE` map; add the location to the rotation *and* seed it in that
+test, never just silence the map.
+
 ## 11. Mandatory Secrets
 
 `docker-compose.yml` must fail-fast on missing secrets:
