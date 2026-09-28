@@ -1,7 +1,7 @@
 # Split CI/CD: verification on Forgejo, publication on GitHub
 
 **Date:** 2026-09-28
-**Status:** Proposed — nothing here has been implemented.
+**Status:** Superseded 2026-09-28 by [the GitLab cutover](./2026-09-28-gitlab-cutover.md).
 **Forgejo:** `https://forgejo.blkleg.app/Shawnji/CircuitBreaker.git` (runner and Docker already installed)
 **GitHub:** `https://github.com/BlkLeg/circuitbreaker`
 

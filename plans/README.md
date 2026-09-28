@@ -17,11 +17,17 @@ carries a status column.
 - **Superseded** — a later plan replaced it.
 - **Reference** — never a work item; a review, an index, or a deferred-item list.
 
+## CI/CD cutover to GitLab (2026-09-28)
+
+| Plan | Date | Status |
+|---|---|---|
+| [Clean cutover: GitLab is the source and the test gate, GitHub only publishes](./2026-09-28-gitlab-cutover.md) | 2026-09-28 | **Active** — proposed; no task started. GitLab (`gitlab.blkleg.app`) becomes the source of truth and runs every verification job on self-hosted runners; a promote job fast-forwards GitHub and posts `gitlab/verify`, which `release.yml` and `publish-dev.yml` require. One parity comparison, then a single cutover day with a rollback. |
+
 ## CI/CD split — Forgejo verifies, GitHub publishes (2026-09-28)
 
 | Plan | Date | Status |
 |---|---|---|
-| [Split CI/CD across Forgejo and GitHub](./2026-09-28-split-ci-forgejo-github.md) | 2026-09-28 | **Active** — proposed; no task started. Moves every verification workflow to the self-hosted Forgejo runner, gates GitHub `dev`/`main` behind a Forgejo promote job and a `forgejo/verify` commit status, and keeps Release, GHCR, cosign, Pages and CodeQL on GitHub. Four open questions at the end of the plan block Task 4 and Task 7. |
+| [Split CI/CD across Forgejo and GitHub](./2026-09-28-split-ci-forgejo-github.md) | 2026-09-28 | **Superseded** — by [the GitLab cutover](./2026-09-28-gitlab-cutover.md). The Forgejo runner spike (Task 1) ran green and its Docker-executor findings carry over; the Forgejo path was abandoned before any Forgejo workflow merged. |
 
 ## Installer revamp and release verification (2026-09-20)
 
