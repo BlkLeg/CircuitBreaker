@@ -31,9 +31,18 @@ CB_IMAGE="$1"
 # and a bind failure here would read as a container fault.
 CB_SMOKE_PORT="${CB_SMOKE_PORT:-18080}"
 CB_SMOKE_PORT_HTTPS="${CB_SMOKE_PORT_HTTPS:-18443}"
-# RUNNER_TEMP is a GitHub Actions runner path; the fallback keeps this script
-# runnable outside that environment too.
-CB_SMOKE_DATA_DIR="${RUNNER_TEMP:-$CB_REPO_ROOT/.smoke-tmp}/cb-smoke-data"
+# RUNNER_TEMP is a GitHub Actions runner path: a fresh directory the runner
+# itself owns for exactly this job, so CI uses it as-is. Without it (a local
+# `make verify-composed-mono` run) a fixed `.smoke-tmp/cb-smoke-data` path
+# could survive a failed `sudo -n` teardown below and boot the next run on
+# stale data, so a local run gets its own directory every time instead.
+if [[ -n "${RUNNER_TEMP:-}" ]]; then
+  CB_SMOKE_RUN_DIR="${RUNNER_TEMP}"
+else
+  mkdir -p "$CB_REPO_ROOT/.smoke-tmp"
+  CB_SMOKE_RUN_DIR="$(mktemp -d "$CB_REPO_ROOT/.smoke-tmp/run.XXXXXX")"
+fi
+CB_SMOKE_DATA_DIR="${CB_SMOKE_RUN_DIR}/cb-smoke-data"
 # Retry-loop backoff, seconds. Overridable so a test harness without a real
 # container can drive the wait loops without paying five seconds per attempt;
 # CI keeps today's cadence because the default is unchanged.

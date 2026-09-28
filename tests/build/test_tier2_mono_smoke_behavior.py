@@ -252,6 +252,40 @@ def test_refuses_to_start_when_a_container_already_exists(tmp_path):
     assert "down -v" not in calls, "the script must not tear down a stack it never started"
 
 
+def test_a_local_run_gets_a_fresh_data_dir_even_after_a_failed_teardown(tmp_path):
+    """Minor fix: without RUNNER_TEMP (a local `make verify-composed-mono` run),
+    a fixed `.smoke-tmp/cb-smoke-data` path would survive a failed `sudo -n`
+    teardown (the stub sudo below simulates that) and the next run would boot
+    on stale data. Each run must get its own directory instead."""
+    sandbox_root = _sandbox_repo(tmp_path)
+    env, _ = _stub_path_env(tmp_path)
+    env.pop("RUNNER_TEMP", None)
+    bin_dir = tmp_path / "stubbin"
+
+    # First run: sudo fails outright, so teardown cannot remove the data dir
+    # it created — the stale-data scenario this guards against.
+    _write_stub(bin_dir, "sudo", "#!/usr/bin/env bash\nexit 1\n")
+    _run(sandbox_root, env)
+
+    smoke_tmp = sandbox_root / ".smoke-tmp"
+    first_dirs = sorted(p for p in smoke_tmp.iterdir() if p.is_dir())
+    assert first_dirs, "no per-run directory was created under .smoke-tmp"
+    stale_marker = first_dirs[0] / "cb-smoke-data" / "stale-marker"
+    assert stale_marker.parent.is_dir(), "the first run never created its data dir"
+    stale_marker.write_text("leftover from a failed teardown\n", encoding="utf-8")
+
+    # Second run: same sandbox, still no RUNNER_TEMP, sudo works this time.
+    _write_stub(bin_dir, "sudo", SUDO_STUB)
+    _run(sandbox_root, env)
+
+    second_dirs = sorted(p for p in smoke_tmp.iterdir() if p.is_dir())
+    new_dirs = [p for p in second_dirs if p not in first_dirs]
+    assert new_dirs, "the second run reused the first run's directory rather than making a fresh one"
+    assert not (new_dirs[0] / "cb-smoke-data" / "stale-marker").exists(), (
+        "the second run's data dir carried over the first run's stale marker"
+    )
+
+
 def test_refuses_to_start_when_docker_ps_itself_fails(tmp_path):
     """Item 1 (fix round 2): if the Docker engine can't even be asked
     whether a circuitbreaker container exists (e.g. the daemon is
