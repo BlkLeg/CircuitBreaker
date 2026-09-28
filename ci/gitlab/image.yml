@@ -1,0 +1,14 @@
+# Builds the job image on the runner host's daemon, once per Dockerfile digest.
+# The job itself runs in docker:cli with the host socket (config.toml mounts it),
+# so the image lands where every later job's `pull_policy: if-not-present` finds it.
+ci-image:
+  stage: .pre
+  tags: [docker]
+  image: docker:28-cli
+  script:
+    - |
+      if docker image inspect "$CB_CI_IMAGE" >/dev/null 2>&1; then
+        echo "$CB_CI_IMAGE already present"
+      else
+        docker build -f ci/images/ci.Dockerfile -t "$CB_CI_IMAGE" ci/images
+      fi

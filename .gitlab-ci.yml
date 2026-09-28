@@ -1,0 +1,33 @@
+# Circuit Breaker CI (plans/2026-09-28-gitlab-cutover.md). GitLab is the source
+# and this pipeline is the gate; GitHub only publishes. promote.yml is the one
+# job that writes to GitHub, and only after every earlier stage succeeded.
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+
+stages: [lint, test, security, package, promote]
+
+variables:
+  CB_CI_IMAGE: "cb-ci:2e34e7d6fe38"
+  PYTHONHASHSEED: "0"
+  CB_TEST_SEED: "20260826"
+  GIT_DEPTH: "50"
+
+.cb-docker:
+  tags: [docker]
+  image:
+    name: $CB_CI_IMAGE
+    pull_policy: if-not-present
+
+include:
+  - local: ci/gitlab/image.yml
+  - template: Jobs/SAST.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
