@@ -28,6 +28,7 @@ on:
       - Deploy Pages
       - Installer Journey
       - Composed Agent E2E
+      - Tier 2 (composed)
       - Ledger watch
       - Branch cleanup
       - Dependabot lockfile sync

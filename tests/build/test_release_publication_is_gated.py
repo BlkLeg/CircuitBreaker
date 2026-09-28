@@ -28,8 +28,11 @@ against a published release.
 
 from __future__ import annotations
 
+import importlib.util
 import re
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import yaml
 
@@ -39,6 +42,20 @@ RELEASE_WORKFLOW = WORKFLOW_DIR / "release.yml"
 SMOKE_WORKFLOW = WORKFLOW_DIR / "artifact-smoke.yml"
 INSTALL_SH = REPO_ROOT / "install.sh"
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_native_release.py"
+INSTALLER_ASSETS = REPO_ROOT / "scripts" / "ci" / "installer_assets.py"
+
+
+def _load_installer_assets() -> ModuleType:
+    """Import scripts/ci/installer_assets.py by path; scripts/ci is not a package."""
+    spec = importlib.util.spec_from_file_location("cb_installer_assets", INSTALLER_ASSETS)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+installer_assets = _load_installer_assets()
 
 # The job release.yml uses to run the installed-artifact contract.
 SMOKE_JOB = "artifact-smoke"
@@ -133,22 +150,17 @@ def test_the_artifact_gate_uninstalls_what_it_installed() -> None:
 def _installer_tarball_template() -> str:
     """The asset name install.sh CONSTRUCTS, not the one it is handed.
 
-    There are two `tarball_name=` assignments. One is a function parameter
-    (`local tarball_name="$2"`); the only one that describes a release asset is
-    the one built from the version and the architecture, so the pattern
-    requires both to appear in it.
+    Read through scripts/ci/installer_assets.py, the same code the release dry
+    run's staged-publication step runs, so the test and the workflow cannot
+    disagree about which `tarball_name=` assignment names the asset.
     """
-    matches = [
-        value
-        for value in re.findall(r'tarball_name="([^"]+)"', INSTALL_SH.read_text(encoding="utf-8"))
-        if "${CB_VERSION}" in value and "${ARCH}" in value
-    ]
-    assert len(matches) == 1, (
-        "expected exactly one place where install.sh builds a release asset name "
-        f"from the version and architecture; found {matches}. If the download "
-        "moved, update this test rather than removing it."
-    )
-    return matches[0]
+    try:
+        return installer_assets.tarball_template(INSTALL_SH.read_text(encoding="utf-8"))
+    except installer_assets.InstallerTemplateError as exc:
+        raise AssertionError(
+            f"{exc}. If the download moved, update scripts/ci/installer_assets.py "
+            "rather than removing this test."
+        ) from exc
 
 
 def _build_archive_template() -> str:

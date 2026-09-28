@@ -122,3 +122,67 @@ def test_importing_the_test_client_survives_the_root_config():
         import starlette.testclient
 
         importlib.reload(starlette.testclient)
+
+
+_UNRAISABLE_ERROR = "error::pytest.PytestUnraisableExceptionWarning"
+
+_LEAKED_COROUTINE_TEST = """
+import gc
+from unittest.mock import AsyncMock
+
+
+def test_leaks_a_coroutine():
+    AsyncMock()()  # created, never awaited
+    gc.collect()
+"""
+
+
+def test_backend_config_fails_a_test_that_leaks_an_unawaited_coroutine():
+    """REL-08: an un-awaited coroutine is a defect, so it must fail a test.
+
+    CPython reports a coroutine that is garbage-collected un-awaited as an
+    unraisable RuntimeWarning, which pytest re-raises as
+    PytestUnraisableExceptionWarning. `error::RuntimeWarning` never sees that
+    category, so without the explicit entry a leaked coroutine is a printed
+    warning on a green test. This runs a real pytest under the backend's own
+    filter list and requires the leak to fail, so dropping the entry — or
+    pytest renaming the category so the entry stops matching — fails here.
+    """
+    import subprocess
+    import sys
+    import tempfile
+
+    filters = _backend_filters()
+    assert _UNRAISABLE_ERROR in filters, (
+        f"apps/backend/pyproject.toml filterwarnings lost {_UNRAISABLE_ERROR!r}; "
+        "an un-awaited coroutine would pass the backend suite as a warning"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        ini_lines = "\n".join(f"    {entry}" for entry in filters)
+        (root / "pytest.ini").write_text(
+            f"[pytest]\nfilterwarnings =\n{ini_lines}\n", encoding="utf-8"
+        )
+        (root / "test_leak.py").write_text(_LEAKED_COROUTINE_TEST, encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                "test_leak.py",
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, (
+        "a test that leaks an un-awaited coroutine passed under the backend's "
+        f"filterwarnings (exit {result.returncode}):\n{output}"
+    )
+    assert "PytestUnraisableExceptionWarning" in output, output
