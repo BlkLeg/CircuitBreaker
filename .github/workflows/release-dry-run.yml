@@ -173,7 +173,13 @@ jobs:
       - name: Upload the image's provenance
         uses: actions/upload-artifact@v7
         with:
-          name: dry-run-image-build-info-${{ matrix.arch }}
+          # dry-run-provenance-*, not dry-run-image-build-info-*: the OCI
+          # archives own the dry-run-image- prefix, so image-merge can select
+          # them with a plain `dry-run-image-*`. When the two families shared
+          # it, the download needed a narrower glob, and `dry-run-image-a?d64`
+          # matched amd64 only. tests/build/test_release_artifact_patterns.py
+          # holds every pattern here to the names this run uploads.
+          name: dry-run-provenance-${{ matrix.arch }}
           path: /tmp/image-info/build-info.json
           if-no-files-found: error
           retention-days: 1
@@ -202,9 +208,11 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           path: /tmp/images
-          # Exact per-arch OCI names — not dry-run-image-*, which also matches
-          # dry-run-image-build-info-* (D7 provenance uploads from the image job).
-          pattern: dry-run-image-a?d64
+          # Only the per-arch OCI archives carry the dry-run-image- prefix; the
+          # provenance uploads are dry-run-provenance-* and this job's own
+          # diagnostics are dry-run-merge-diagnostics, so nothing else lands in
+          # /tmp/images.
+          pattern: dry-run-image-*
           merge-multiple: true
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -387,7 +395,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: dry-run-image-diagnostics
+          name: dry-run-merge-diagnostics
           path: diagnostics/
           if-no-files-found: warn
           retention-days: 7
@@ -418,7 +426,7 @@ jobs:
       - name: Download image provenance
         uses: actions/download-artifact@v5
         with:
-          pattern: dry-run-image-build-info-*
+          pattern: dry-run-provenance-*
           merge-multiple: false
           path: image-info/
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -510,7 +518,7 @@ jobs:
               -C "unpacked-${arch}" share/build-info.json
             python3 scripts/ci/assert_runtime_parity.py \
               "unpacked-${arch}/share/build-info.json" \
-              "image-info/dry-run-image-build-info-${arch}/build-info.json"
+              "image-info/dry-run-provenance-${arch}/build-info.json"
           done
 
       - name: Upload the staged asset listing
