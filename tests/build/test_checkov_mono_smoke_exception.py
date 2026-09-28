@@ -15,7 +15,11 @@ guard is added with the pairing. This is that guard. It fails when:
       same single file and the same single check;
   (b) mono-smoke.yml gains a `permissions:` block anywhere — the suppression's
       justification is then false, and the suppression must be removed;
-  (c) the skip reaches any other workflow file.
+  (c) the skip reaches any other workflow file;
+  (d) any caller other than dev-ci.yml:build-docker grants `packages: write` or
+      passes `publish: true` to mono-smoke.yml — CHECKOV-001's reason rests on
+      "only dev-ci.yml's caller grants packages: write / publish: true", and
+      until this test existed nothing checked that claim stayed true.
 """
 
 from __future__ import annotations
@@ -166,3 +170,93 @@ def test_no_workflow_carries_an_inline_skip_for_the_check():
         if re.search(rf"checkov:skip={EXCEPTED_CHECK}\b", p.read_text(encoding="utf-8"))
     ]
     assert not offenders, offenders
+
+
+# ── "only dev-ci.yml publishes" is the reason CHECKOV-001 gives; enforce it ──
+#
+# mono-smoke.yml declares no `permissions:` (see
+# test_mono_smoke_still_declares_no_permissions_anywhere above), so its jobs
+# push or don't push depending only on what the calling job grants and passes.
+# CHECKOV-001's `reason` states that only dev-ci.yml's `build-docker` caller
+# grants `packages: write` and turns on `publish: true`. Nothing checked that
+# claim stayed true; this does.
+MONO_SMOKE_USES = "./.github/workflows/mono-smoke.yml"
+EXPECTED_PUBLISHER = "dev-ci.yml:build-docker"
+
+
+def _mono_smoke_callers(workflows_dir: Path = WORKFLOWS) -> dict[str, dict]:
+    """Every job, in every workflow file directly under `workflows_dir`, whose
+    `uses:` points at mono-smoke.yml — keyed `<file>:<job_id>`."""
+    callers: dict[str, dict] = {}
+    for path in sorted([*workflows_dir.glob("*.yml"), *workflows_dir.glob("*.yaml")]):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for job_id, job in (workflow.get("jobs") or {}).items():
+            if str((job or {}).get("uses", "")) == MONO_SMOKE_USES:
+                callers[f"{path.name}:{job_id}"] = job or {}
+    return callers
+
+
+def _single_publisher_violations(callers: dict[str, dict]) -> list[str]:
+    """CHECKOV-001's claim, made mechanical. Returns one message per caller
+    that breaks it; an empty list means the claim holds for `callers`."""
+    problems: list[str] = []
+
+    publishers = {
+        where for where, job in callers.items()
+        if (job.get("with") or {}).get("publish") is True
+    }
+    if publishers != {EXPECTED_PUBLISHER}:
+        problems.append(
+            f"publish: true is passed by {sorted(publishers)}, expected only {EXPECTED_PUBLISHER!r} to pass it"
+        )
+
+    writers = {
+        where for where, job in callers.items()
+        if str((job.get("permissions") or {}).get("packages", "")) == "write"
+    }
+    if writers != {EXPECTED_PUBLISHER}:
+        problems.append(
+            f"packages: write is granted by {sorted(writers)}, expected only {EXPECTED_PUBLISHER!r} to grant it"
+        )
+
+    for where, job in callers.items():
+        if where == EXPECTED_PUBLISHER:
+            continue
+        scope = (job.get("permissions") or {}).get("packages")
+        if scope is not None:
+            problems.append(f"{where} grants packages: {scope!r}; only {EXPECTED_PUBLISHER} may")
+        if "publish" in (job.get("with") or {}):
+            problems.append(f"{where} sets publish: {(job['with'])['publish']!r}; only {EXPECTED_PUBLISHER} may set it")
+
+    return problems
+
+
+def test_at_least_two_callers_of_mono_smoke_are_found():
+    """Positive control: guards the checks below against passing vacuously
+    because the parser stopped finding callers."""
+    callers = _mono_smoke_callers()
+    assert len(callers) >= 2, callers
+    assert "dev-ci.yml:build-docker" in callers
+    assert "tier2.yml:mono" in callers
+
+
+def test_only_dev_ci_may_publish_through_mono_smoke():
+    problems = _single_publisher_violations(_mono_smoke_callers())
+    assert not problems, "\n".join(problems)
+
+
+def test_a_second_publisher_through_mono_smoke_is_caught():
+    """Positive control for test_only_dev_ci_may_publish_through_mono_smoke:
+    proves the check actually fails once a second caller starts publishing,
+    rather than passing no matter what it is given."""
+    rogue = dict(_mono_smoke_callers())
+    rogue["rogue-workflow.yml:rogue-job"] = {
+        "uses": MONO_SMOKE_USES,
+        "permissions": {"contents": "read", "packages": "write"},
+        "with": {"publish": True},
+    }
+
+    problems = _single_publisher_violations(rogue)
+
+    assert problems, "a second publisher through mono-smoke.yml must be caught"
+    assert any("rogue-workflow.yml:rogue-job" in p for p in problems)
