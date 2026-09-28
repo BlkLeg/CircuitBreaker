@@ -241,7 +241,15 @@ def create_profile(
     )
 
     db.add(profile)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        # A commit that fails mid-flush leaves the session unusable until it is
+        # rolled back. Callers that carry on after a failed create — the
+        # discovery bootstrap does, one subnet at a time — would otherwise lose
+        # every later write to PendingRollbackError (#162).
+        db.rollback()
+        raise
     db.refresh(profile)
 
     write_log(
