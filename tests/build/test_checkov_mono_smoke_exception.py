@@ -39,14 +39,31 @@ SKIP_PATH = r"(^|/)\.github/workflows/mono-smoke\.yml$"
 
 
 def _checkov_commands(text: str) -> list[list[str]]:
-    """Every `checkov` scan invocation in `text`, tokenised (the `--version` probe excluded)."""
+    """Every `checkov` scan invocation in `text`, tokenised (the `--version`
+    probe excluded), regardless of what order its flags appear in.
+
+    R2 (A3 controller ruling): the previous parser only recognised an
+    invocation whose FIRST argument was `-d`/`-f`, so a reordered call such as
+    `checkov --skip-check CKV2_GHA_1 -d .github/workflows/` slipped past every
+    assertion below it. This finds every `checkov` invocation first, then
+    tokenises the whole thing and reads `-d`/`-f`, `--skip-path` and
+    `--skip-check` out of it wherever they land.
+    """
     commands: list[list[str]] = []
     for line in text.splitlines():
-        match = re.search(r"(?:^|[\s/\"])checkov\s+(-[df]\s.*)$", line)
+        match = re.search(r"(?:^|[\s/\"])checkov\s+(\S.*)$", line)
         if not match:
             continue
         body = match.group(1).split(">>")[0].split("||")[0]
-        commands.append(shlex.split(body))
+        try:
+            tokens = shlex.split(body)
+        except ValueError:
+            continue
+        if not tokens or "--version" in tokens:
+            continue
+        if not ({"-d", "-f"} & set(tokens)):
+            continue
+        commands.append(tokens)
     return commands
 
 
@@ -118,6 +135,27 @@ def test_the_skip_path_matches_no_other_workflow():
     # checkov also skips any path that CONTAINS the literal value; the regex
     # metacharacters make that impossible for a real file name.
     assert not any(SKIP_PATH in p.relative_to(REPO_ROOT).as_posix() for p in workflows)
+
+
+def test_the_parser_catches_a_reordered_invocation_that_widens_the_skip():
+    """R2: a checkov call whose flags are reordered so `-d`/`-f` is not the
+    first argument — e.g. `checkov --skip-check CKV2_GHA_1 -d
+    .github/workflows/` — would widen the CKV2_GHA_1 suppression from
+    mono-smoke.yml alone to the entire workflows tree. This is not a real
+    invocation in this repo; it proves the parser sees it (and so
+    test_ci_and_the_local_gate_make_the_same_single_exception would reject it,
+    since a `-d` scan without a matching `--skip-path` fails that test)."""
+    reordered = "checkov --skip-check CKV2_GHA_1 -d .github/workflows/"
+    commands = _checkov_commands(reordered)
+    assert commands, "parser did not recognise a reordered checkov invocation"
+    [command] = commands
+    assert _flag_values(command, "-d") == [".github/workflows/"]
+    assert _flag_values(command, "--skip-check") == [EXCEPTED_CHECK]
+    # The widening itself: a directory scan carrying --skip-check instead of
+    # the required --skip-path, which is exactly what
+    # test_ci_and_the_local_gate_make_the_same_single_exception's per-command
+    # loop rejects.
+    assert not _flag_values(command, "--skip-path")
 
 
 def test_no_workflow_carries_an_inline_skip_for_the_check():
