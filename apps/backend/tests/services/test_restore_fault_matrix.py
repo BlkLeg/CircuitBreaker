@@ -152,10 +152,23 @@ def _snapshot(
     return _write_tar(dest, entries)
 
 
-def _directory_state(directory: Path) -> dict[str, str]:
-    """Name → sha256 of every file under *directory*: 'touches nothing' made checkable."""
+def _file_fingerprint(path: Path) -> tuple[int, int, int, str]:
+    """Mode, size, mtime and content hash of *path*.
+
+    A file the test made unreadable (chmod 0) is fingerprinted from its metadata alone:
+    reading it here would raise the very EACCES the verifier is under test for.
+    """
+    info = path.stat()
+    digest = (
+        hashlib.sha256(path.read_bytes()).hexdigest() if os.access(path, os.R_OK) else "unreadable"
+    )
+    return info.st_mode, info.st_size, info.st_mtime_ns, digest
+
+
+def _directory_state(directory: Path) -> dict[str, tuple[int, int, int, str]]:
+    """Name → fingerprint of every file under *directory*: 'touches nothing' made checkable."""
     return {
-        str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
+        str(path.relative_to(directory)): _file_fingerprint(path)
         for path in sorted(directory.rglob("*"))
         if path.is_file()
     }
@@ -330,10 +343,10 @@ async def test_acc15_an_unwritable_backup_directory_fails_the_snapshot_cleanly(
     _fake_pg_dump(monkeypatch, tmp_path / "bin", _dump(vault_key=key, revision=_head_revision()))
     real_open = os.open
 
-    def _denied(path: Any, flags: int, mode: int = 0o777, **kwargs: Any) -> int:
+    def _denied(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
         if str(path).startswith(str(tmp_path / "backups")):
             raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(path))
-        return real_open(path, flags, mode, **kwargs)
+        return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(snapshot_module.os, "open", _denied)
 
