@@ -34,10 +34,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-yaml = pytest.importorskip(
-    "yaml", reason="PyYAML parses the workflow files; it arrives with the backend dev extra"
-)
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
