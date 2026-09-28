@@ -110,7 +110,12 @@ def test_every_dockerfile_mono_copy_source_is_a_suite_input_or_frontend():
     assert not uncovered, f"Dockerfile.mono COPYs from paths not in SUITE_INPUTS: {uncovered}"
 
 
-def test_git_listing_fails_loudly_outside_a_repo(tmp_path):
+def test_git_listing_fails_loudly_outside_a_repo(tmp_path, monkeypatch):
+    # Git exports GIT_DIR to hooks run from a linked worktree, and `git -C`
+    # honours it over the directory: under the pre-push `make verify` this
+    # listed the real repository and did not raise.
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+        monkeypatch.delenv(name, raising=False)
     with pytest.raises(subprocess.CalledProcessError):
         git_listing(tmp_path)
 
