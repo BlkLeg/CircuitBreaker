@@ -44,6 +44,12 @@ services:
     # - NET_BIND_SERVICE: bind to ports 80/443 (if CB_PORT < 1024)
     # - CHOWN/FOWNER/DAC_OVERRIDE: entrypoint volume ownership fix at startup
     # - SETUID/SETGID: supervisor drops privileges for postgres/nginx/nats/redis
+    # - KILL: supervisord runs as root and every program runs as breaker. Root
+    #   without CAP_KILL cannot signal a process owned by another uid. Without
+    #   it, supervisord's SIGTERM on `docker stop` failed with EPERM ("CRIT
+    #   unknown problem killing <prog>") and never landed. Docker then SIGKILLed
+    #   everything, and Postgres needed crash recovery on every stop, upgrade
+    #   and recreate. tests/build/test_mono_stop_is_clean.py pins this.
     cap_drop:
       - ALL
     cap_add:
@@ -54,6 +60,14 @@ services:
       - SETUID
       - SETGID
       - DAC_OVERRIDE
+      - KILL
+    # Docker's default is 10s. docker/supervisord.mono.conf gives postgres
+    # stopwaitsecs=30 and the API and workers 20, and supervisord stops programs
+    # in reverse priority order, one at a time, postgres last. 60s is postgres's
+    # full 30 plus 30s for the tiers ahead of it. Those normally exit within a
+    # second or two of SIGTERM. Shorter than the largest stopwaitsecs and Docker
+    # SIGKILLs a shutdown supervisord is still correctly waiting on.
+    stop_grace_period: 60s
     deploy:
       resources:
         limits:

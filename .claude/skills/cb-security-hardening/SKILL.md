@@ -173,9 +173,15 @@ cap_add:
   - SETUID
   - SETGID
   - DAC_OVERRIDE
+  - KILL   # root supervisord must signal its breaker-owned programs on stop
+stop_grace_period: 60s   # > the largest stopwaitsecs in supervisord.mono.conf
 ```
 
-Never add capabilities without documenting why.
+Never add capabilities without documenting why. `KILL` is there because
+supervisord runs as root and its programs run as `breaker`. Without CAP_KILL,
+every SIGTERM on `docker stop` fails with EPERM, Docker SIGKILLs the container,
+and Postgres needs crash recovery. `tests/build/test_mono_stop_is_clean.py`
+enforces both lines.
 
 ## Validation Checklist
 
