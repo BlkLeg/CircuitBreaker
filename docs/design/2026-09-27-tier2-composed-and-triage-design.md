@@ -143,7 +143,7 @@ and a human merge.
 | File | Change |
 |---|---|
 | `.github/workflows/composed-e2e.yml` | **New.** The composed agent journey as `workflow_call`, lifted out of `e2e.yml`. |
-| `.github/workflows/mono-smoke.yml` | **New, but deferred to slice A3** (§9). The plan for A1 found that the smoke cannot be separated from its image: `dev-ci.yml:971-980` pushes to GHCR by `docker tag`-ing the image the *same job* built, in that runner's Docker daemon, and the job's own comment requires the push to happen only after the smoke has started that exact image. A reusable workflow puts the smoke on a different runner with nothing to tag, so extracting it needs either an image transported as an artifact or the publish moved inside the called workflow — a decision with its own cost, taken on its own evidence rather than folded into the first slice. Until A3 lands, the mono smoke stays inline in `dev-ci.yml` exactly as it is today. |
+| `.github/workflows/mono-smoke.yml` | **New, but deferred to slice A3** (§9). The plan for A1 found that the smoke cannot be separated from its image: `dev-ci.yml:971-980` pushes to GHCR by `docker tag`-ing the image the *same job* built, in that runner's Docker daemon, and the job's own comment requires the push to happen only after the smoke has started that exact image. A reusable workflow puts the smoke on a different runner with nothing to tag, so extracting it needs either an image transported as an artifact or the publish moved inside the called workflow — a decision with its own cost, taken on its own evidence rather than folded into the first slice. Until A3 lands, the mono smoke stays inline in `dev-ci.yml` exactly as it is today. — implemented in A3; see Implementation notes (slice A3) |
 | `.github/workflows/tier2.yml` | **New.** `name: Tier 2 (composed)`, matching `Fleet (Tier 3)`. Nightly cron, `workflow_dispatch`, `workflow_call`. Carries a `concurrency` group so a manual dispatch and the nightly cannot interleave two runs whose artifacts the triage would then read as one. |
 | `.github/workflows/e2e.yml` | Thin caller of `composed-e2e.yml`. Keeps its tag and path-filtered PR triggers; **drops its nightly schedule**, which `tier2.yml` takes over. |
 | `.github/workflows/dev-ci.yml` | `build-docker` becomes a caller of `mono-smoke.yml`. |
@@ -524,7 +524,7 @@ read-only against real nightlies.
 |---|---|---|---|
 | A1 | Extract `composed-e2e.yml`; `e2e.yml` becomes a caller (keeping its nightly, which A2 moves to `tier2.yml` — one cron cannot live in two files); QUAR-001 becomes a visible `SKIPPED` backed by the register; the `test_ci_evidence_retention.py` registry follows the move (§7.4) | No behaviour change, fewer lines, an honest skip | none |
 | A2 | `tier2.yml` aggregator, `make verify-composed`, the drift guard; `release.yml` and `release-dry-run.yml` call it with `["browser","composed"]` | Tier 2 exists, is runnable locally, and is nameable | none |
-| A3 | `mono-smoke.yml`, after deciding how the built image reaches a second runner; the release's `suites` becomes the default all-three | The tier's third suite | `packages: write` stays wherever the push ends up |
+| A3 | `mono-smoke.yml`, after deciding how the built image reaches a second runner; the release's `suites` becomes the default all-three — superseded: the release runs browser + mono (A3 decision 2) | The tier's third suite | `packages: write` stays wherever the push ends up |
 | B1 | `tier2_triage.py` + tests + `triage-decide` | Verdicts, `verdict.json`, M1–M3 | none |
 | B2 | `triage-emit`, and `review_alert.py` as the message builder it calls | M4, M5 for the bot's own PR, the issue and the row PR | first write access in the programme |
 | B3 | `maintainer_digest.py`, `maintainer-digest.yml`, `review-alert.yml` (hourly sweep) | M5 for human and Dependabot PRs, M6 nightly | read-only (digest); `pull-requests: write` for the label only (review alert) |
@@ -567,9 +567,10 @@ Rulings made during A3's execution that this document did not anticipate:
   grant read only and their mono runs cannot push. A declared block would be wrong either way — `packages:
   write` is more than a read-only caller grants (GitHub refuses to load such a callee), and `contents: read`
   would strip `dev-ci.yml`'s write grant.
-- **Decision 2 is confirmed: the release adds `"mono"`.** `release.yml` and `release-dry-run.yml` pass
-  `suites: ["browser","mono"]` to `tier2.yml` — §10.2's "the release runs the whole tier" now holds for
-  browser and mono, with only the composed journey excluded (AGT-01, decision 1 of A2).
+- **Decision 2: adopted; flagged for maintainer confirmation in the A3 PR.** `release.yml` and
+  `release-dry-run.yml` pass `suites: ["browser","mono"]` to `tier2.yml` — §10.2's "the release runs the
+  whole tier" now holds for browser and mono, with only the composed journey excluded (AGT-01, decision 1
+  of A2).
 - **The check name is now compound.** `Build Docker (smoke test)` becomes `Build Docker (smoke test) / Mono
   image smoke`, since `build-docker` now calls the reusable `mono-smoke.yml` rather than running the smoke
   inline. It is still not a required check (`.github/branch-protection.md`, `tests/build/required_checks.py`).

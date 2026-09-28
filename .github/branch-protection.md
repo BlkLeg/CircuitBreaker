@@ -98,7 +98,7 @@ Apply the following settings via GitHub Settings > Branch protection rules:
       so requiring either one would hang every backend or frontend change
       indefinitely. Path-filtered workflows cannot be required checks; this is
       the same failure mode as a misnamed check, reached by a different route.
-    - `Build Native (amd64)` and `Build Docker (smoke test)` / `Mono image
+    - `Build Native (amd64)` and `Build Docker (smoke test) / Mono image
       smoke` are `dev-ci.yml` only, so they cannot be required on `main`. The
       second builds the mono image and then starts it through
       `docker-compose.yml` — `/livez`, `/readyz`, the served frontend, every
