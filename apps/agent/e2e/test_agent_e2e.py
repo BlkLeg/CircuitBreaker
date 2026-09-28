@@ -1294,6 +1294,31 @@ def _agent_route_networks(env: dict | None = None, *, service: str = _AGENT_SERV
     return networks
 
 
+def _up_agent(service: str, env: dict | None = None, *, build: bool = False) -> None:
+    """Start (or restart) an agent container WITHOUT touching the server.
+
+    `--no-deps` is load-bearing, for the reason `_enroll_agent` gives for its
+    `compose run`: both agent services declare `depends_on: [circuitbreaker]`
+    with no condition, and `compose up <agent>` is entitled to recreate a
+    dependency it considers out of date. On CI it does exactly that on the
+    suite's first agent start — the composed nightly logged
+
+        cb-agent  Built
+        Container circuitbreaker  Recreate
+
+    between `up -d cb-agent` and the first poll, the server container's
+    StartedAt moved by 50s with RestartCount 0, and the test failed with
+    `Connection reset by peer` or a presence stream closed without a close
+    frame, in every nightly that reached pytest. Every caller has already run
+    `_up_server()`, so the dependency is satisfied and the server this test
+    bootstrapped, enrolled against and is watching must be left alone.
+    """
+    command = [*COMPOSE, "up", "-d", "--no-deps"]
+    if build:
+        command.append("--build")
+    subprocess.run([*command, service], check=True, cwd=E2E_DIR, env=env)
+
+
 def _up_fixture_target(service: str, env: dict | None = None) -> None:
     """Brings up one isolated fixture target (probe-target, probe-target-2 or
     late-target). Built separately from `_up_server` because each sits on a
@@ -1302,28 +1327,6 @@ def _up_fixture_target(service: str, env: dict | None = None) -> None:
     mid-test."""
     subprocess.run(
         [*COMPOSE, "up", "-d", "--build", service], check=True, cwd=E2E_DIR, env=env
-    )
-
-
-def _up_agent(*services: str, env: dict | None = None, build: bool = False) -> None:
-    """Starts agent services against the server `_up_server` already brought up.
-
-    --no-deps, for the reason `_enroll_agent` gives for `compose run`: every
-    agent service declares `depends_on: [circuitbreaker]`, so a bare `up` lets
-    compose recreate the running server whenever it judges it out of date. That
-    kills every connection the test holds against the old container. It is how
-    step 9 of test_agent_full_lifecycle_enroll_through_revoke_and_reconnect lost
-    the `/agents/stream` listener `_enroll_agent` opened and never saw `revoked`
-    ("no close frame"), after `Container circuitbreaker Recreated` right behind
-    `cb-agent Built`. tests/build/test_e2e_agent_up_never_recreates_server.py
-    fails the build if an agent `up` ever goes around this helper without it.
-    """
-    build_flag = ["--build"] if build else []
-    subprocess.run(
-        [*COMPOSE, "up", "-d", "--no-deps", *build_flag, *services],
-        check=True,
-        cwd=E2E_DIR,
-        env=env,
     )
 
 
@@ -1860,7 +1863,7 @@ def test_agent_noise_rekey_interval_with_accelerated_clock():
 
         agent_id, stream = _enroll_agent(client, headers, env=rekey_env)
         try:
-            _up_agent("cb-agent", env=rekey_env)
+            _up_agent("cb-agent", rekey_env)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=20,
@@ -2043,7 +2046,7 @@ def test_agent_update_success_and_forced_rollback():
             # margin, costs one second per re-exec, and is unset in real
             # deployments.
             reexec_delay_env = {**os.environ, "CB_AGENT_TEST_PRE_REEXEC_DELAY_MS": "1000"}
-            _up_agent("cb-agent", env=reexec_delay_env)
+            _up_agent("cb-agent", reexec_delay_env)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=20,
@@ -4339,7 +4342,7 @@ def _rewind_spool_head(env: dict | None = None, *, service: str = _AGENT_SERVICE
     # back on its own, exactly as the real systemd unit would; this is the
     # explicit, idempotent version of that so the test never depends on the
     # engine's timing.
-    _up_agent(service, env=env)
+    _up_agent(service, env)
 
 
 def _assert_backend_cannot_reach(address: str, subnet: str) -> None:
@@ -6490,7 +6493,7 @@ def test_tampered_agent_binary_is_refused():
 
         agent_id, stream = _enroll_agent(client, headers, env=enforce_env)
         try:
-            _up_agent("cb-agent", env=enforce_env, build=True)
+            _up_agent("cb-agent", enforce_env, build=True)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=30,

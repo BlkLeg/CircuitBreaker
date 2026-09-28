@@ -12,8 +12,10 @@ The stderr showed `Container circuitbreaker Recreate/Recreated` right after
 `cb-agent Built`, and the server's `started_at` moved with `restart_count` 0.
 
 `_enroll_agent` already used `--no-deps` for `compose run` and documented why.
-The `up -d` calls never got the same fix. This guard makes that a build
-failure instead of a composed-E2E failure 40 minutes into CI.
+#192 gave the `up -d` calls the same fix by routing them through `_up_agent`,
+which binds `[*COMPOSE, "up", "-d", "--no-deps"]` and extends it with the
+service. This guard makes a regression a build failure instead of a
+composed-E2E failure 40 minutes into CI.
 
 The service a site starts is often a variable, such as a helper's parameter or
 `*services`. So each name is resolved through the helper's call sites and
@@ -26,6 +28,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeGuard
 
 import yaml
 
@@ -37,9 +40,10 @@ COMPOSE_FILE = E2E_DIR / "docker-compose.yml"
 SERVER_SERVICE = "circuitbreaker"
 
 #: Where an agent service is started after the server is up, counted at the
-#: call site where the service name originates: 17 direct starts plus
-#: `_rewind_spool_head`'s restart of the SIGKILLed agent. A refactor may move
-#: the flag into a helper; it must not make these sites invisible to the guard.
+#: call site where the service name originates: 17 direct `_up_agent(...)`
+#: calls plus `_rewind_spool_head`'s restart of the SIGKILLed agent, resolved
+#: to its one caller. The flag lives in `_up_agent` (#192); a refactor may move
+#: it again, but it must not make these sites invisible to the guard.
 MIN_AGENT_UP_SITES = 18
 
 _UNRESOLVED = "<unresolved>"
@@ -147,54 +151,140 @@ class _Resolver:
         return None
 
 
+def _is_compose_up(node: ast.AST) -> TypeGuard[ast.List | ast.Tuple]:
+    """True for a `[*COMPOSE, "up", ...]` list or tuple literal."""
+    if not isinstance(node, (ast.List, ast.Tuple)) or len(node.elts) < 2:
+        return False
+    head, sub = node.elts[0], node.elts[1]
+    return (
+        isinstance(head, ast.Starred)
+        and isinstance(head.value, ast.Name)
+        and head.value.id == "COMPOSE"
+        and isinstance(sub, ast.Constant)
+        and sub.value == "up"
+    )
+
+
 def _compose_up_lists(tree: ast.Module) -> list[ast.List | ast.Tuple]:
     """Every `[*COMPOSE, "up", ...]` literal in the file."""
-    found: list[ast.List | ast.Tuple] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.List, ast.Tuple)) or len(node.elts) < 2:
+    return [node for node in ast.walk(tree) if _is_compose_up(node)]
+
+
+@dataclass(frozen=True)
+class _UpCommand:
+    """One `compose up` argv as it reaches subprocess: its flags and arguments.
+
+    `elements` excludes `*COMPOSE` and `"up"`. `flags` holds only flags written
+    in the literals themselves; a flag added later by `.append()` does not
+    count, because it may be conditional (`if build: command.append(...)`), so
+    `--no-deps` must sit in a literal to satisfy the guard.
+    """
+
+    line: int
+    elements: tuple[ast.expr, ...]
+    flags: frozenset[str]
+
+
+def _literal_flags(elements: list[ast.expr]) -> set[str]:
+    return {
+        e.value
+        for e in elements
+        if isinstance(e, ast.Constant)
+        and isinstance(e.value, str)
+        and e.value.startswith("-")
+    }
+
+
+def _up_commands(tree: ast.Module) -> list[_UpCommand]:
+    """Every `compose up` command, in either of the two shapes the suite uses.
+
+    1. Inline: `[*COMPOSE, "up", "-d", ..., service]`.
+    2. Bound then extended, as `_up_agent` does:
+           command = [*COMPOSE, "up", "-d", "--no-deps"]
+           subprocess.run([*command, service], ...)
+       The base literal and the extension are joined into one command, so the
+       service in the extension is checked against the flags in the base.
+
+    A base that is bound to a name is not reported on its own; its extensions
+    are. A base that is bound but never extended would start nothing extra and
+    is reported as-is, so it cannot hide an offender.
+    """
+    commands: list[_UpCommand] = []
+    bound: set[int] = set()
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        head, sub = node.elts[0], node.elts[1]
-        if (
-            isinstance(head, ast.Starred)
-            and isinstance(head.value, ast.Name)
-            and head.value.id == "COMPOSE"
-            and isinstance(sub, ast.Constant)
-            and sub.value == "up"
-        ):
-            found.append(node)
-    return found
+        bases: dict[str, ast.List | ast.Tuple] = {}
+        for node in ast.walk(func):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and _is_compose_up(node.value)
+            ):
+                bases[node.targets[0].id] = node.value
+        if not bases:
+            continue
+        for node in ast.walk(func):
+            if not isinstance(node, (ast.List, ast.Tuple)) or not node.elts:
+                continue
+            head = node.elts[0]
+            if not (
+                isinstance(head, ast.Starred)
+                and isinstance(head.value, ast.Name)
+                and head.value.id in bases
+            ):
+                continue
+            base = bases[head.value.id]
+            bound.add(id(base))
+            elements = [*base.elts[2:], *node.elts[1:]]
+            commands.append(
+                _UpCommand(
+                    node.lineno, tuple(elements), frozenset(_literal_flags(elements))
+                )
+            )
+    for node in _compose_up_lists(tree):
+        if id(node) in bound:
+            continue
+        elements = list(node.elts[2:])
+        commands.append(
+            _UpCommand(
+                node.lineno, tuple(elements), frozenset(_literal_flags(elements))
+            )
+        )
+    return commands
+
+
+def _services(resolver: _Resolver, command: _UpCommand) -> list[_Origin]:
+    origins: list[_Origin] = []
+    for element in command.elements:
+        if isinstance(element, ast.Constant) and str(element.value).startswith("-"):
+            continue
+        origins += resolver.expr(element, command.line)
+    return origins
 
 
 def _survey() -> tuple[list[str], set[int], int]:
-    """(offending sites, agent origin lines, number of `compose up` lists)."""
+    """(offending sites, agent origin lines, number of `compose up` commands)."""
     tree = ast.parse(TEST_FILE.read_text(encoding="utf-8"), filename=str(TEST_FILE))
     resolver = _Resolver(tree)
     agents = _agent_services()
     offenders: list[str] = []
     agent_origins: set[int] = set()
-    lists = _compose_up_lists(tree)
-    for node in lists:
-        flags = {
-            e.value
-            for e in node.elts[2:]
-            if isinstance(e, ast.Constant) and isinstance(e.value, str)
-        }
-        origins: list[_Origin] = []
-        for element in node.elts[2:]:
-            if isinstance(element, ast.Constant) and str(element.value).startswith("-"):
-                continue
-            origins += resolver.expr(element, node.lineno)
+    commands = _up_commands(tree)
+    for command in commands:
+        origins = _services(resolver, command)
         hits = [o for o in origins if o.service in agents or o.service == _UNRESOLVED]
         agent_origins.update(o.line for o in hits if o.service in agents)
-        if hits and "--no-deps" not in flags:
+        if hits and "--no-deps" not in command.flags:
             named = ", ".join(
                 sorted({f"{o.service} (from line {o.line})" for o in hits})
             )
             offenders.append(
-                f"test_agent_e2e.py:{node.lineno}: `compose up` of {named}"
+                f"test_agent_e2e.py:{command.line}: `compose up` of {named}"
             )
     offenders.sort(key=lambda o: int(o.split(":")[1]))
-    return offenders, agent_origins, len(lists)
+    return offenders, agent_origins, len(commands)
 
 
 def test_agent_services_are_the_ones_that_depend_on_the_server() -> None:
@@ -217,7 +307,7 @@ def test_guard_sees_every_agent_up_site() -> None:
     """Positive control: the survey must find the agent starts, or it proves nothing."""
     _, origins, list_count = _survey()
     assert list_count >= 2, (
-        f"found only {list_count} `compose up` lists; the parser is blind"
+        f"found only {list_count} `compose up` commands; the parser is blind"
     )
     assert len(origins) >= MIN_AGENT_UP_SITES, (
         f"found {len(origins)} agent `compose up` sites, expected at least "
@@ -229,19 +319,13 @@ def test_server_start_keeps_its_normal_semantics() -> None:
     """`_up_server` brings up the server itself and must not skip its deps."""
     tree = ast.parse(TEST_FILE.read_text(encoding="utf-8"), filename=str(TEST_FILE))
     resolver = _Resolver(tree)
-    server_lists = [
-        node
-        for node in _compose_up_lists(tree)
-        if any(
-            o.service == SERVER_SERVICE
-            for e in node.elts[2:]
-            if not (isinstance(e, ast.Constant) and str(e.value).startswith("-"))
-            for o in resolver.expr(e, node.lineno)
-        )
+    server_commands = [
+        command
+        for command in _up_commands(tree)
+        if any(o.service == SERVER_SERVICE for o in _services(resolver, command))
     ]
-    assert server_lists, "no `compose up circuitbreaker` found; _up_server moved?"
-    for node in server_lists:
-        flags = {e.value for e in node.elts if isinstance(e, ast.Constant)}
-        assert "--no-deps" not in flags, (
-            f"line {node.lineno}: the server start gained --no-deps"
+    assert server_commands, "no `compose up circuitbreaker` found; _up_server moved?"
+    for command in server_commands:
+        assert "--no-deps" not in command.flags, (
+            f"line {command.line}: the server start gained --no-deps"
         )
