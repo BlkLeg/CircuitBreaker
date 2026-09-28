@@ -49,6 +49,11 @@ def test_default_suites_are_all_known():
     assert set(DEFAULT_SUITES) <= set(KNOWN_SUITES)
 
 
+def test_mono_is_a_known_suite():
+    assert "mono" in KNOWN_SUITES
+    assert "mono" in DEFAULT_SUITES
+
+
 def test_scheduled_run_tests_dev():
     assert resolve_ref("schedule", "") == "dev"
     assert resolve_ref("schedule", "main") == "dev"
@@ -72,27 +77,31 @@ def _needs(**results: str) -> dict:
 
 
 def test_result_passes_when_selected_succeed_and_unselected_skip():
-    assert judge(_needs(plan="success", browser="success", composed="skipped"), ["browser"]) == []
-    assert judge(_needs(plan="success", browser="success", composed="success"), ["browser", "composed"]) == []
+    assert judge(_needs(plan="success", browser="success", composed="skipped", mono="skipped"), ["browser"]) == []
+    assert judge(
+        _needs(plan="success", browser="success", composed="success", mono="skipped"), ["browser", "composed"]
+    ) == []
 
 
 def test_result_fails_when_a_selected_suite_was_skipped():
-    problems = judge(_needs(plan="success", browser="skipped", composed="success"), ["browser", "composed"])
+    problems = judge(
+        _needs(plan="success", browser="skipped", composed="success", mono="skipped"), ["browser", "composed"]
+    )
     assert problems == ["browser: skipped (expected success)"]
 
 
 def test_result_fails_when_an_unselected_suite_ran():
-    problems = judge(_needs(plan="success", browser="success", composed="success"), ["browser"])
+    problems = judge(_needs(plan="success", browser="success", composed="success", mono="skipped"), ["browser"])
     assert problems == ["composed: success (expected skipped)"]
 
 
 def test_result_fails_when_a_known_suite_is_missing_from_needs():
-    problems = judge(_needs(plan="success", browser="success"), ["browser"])
+    problems = judge(_needs(plan="success", browser="success", mono="skipped"), ["browser"])
     assert problems == ["composed: None (expected skipped)"]
 
 
 def test_result_reports_only_the_plan_when_the_plan_failed():
-    assert judge(_needs(plan="failure", browser="skipped", composed="skipped"), []) == ["plan: failure"]
+    assert judge(_needs(plan="failure", browser="skipped", composed="skipped", mono="skipped"), []) == ["plan: failure"]
 
 
 def test_main_plan_writes_github_output(tmp_path, monkeypatch, capsys):
@@ -118,7 +127,11 @@ def test_main_plan_fails_loudly_without_writing_output(tmp_path, monkeypatch, ca
 
 def test_main_result_exit_codes(monkeypatch):
     monkeypatch.setenv("SUITES", '["browser","composed"]')
-    monkeypatch.setenv("RESULTS", json.dumps(_needs(plan="success", browser="success", composed="success")))
+    monkeypatch.setenv(
+        "RESULTS", json.dumps(_needs(plan="success", browser="success", composed="success", mono="skipped"))
+    )
     assert main(["result"]) == 0
-    monkeypatch.setenv("RESULTS", json.dumps(_needs(plan="success", browser="failure", composed="success")))
+    monkeypatch.setenv(
+        "RESULTS", json.dumps(_needs(plan="success", browser="failure", composed="success", mono="skipped"))
+    )
     assert main(["result"]) == 1

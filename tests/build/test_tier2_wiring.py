@@ -261,13 +261,17 @@ def test_every_tier2_caller_passes_real_suites():
         assert suites and set(suites) <= set(KNOWN_SUITES), f"{where} passes {suites}"
 
 
-def test_the_release_does_not_gate_on_the_composed_journey():
-    """Maintainer decision 2026-09-27 (A2 plan): the release is not gated on the
-    composed journey. `suites` is passed explicitly, because the tier's default
-    includes composed, so omitting it would silently start gating."""
+def test_the_release_runs_browser_and_mono():
+    """Maintainer decision 2 (2026-09-27 A3 plan, flagged for confirmation): the
+    release path adds "mono". Decision 1 of A2 already excluded only the
+    composed journey from the release; design 10.2's "the release runs the
+    whole tier" still stands for browser and mono. `suites` is passed
+    explicitly, because the tier's default includes composed, so omitting it
+    would silently start gating on it."""
     for name in ("release.yml", "release-dry-run.yml"):
         raw = _load(name)["jobs"]["tier2"]["with"]["suites"]
-        assert json.loads(raw) == ["browser"], f"{name} passes {raw}"
+        assert json.loads(raw) == ["browser", "mono"], f"{name} passes {raw}"
+        assert "composed" not in json.loads(raw), f"{name} passes {raw}"
 
 
 def test_tier2_callers_grant_read_only():

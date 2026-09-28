@@ -124,12 +124,25 @@ jobs:
     with:
       ref: ${{ needs.plan.outputs.ref }}
 
+  # No publish: this caller grants read-only, and mono-smoke.yml inherits the
+  # caller's grant, so a Tier 2 run of the mono suite cannot push an image.
+  mono:
+    name: Mono image smoke
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.suites), 'mono')
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/mono-smoke.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+
   # The tier's one verdict. always(), so that a failed plan or a skipped suite
   # still produces an answer. A selected suite that ended `skipped` is a failure
   # here, because everything downstream reads `skipped` as satisfied.
   result:
     name: Tier 2 result
-    needs: [plan, browser, composed]
+    needs: [plan, browser, composed, mono]
     if: always()
     runs-on: ubuntu-22.04
     timeout-minutes: 5

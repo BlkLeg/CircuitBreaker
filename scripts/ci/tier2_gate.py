@@ -25,8 +25,8 @@ from collections.abc import Mapping, Sequence
 # The call-job ids in tier2.yml are these names exactly, and
 # tests/build/test_tier2_wiring.py fails if a suite job is added there without
 # being added here, or the reverse. "mono" joins in slice A3.
-KNOWN_SUITES: tuple[str, ...] = ("browser", "composed")
-DEFAULT_SUITES: tuple[str, ...] = ("browser", "composed")
+KNOWN_SUITES: tuple[str, ...] = ("browser", "composed", "mono")
+DEFAULT_SUITES: tuple[str, ...] = ("browser", "composed", "mono")
 
 # `schedule` fires only from the default branch's copy of the workflow, and
 # `main` trails the integration branch, so the nightly tests `dev` (design D2).
