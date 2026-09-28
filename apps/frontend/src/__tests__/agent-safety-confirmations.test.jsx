@@ -66,6 +66,7 @@ const mockToast = vi.hoisted(() => ({
 vi.mock('../components/common/Toast', () => ({ useToast: () => mockToast }));
 
 vi.mock('../components/agents/ServerKeyRotationPanel', () => ({ default: () => null }));
+vi.mock('../components/agents/NetlinkRemediationPanel', () => ({ default: () => null }));
 
 vi.mock('../context/AuthContext', () => ({ useAuth: () => ({ user: { role: 'admin' } }) }));
 

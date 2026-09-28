@@ -1323,6 +1323,20 @@ Repeated assignments are merged rather than replaced, so the drop-in only has
 to name the missing family. Then `sudo systemctl restart cb-agent` and confirm
 `cb-agent status` reports `discovery.neighbor: ready`.
 
+**Finding the affected hosts.** An agent with `local_discovery` granted reports
+the refused socket on its `discovery.neighbor` readiness row, and admins see
+every such host listed on the **Agents** page under *Discovery blocked by agent
+unit* (API: `GET /api/v1/agents/netlink-blocked`). Current agent builds tell
+this failure apart from other netlink errors: the row's reason reads *the
+agent's sandbox does not permit AF_NETLINK sockets*, its remediation names the
+fix above, and it carries `missing: ["AF_NETLINK"]`. Agents built before that
+are still listed, recognised by the exact reason they send
+(`discover: open netlink socket: address family not supported by protocol`),
+and marked *older agent build*. A host drops off the list by itself once its
+next readiness report shows the neighbour cache readable, which is the evidence
+the rewrite took. A host without `local_discovery` granted never runs the
+check, so it cannot appear here; re-run the install command on those too.
+
 ### Fixed in this release — `log_level`
 
 **Status: fixed.** `log_level` in `/etc/circuit-breaker/agent.toml` was decoded

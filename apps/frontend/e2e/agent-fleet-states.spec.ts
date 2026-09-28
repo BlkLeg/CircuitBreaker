@@ -176,10 +176,39 @@ test('a filtered fleet can be reloaded straight from its URL', async ({ page }) 
   await expect(fleetRow(page, 'edge-01')).toHaveCount(0);
 });
 
+// RISK-011: two of the four hosts still run a unit that refuses AF_NETLINK, so
+// the remediation panel is drawn above the fleet and is inside the scan below.
+const NETLINK_BLOCKED = [
+  {
+    id: 3,
+    hostname: 'branch-nas',
+    name: null,
+    last_seen_at: LONG_AGO,
+    reported_at: LONG_AGO,
+    reason: 'discover: open netlink socket: address family not supported by protocol',
+    remediation: 'allow the agent to open an AF_NETLINK/NETLINK_ROUTE socket',
+    legacy_report: true,
+  },
+  {
+    id: 4,
+    hostname: 'noisy-01',
+    name: null,
+    last_seen_at: RECENT,
+    reported_at: RECENT,
+    reason: "discover: open netlink socket: the agent's sandbox does not permit AF_NETLINK sockets",
+    remediation: "rewrite this host's cb-agent unit",
+    legacy_report: false,
+  },
+];
+
 test('the populated fleet has no serious or critical WCAG violations', async ({ page }) => {
-  await stubApi(page, OVERRIDES);
+  await stubApi(page, { ...OVERRIDES, 'agents/netlink-blocked': NETLINK_BLOCKED });
   await page.goto('/agents');
   await waitForRouteSettled(page);
+  // The scan is only evidence for markup that is on the page when it runs.
+  const netlinkPanel = page.getByRole('region', { name: 'Discovery blocked by agent unit' });
+  await expect(netlinkPanel.getByRole('link', { name: 'branch-nas' })).toBeVisible();
+  await expect(netlinkPanel.getByRole('link', { name: 'noisy-01' })).toBeVisible();
   // Same reasoning as accessibility.spec.ts: a colour sampled mid-transition is
   // composited toward the page background and reported as a contrast failure
   // that is not there once the page is still.

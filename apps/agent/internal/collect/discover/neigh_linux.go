@@ -43,7 +43,7 @@ func neighbors(ctx context.Context) ([]Neighbor, error) {
 	// leaked across that exec would survive every future upgrade.
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
 	if err != nil {
-		return nil, fmt.Errorf("discover: open netlink socket: %w", err)
+		return nil, netlinkSocketError(err)
 	}
 	defer unix.Close(fd)
 
@@ -108,6 +108,22 @@ func neighbors(ctx context.Context) ([]Neighbor, error) {
 			return out, nil
 		}
 	}
+}
+
+// netlinkSocketError wraps a failed socket(AF_NETLINK) call, marking it ErrNetlinkBlocked when the
+// errno is a policy refusal rather than a resource or kernel problem.
+//
+// EAFNOSUPPORT cannot mean "this kernel has no netlink": NETLINK_ROUTE is not optional on any
+// kernel with networking, so on Linux it is an address-family filter — systemd's
+// RestrictAddressFamilies returns exactly this errno. EPERM and EACCES are what a seccomp filter
+// or an LSM returns. Everything else (EMFILE, ENOBUFS, ENOMEM, ...) is transient or a resource
+// limit and keeps the generic remediation, because telling that operator to rewrite a unit file
+// would send them after a problem they do not have.
+func netlinkSocketError(err error) error {
+	if errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+		return fmt.Errorf("discover: open netlink socket: %w (%w)", ErrNetlinkBlocked, err)
+	}
+	return fmt.Errorf("discover: open netlink socket: %w", err)
 }
 
 // neighborDumpRequest builds the one message this package ever sends: RTM_GETNEIGH with

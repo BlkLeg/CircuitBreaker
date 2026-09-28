@@ -1054,6 +1054,44 @@
   font-size: var(--fs-xs);
 }
 
+/* RISK-011: agents whose unit refuses AF_NETLINK. The drop-in is pasted into
+   `systemctl edit`, so it keeps its line breaks and scrolls rather than wraps
+   on a phone-width screen. */
+.agents-page__netlink-intro {
+  margin: 0;
+}
+
+.agents-page__netlink-dropin {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  background: var(--color-surface);
+  border-radius: var(--radius);
+}
+
+.agents-page__netlink-list {
+  margin: var(--space-2) 0 0;
+}
+
+/* Without this the host links fall back to the UA's #0000ee, which is 1.23:1
+   on the warn panel's surface. Underlined, since in running text colour alone
+   would not mark them as links. */
+.agents-page__netlink-list a {
+  color: var(--color-text);
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.agents-page__netlink-list a:hover {
+  color: var(--color-primary);
+}
+
+.agents-page__netlink-list a:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 /* ── Agent detail: the state surface (AGT-14) ───────────────────────────────
    The requirement asks for a distinct, unambiguous treatment per state *and*
    for each state to carry a documented operator action. Those
