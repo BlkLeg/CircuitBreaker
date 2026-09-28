@@ -131,7 +131,13 @@ jobs:
       # collects artifacts/diagnostics/, tears compose down and shreds the
       # ephemeral .env, so by the time the push steps below run the containers
       # are gone but the image is still in this runner's daemon.
+      #
+      # timeout-minutes below the job's 40: a hung smoke must die at STEP
+      # level so the `if: always()` diagnostics upload after it still runs
+      # inside the job's own timeout, instead of the whole job being killed
+      # with nothing collected.
       - name: Smoke the image through docker-compose.yml
+        timeout-minutes: 25
         env:
           CB_VERSION: ${{ steps.ver.outputs.version }}
         run: scripts/ci/tier2-mono-smoke.sh "circuitbreaker:${CB_VERSION}"

@@ -413,7 +413,7 @@ verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (me
 # add CB_E2E_NO_DESELECT=1 to run those too. That second switch is local only.
 CB_COMPOSED_QUARANTINED ?= 1
 
-verify-composed: verify-composed-browser verify-composed-agent verify-composed-mono ## Tier 2 — browser E2E + composed agent journey + mono image smoke (CB_COMPOSED_QUARANTINED=0 lifts QUAR-001)
+verify-composed: verify-composed-mono verify-composed-browser verify-composed-agent ## Tier 2 — browser E2E + composed agent journey + mono image smoke (CB_COMPOSED_QUARANTINED=0 lifts QUAR-001)
 
 verify-composed-browser: ## Tier 2 — the Playwright suite, all projects, unsharded
 	scripts/ci/tier2-browser.sh

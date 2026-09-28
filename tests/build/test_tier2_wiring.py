@@ -372,6 +372,20 @@ def test_mono_workflow_calls_the_script_and_inlines_nothing():
     assert not inlined, f"mono-smoke.yml re-inlines smoke assertions: {inlined}"
 
 
+def test_the_smoke_step_timeout_is_below_the_jobs_so_diagnostics_still_upload():
+    """A hung smoke must die at STEP level, inside the job's own timeout, so
+    `Upload smoke diagnostics` (if: always()) still gets a chance to run
+    rather than the whole job being killed with nothing collected."""
+    job = _load("mono-smoke.yml")["jobs"]["mono-smoke"]
+    job_timeout = job["timeout-minutes"]
+    smoke_step = next(s for s in job["steps"] if MONO_SCRIPT in str(s.get("run", "")))
+    step_timeout = smoke_step.get("timeout-minutes")
+    assert step_timeout is not None, "the smoke step has no timeout-minutes of its own"
+    assert step_timeout < job_timeout, (
+        f"the smoke step's timeout ({step_timeout}) must be below the job's ({job_timeout})"
+    )
+
+
 def test_mono_smoke_inherits_its_callers_grant():
     """No permissions anywhere: dev-ci's packages: write reaches the push, and a
     read-only caller's run physically cannot push (maintainer decision, A3 plan)."""
