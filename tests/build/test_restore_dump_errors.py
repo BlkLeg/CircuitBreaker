@@ -98,6 +98,24 @@ case "$*" in
 esac
 """
 
+# restore.sh runs its superuser step through `su -s /bin/sh postgres -c CMD` when it
+# is root and not already that user (restore.sh's `_as_superuser`). Unstubbed,
+# the module passed only for a non-root caller, which never takes that branch: as
+# root -- the Forgejo runner's job container, a root shell on a dev box -- the real
+# `su` needed a `postgres` account the host may not have, and every test that
+# reaches the database step failed. This runs CMD as the caller instead, so the
+# root branch is exercised against the same stubbed binaries as the non-root one.
+SU_STUB = """#!/bin/sh
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -c) shift; exec /bin/sh -c "$1" ;;
+  esac
+  shift
+done
+echo "su stub: no -c command in: $*" >&2
+exit 1
+"""
+
 RSYNC_STUB = """#!/bin/sh
 # Enough of rsync for restore.sh: `rsync -a --delete SRC/ DST/`.
 for arg in "$@"; do prev="$dest"; dest="$arg"; done
@@ -161,6 +179,7 @@ def _harness(tmp_path: Path) -> dict[str, str]:
     (stubs / "psql").write_text(PSQL_STUB)
     (stubs / "jq").write_text(JQ_STUB)
     (stubs / "rsync").write_text(RSYNC_STUB)
+    (stubs / "su").write_text(SU_STUB)
     for stub in stubs.iterdir():
         stub.chmod(0o755)
 

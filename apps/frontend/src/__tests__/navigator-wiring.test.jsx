@@ -313,9 +313,13 @@ describe('navigator wiring in AppInner', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^Services/ }));
     await screen.findByText('Services page');
 
-    const recents = readStoredList(RECENTS_KEY('u:1'));
-    expect(recents).toEqual(['page:/services', 'page:/hardware']);
-    expect(recents).not.toContain('page:/logs');
+    // The recent is written from the route's mount effect, which runs after
+    // the commit findByText resolved on, so wait for the write rather than
+    // reading storage synchronously (as the initial-route check above does).
+    await waitFor(() =>
+      expect(readStoredList(RECENTS_KEY('u:1'))).toEqual(['page:/services', 'page:/hardware'])
+    );
+    expect(readStoredList(RECENTS_KEY('u:1'))).not.toContain('page:/logs');
 
     // Wedge semantics unchanged: /logs stays pending forever, /services closed.
     const navEntries = getEntries().filter((entry) => entry.kind === 'nav');
