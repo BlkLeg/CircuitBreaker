@@ -305,6 +305,95 @@ async def async_db_session(setup_db):
             await outer_tx.rollback()
 
 
+# ── SQL_ASCII database (QUAR-001 / #162) ──────────────────────────────────────
+#
+# The mono image's `initdb` ran with no --encoding and no LANG until v0.4.x, so
+# every cluster it created is SQL_ASCII. A psycopg2 connection that does not ask
+# for an encoding inherits the server's, and psycopg2 maps SQL_ASCII to Python's
+# `ascii` codec: the first non-ASCII character any user types raises
+# UnicodeEncodeError on INSERT. The suite's own database is UTF8, which is why
+# nothing here saw it. These two fixtures reproduce the deployed cluster.
+
+SQL_ASCII_DB_NAME = "cb_sql_ascii"
+
+
+@pytest.fixture(scope="session")
+def sql_ascii_database(setup_db):
+    """A SQL_ASCII database beside the suite's UTF8 one, with the full schema.
+
+    Its encoding and C collation are exactly what an unconfigured `initdb`
+    produces. The schema is built over an explicitly UTF8 client connection:
+    that is fixture plumbing, not the engine under test.
+    """
+    import psycopg2
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    from app.db import models
+
+    admin_url = _PG_CONTAINER.get_connection_url().replace("postgresql+psycopg2", "postgresql")
+    admin = psycopg2.connect(admin_url)
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        cur.execute(f"DROP DATABASE IF EXISTS {SQL_ASCII_DB_NAME} WITH (FORCE)")
+        cur.execute(
+            f"CREATE DATABASE {SQL_ASCII_DB_NAME} ENCODING 'SQL_ASCII' "
+            "LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
+        )
+    ascii_url = make_url(_PG_CONTAINER.get_connection_url()).set(database=SQL_ASCII_DB_NAME)
+    schema_engine = create_engine(ascii_url, connect_args={"client_encoding": "utf8"})
+    try:
+        with schema_engine.begin() as conn:
+            server_encoding = conn.exec_driver_sql("SHOW server_encoding").scalar()
+            assert server_encoding == "SQL_ASCII", server_encoding
+            conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS timescaledb")
+        models.Base.metadata.create_all(bind=schema_engine)
+    finally:
+        schema_engine.dispose()
+    try:
+        yield SQL_ASCII_DB_NAME
+    finally:
+        with admin.cursor() as cur:
+            cur.execute(f"DROP DATABASE IF EXISTS {SQL_ASCII_DB_NAME} WITH (FORCE)")
+        admin.close()
+
+
+@pytest.fixture
+def sql_ascii_session(sql_ascii_database):
+    """A SAVEPOINT-isolated session on the *production* engine, pointed at the
+    SQL_ASCII database.
+
+    `app.db.session.engine` itself, not a look-alike: the defect is in how that
+    engine connects, so a test engine built here would test the fixture instead.
+    A `do_connect` listener swaps only the database name in the connect
+    parameters SQLAlchemy has already assembled — every `connect_args` the
+    production engine carries still reaches psycopg2. The pool is disposed on the
+    way in and out, so no connection crosses between the two databases.
+    """
+    from sqlalchemy import event, text
+    from sqlalchemy.orm import Session
+
+    from app.db.session import engine
+
+    def _retarget(dialect, conn_rec, cargs, cparams):  # type: ignore[no-untyped-def]
+        cparams["dbname"] = sql_ascii_database
+
+    event.listen(engine, "do_connect", _retarget)
+    engine.dispose()
+    connection = engine.connect()
+    outer_tx = connection.begin()
+    session = Session(bind=connection, join_transaction_mode="create_savepoint")
+    try:
+        assert session.execute(text("SHOW server_encoding")).scalar() == "SQL_ASCII"
+        yield session
+    finally:
+        session.close()
+        outer_tx.rollback()
+        connection.close()
+        event.remove(engine, "do_connect", _retarget)
+        engine.dispose()
+
+
 # ── ASGI HTTP client ──────────────────────────────────────────────────────────
 
 
