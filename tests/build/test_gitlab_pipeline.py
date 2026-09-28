@@ -66,3 +66,38 @@ def test_tag_pipelines_do_not_run():
     """Tags arrive from GitHub by sync; a tag pipeline would re-test released code for nothing."""
     rules = load_entry()["workflow"]["rules"]
     assert rules[0] == {"if": "$CI_COMMIT_TAG", "when": "never"}, rules[0]
+
+
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from required_checks import REQUIRED_CHECKS  # noqa: E402
+
+# CodeQL is the one required check that stays on GitHub (codeql.yml).
+_GITHUB_ONLY = {"Analyze (Python)", "Analyze (JavaScript / TypeScript)"}
+
+
+def test_every_required_check_is_a_gitlab_job():
+    """EXC-002's compensating control is these gates; each must exist as a job."""
+    jobs = set(load_pipeline())
+    missing = [c for c in REQUIRED_CHECKS if c not in _GITHUB_ONLY and c not in jobs]
+    assert not missing, missing
+
+
+def _extends(body: dict[str, Any]) -> list[str]:
+    value = body.get("extends", [])
+    return [value] if isinstance(value, str) else list(value)
+
+
+def test_no_verify_job_may_fail_silently():
+    """Review Focus 1: a job that may fail without failing the pipeline cannot gate a promote.
+
+    Scheduled jobs are exempt only because `.scheduled`'s rule admits schedule
+    pipelines alone, so they never share a pipeline with `promote`.
+    """
+    offenders = [
+        name for name, body in load_pipeline().items()
+        if body.get("allow_failure") and not name.startswith(".")
+        and ".scheduled" not in _extends(body)
+    ]
+    assert not offenders, offenders

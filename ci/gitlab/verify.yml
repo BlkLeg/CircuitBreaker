@@ -1,0 +1,145 @@
+# Ports .github/workflows/dev-ci.yml's gate jobs (and docs.yml's build) to the
+# Docker runner. Names are tests/build/required_checks.py's; the scripts are the
+# same scripts, so "what CI runs" and "what make verify runs" stay one thing.
+.venv-install: &venv-install
+  - python3.12 -m venv .venv
+  - .venv/bin/pip install --upgrade pip
+  - .venv/bin/pip install -e "apps/backend/[dev]"
+
+Lint:
+  extends: .cb-docker
+  stage: lint
+  timeout: 20m
+  script:
+    - *venv-install
+    - (cd apps/frontend && npm ci)
+    # Only a string here: the Alembic head check builds a Config and never connects.
+    - CB_DB_URL=postgresql://cb_ci:cb_ci@127.0.0.1:5432/cb_ci scripts/ci/tier0-static.sh
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths: [artifacts/]
+
+# Same sharding as dev-ci.yml (tests/build/backend_shard.py). The TimescaleDB
+# testcontainer needs no configuration: no DOCKER_HOST, no host override, so
+# testcontainers joins this job's network (spike finding).
+.backend-shard:
+  extends: .cb-docker
+  stage: test
+  timeout: 30m
+  variables:
+    SHARD_TOTAL: "4"
+  script:
+    - *venv-install
+    - (cd apps/frontend && npm ci && npm run build)
+    - mkdir -p artifacts/junit artifacts/coverage artifacts/logs
+    - export COVERAGE_FILE="${CI_PROJECT_DIR}/artifacts/coverage/.coverage.backend-${SHARD}"
+    - python3 tests/build/backend_shard.py --index "${SHARD}" --total "${SHARD_TOTAL}" > artifacts/shard-files.txt
+    - cat artifacts/shard-files.txt
+    - |
+      cd apps/backend
+      PYTHONPATH=src ../../.venv/bin/pytest $(cat "${CI_PROJECT_DIR}/artifacts/shard-files.txt") \
+        --junitxml="${CI_PROJECT_DIR}/artifacts/junit/backend-shard-${SHARD}.xml" \
+        --cov-fail-under=0 -p no:cacheprovider \
+        2>&1 | tee "${CI_PROJECT_DIR}/artifacts/logs/backend-shard-${SHARD}.log"
+      exit "${PIPESTATUS[0]}"
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths: [artifacts/]
+    reports:
+      junit: artifacts/junit/*.xml
+
+"Backend tests (shard 1/4)":
+  extends: .backend-shard
+  variables: {SHARD: "1"}
+"Backend tests (shard 2/4)":
+  extends: .backend-shard
+  variables: {SHARD: "2"}
+"Backend tests (shard 3/4)":
+  extends: .backend-shard
+  variables: {SHARD: "3"}
+"Backend tests (shard 4/4)":
+  extends: .backend-shard
+  variables: {SHARD: "4"}
+
+"Backend coverage gate":
+  extends: .cb-docker
+  stage: security
+  timeout: 20m
+  needs:
+    - "Backend tests (shard 1/4)"
+    - "Backend tests (shard 2/4)"
+    - "Backend tests (shard 3/4)"
+    - "Backend tests (shard 4/4)"
+  script:
+    - *venv-install
+    - find artifacts/coverage -name '.coverage.backend-*' -exec cp {} apps/backend/ \;
+    - ls -la apps/backend/.coverage.backend-*
+    - |
+      cd apps/backend
+      THRESHOLD=$(python3 -c 'import tomllib; o=tomllib.load(open("pyproject.toml","rb"))["tool"]["pytest"]["ini_options"]["addopts"]; print(next(x.split("=",1)[1] for x in o if x.startswith("--cov-fail-under=")))')
+      echo "combined backend coverage must reach ${THRESHOLD}%"
+      ../../.venv/bin/python -m coverage combine
+      ../../.venv/bin/python -m coverage report --fail-under="${THRESHOLD}"
+
+"Fresh-install migrations":
+  extends: .cb-docker
+  stage: test
+  timeout: 25m
+  services:
+    - name: postgres:16
+      alias: postgres
+  variables:
+    POSTGRES_USER: cb_ci
+    POSTGRES_PASSWORD: cb_ci
+    POSTGRES_DB: cb_ci
+    CB_TEST_DB_URL: postgresql://cb_ci:cb_ci@postgres:5432/cb_ci
+    CB_ALLOW_DEGRADED_DEPENDENCIES: "true"
+    CB_ALLOW_DIRECT_EGRESS: "true"
+  script:
+    - *venv-install
+    - until pg_isready -h postgres -U cb_ci; do sleep 2; done
+    - cd apps/backend
+    - PYTHONPATH=src ../../.venv/bin/pytest ../../tests/integration/test_fresh_install_migration_chain.py -p no:cacheprovider
+
+Test:
+  extends: .cb-docker
+  stage: test
+  timeout: 25m
+  script:
+    - (cd apps/frontend && npm ci)
+    - mkdir -p artifacts/junit artifacts/coverage artifacts/logs
+    - (cd apps/frontend && npx vitest run --coverage --sequence.shuffle=false --sequence.seed="${CB_TEST_SEED}")
+    - (cd apps/agent && GOFLAGS="-shuffle=off" make test)
+    - (cd apps/agent && go vet ./...)
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths: [apps/frontend/coverage/]
+
+"Security Gate":
+  extends: .cb-docker
+  stage: security
+  timeout: 25m
+  needs: []
+  variables:
+    SECURITY_SCAN_VENV: /tmp/cb-scanner-venv
+  script:
+    - scripts/ci/install_scanners.sh /usr/local/bin
+    - python3.12 -m venv "$SECURITY_SCAN_VENV"
+    - '"$SECURITY_SCAN_VENV/bin/pip" install --upgrade pip bandit semgrep'
+    - (cd apps/frontend && npm ci)
+    - ./scripts/security_scan.sh --gate
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [security_scan_report.md]
+
+"Docs build":
+  extends: .cb-docker
+  stage: lint
+  timeout: 15m
+  script:
+    - pip install 'mkdocs~=1.6'
+    - mkdocs build --strict
