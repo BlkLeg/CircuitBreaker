@@ -107,10 +107,20 @@ async def probe_dependencies() -> dict[str, str]:
     `redis_health` is resolved from the module on every call rather than bound
     at import, so a test (and the emergency degraded-dependency switch) can
     substitute it without reaching into this module.
+
+    The database probe is synchronous SQLAlchemy, so it runs in a worker
+    thread. Its callers are async — the health endpoints and, on every write,
+    the write-admission guard — and a database that is black-holed rather than
+    refusing connections holds `engine.connect()` for the full TCP connect
+    timeout. On the event loop that would stall every request in the process,
+    `/livez` included, turning a database outage into a liveness failure and a
+    restart loop: exactly the cascade the guard exists to prevent.
     """
+    import asyncio
+
     import app.core.redis as redis_module
 
-    db_status = _probe_db()
+    db_status = await asyncio.to_thread(_probe_db)
     try:
         redis_ok = bool(await redis_module.redis_health())
     except Exception:
