@@ -287,6 +287,53 @@ async def test_the_loop_reads_airgap_mode_and_passes_it_to_refresh(monkeypatch):
     assert seen["airgap_override"] is True
 
 
+class _TimeoutSwallowsCancelTransport(httpx.AsyncBaseTransport):
+    """A connect that is still pending when its timeout and a task cancel land
+    together, as httpcore's `anyio.fail_after` resolves that race: the
+    `CancelledError` is consumed and a `ConnectTimeout` comes out instead,
+    while the task's `cancelling()` count stays raised. Measured against a
+    blackholed host with the real transport; this reproduces the outcome
+    deterministically."""
+
+    def __init__(self) -> None:
+        self.connecting = asyncio.Event()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.connecting.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            pass
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+
+async def test_cancelling_the_loop_stops_it_even_when_the_fetch_swallows_the_cancel(
+    monkeypatch,
+):
+    """Shutdown cancels this loop and then awaits it (`drain_background_tasks`).
+
+    If the in-flight fetch turns the cancel into a timeout, `refresh` records
+    "unreachable" and returns normally; a loop that then goes back to sleep
+    for a day holds process shutdown open for that day. This is what hung the
+    `ws_client` fixture's lifespan teardown past pytest-timeout in CI.
+    """
+    monkeypatch.setattr(update_check.settings, "airgap", False)
+    monkeypatch.setattr(update_check.settings, "update_check", True)
+    monkeypatch.setattr(update_check, "_db_airgap_enabled", lambda: False)
+    transport = _TimeoutSwallowsCancelTransport()
+    monkeypatch.setattr(update_check, "_transport", lambda: transport)
+
+    task = asyncio.create_task(update_check.run_update_check_loop())
+    await asyncio.wait_for(transport.connecting.wait(), timeout=5.0)
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=2.0)
+    if not done:
+        task.cancel()
+        await asyncio.wait({task}, timeout=2.0)
+    assert done, "the update loop survived cancellation and would hold shutdown open"
+    assert task.cancelled()
+
+
 class _FakeDB:
     def __init__(self, row):
         self._row = row

@@ -209,6 +209,14 @@ async def refresh(*, airgap_override: bool = False) -> UpdateState:
                 etag_status=verdict.status,
             )
     except Exception as exc:  # network, JSON, schema — all the same to a caller
+        # A cancel that lands while httpcore's `anyio.fail_after` is resolving
+        # its own deadline comes out as a ConnectTimeout, not a CancelledError,
+        # and the task's `cancelling()` count stays raised. Swallowing it here
+        # would let `run_update_check_loop` go back to sleep for a day with
+        # shutdown awaiting it (drain_background_tasks), so hand the cancel back.
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise asyncio.CancelledError from exc
         logger.debug("Update check failed: %s", exc)
         _state = replace(_state, status="unreachable", current=current, checked_at=_now())
     return _state
