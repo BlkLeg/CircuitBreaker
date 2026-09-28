@@ -342,3 +342,39 @@ def test_the_local_hatch_runs_every_test_and_says_so(tmp_path):
     summary, log = _collect(tmp_path, **{NO_DESELECT: "1"})
     assert "deselected" not in summary, summary
     assert NO_DESELECT in log, "the hatch must announce itself in composed-journey.log"
+
+
+# ── the mono image smoke (A3) ───────────────────────────────────────────────
+MONO_SCRIPT = "scripts/ci/tier2-mono-smoke.sh"
+
+
+def test_mono_workflow_calls_the_script_and_inlines_nothing():
+    runs = _run_blocks(_load("mono-smoke.yml"))
+    assert any(MONO_SCRIPT in r for r in runs)
+    inlined = [r for r in runs if "/api/v1/readyz" in r or "supervisorctl" in r]
+    assert not inlined, f"mono-smoke.yml re-inlines smoke assertions: {inlined}"
+
+
+def test_mono_smoke_inherits_its_callers_grant():
+    """No permissions anywhere: dev-ci's packages: write reaches the push, and a
+    read-only caller's run physically cannot push (maintainer decision, A3 plan)."""
+    wf = _load("mono-smoke.yml")
+    assert "permissions" not in wf
+    assert all("permissions" not in job for job in wf["jobs"].values())
+    assert "# permissions: inherited-from-caller" in (WORKFLOWS / "mono-smoke.yml").read_text()
+
+
+def test_mono_push_is_gated_on_publish_and_a_push_to_dev():
+    steps = _load("mono-smoke.yml")["jobs"]["mono-smoke"]["steps"]
+    pushes = [s for s in steps if "docker push" in str(s.get("run", ""))]
+    assert pushes, "no push step"
+    for step in pushes:
+        cond = str(step.get("if", ""))
+        for part in ("inputs.publish", "github.event_name == 'push'", "github.ref == 'refs/heads/dev'"):
+            assert part in cond, f"push step {step.get('name')!r} is missing {part!r}"
+
+
+def test_only_the_push_steps_touch_the_token():
+    for step in _load("mono-smoke.yml")["jobs"]["mono-smoke"]["steps"]:
+        if "GITHUB_TOKEN" in str(step):
+            assert "docker push" in str(step.get("run", "")), step.get("name")
