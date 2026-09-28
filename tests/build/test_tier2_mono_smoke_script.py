@@ -61,17 +61,36 @@ def test_teardown_never_prompts_for_a_password():
 
 
 def test_refuses_to_start_against_a_developer_workspace():
-    """A pre-existing .env or an already-running circuitbreaker stack must
-    stop the script before it installs the EXIT trap — see the stub-driven
-    behavior tests in test_tier2_mono_smoke_behavior.py for the runtime
-    proof."""
+    """A pre-existing .env or an already-running circuitbreaker container
+    must stop the script before it installs the EXIT trap — see the
+    stub-driven behavior tests in test_tier2_mono_smoke_behavior.py for the
+    runtime proof."""
     text = _text()
     assert "refuse_if_unsafe_to_start" in text
     assert "-e .env" in text
-    assert "ps -q" in text
+    assert "docker ps" in text
     assert text.index("refuse_if_unsafe_to_start\n") < text.index("trap on_exit EXIT"), (
         "the refuse-to-start check must run before the EXIT trap is installed"
     )
+
+
+def test_running_stack_probe_asks_the_engine_not_compose():
+    """docker-compose.yml's ${VAR:?...} guards (CB_DB_PASSWORD, CB_VAULT_KEY,
+    CB_JWT_SECRET, NATS_AUTH_TOKEN) make Compose interpolate and fail the
+    whole file for every subcommand while no .env exists yet -- exactly the
+    moment this guard runs. `docker compose ... ps -q` would then print
+    nothing and exit non-zero, and `[ -n "$(...)" ]` reads that empty output
+    as "nothing running": fails open on the one case the guard exists for.
+    So the probe must ask the Docker engine directly for the pinned
+    container name, never through `docker compose`."""
+    text = _text()
+    assert "docker compose -f docker-compose.yml ps -q" not in text
+    assert "docker ps -a --filter" in text
+    assert "name=^circuitbreaker$" in text
+    # Fail closed: a `docker ps` that itself errors (e.g. daemon
+    # unreachable) must refuse to start rather than read as "nothing
+    # running".
+    assert 'if ! running="$(docker ps' in text
 
 
 def test_diagnostics_strip_secrets_from_the_inspect_capture():

@@ -41,9 +41,12 @@ DOCKER_STUB = textwrap.dedent(
     printf '%s\n' "$*" >> "${STUB_DOCKER_LOG}"
 
     case "$*" in
-      "compose -f docker-compose.yml ps -q")
-        printf '%s' "${STUB_PS_Q_OUTPUT:-}"
-        exit 0 ;;
+      "ps -a --filter name=^circuitbreaker$ --format {{.ID}}")
+        printf '%s' "${STUB_PS_OUTPUT:-}"
+        if [ "${STUB_PS_EXIT:-0}" != "0" ]; then
+          echo "stub docker: ps failed (simulated daemon error)" >&2
+        fi
+        exit "${STUB_PS_EXIT:-0}" ;;
       "compose -f docker-compose.yml up -d")
         exit 0 ;;
       "compose -f docker-compose.yml ps")
@@ -117,7 +120,9 @@ def _write_stub(bin_dir: Path, name: str, content: str) -> None:
     _make_executable(path)
 
 
-def _stub_path_env(tmp_path: Path, *, ps_q_output: str = "") -> tuple[dict, Path]:
+def _stub_path_env(
+    tmp_path: Path, *, ps_output: str = "", ps_exit: int = 0
+) -> tuple[dict, Path]:
     bin_dir = tmp_path / "stubbin"
     bin_dir.mkdir()
     _write_stub(bin_dir, "docker", DOCKER_STUB)
@@ -132,7 +137,8 @@ def _stub_path_env(tmp_path: Path, *, ps_q_output: str = "") -> tuple[dict, Path
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(tmp_path),
         "STUB_DOCKER_LOG": str(docker_log),
-        "STUB_PS_Q_OUTPUT": ps_q_output,
+        "STUB_PS_OUTPUT": ps_output,
+        "STUB_PS_EXIT": str(ps_exit),
         # Fast retry loops: this is a stub run, not a real container.
         "CB_SMOKE_SLEEP": "0",
     }
@@ -219,22 +225,49 @@ def test_refuses_to_start_when_env_already_exists(tmp_path):
     assert docker_log.read_text(encoding="utf-8") == ""
 
 
-def test_refuses_to_start_when_a_stack_is_already_running(tmp_path):
-    """Item 1: docker-compose.yml pins both the compose project and
-    `container_name: circuitbreaker`, so a running stack under that name is
-    very likely the developer's own. `up -d` would recreate it and
-    teardown's `down -v` would remove it, so the script must refuse first."""
+def test_refuses_to_start_when_a_container_already_exists(tmp_path):
+    """Item 1 (fix round 2): docker-compose.yml pins
+    `container_name: circuitbreaker`, so a container already existing under
+    that name -- running or just left stopped -- is very likely the
+    developer's own. `up -d` would reuse or recreate it and teardown's
+    `down -v` would destroy its volumes, so the script must refuse first.
+    The probe asks the Docker engine directly (`docker ps -a --filter ...`),
+    never `docker compose ... ps -q` -- see
+    test_running_stack_probe_asks_the_engine_not_compose for why that would
+    fail open."""
     sandbox_root = _sandbox_repo(tmp_path)
-    env, docker_log = _stub_path_env(tmp_path, ps_q_output="existing-container-id")
+    env, docker_log = _stub_path_env(tmp_path, ps_output="deadbeef1234")
 
     result = _run(sandbox_root, env)
 
     assert result.returncode == 2, result.stderr
-    assert "running" in result.stderr.lower()
+    assert "circuitbreaker" in result.stderr
+    assert "deadbeef1234" in result.stderr, "the message should name the container found"
 
     assert not (sandbox_root / ".env").exists(), "the guard must not write .env before refusing"
 
     calls = docker_log.read_text(encoding="utf-8")
-    assert "compose -f docker-compose.yml ps -q" in calls
+    assert "ps -a --filter name=^circuitbreaker$" in calls
     assert "up -d" not in calls, "the script must not start compose once it has refused"
     assert "down -v" not in calls, "the script must not tear down a stack it never started"
+
+
+def test_refuses_to_start_when_docker_ps_itself_fails(tmp_path):
+    """Item 1 (fix round 2): if the Docker engine can't even be asked
+    whether a circuitbreaker container exists (e.g. the daemon is
+    unreachable), the guard must fail closed -- refuse to start -- rather
+    than treat the probe's empty output as "nothing running"."""
+    sandbox_root = _sandbox_repo(tmp_path)
+    env, docker_log = _stub_path_env(tmp_path, ps_exit=1)
+
+    result = _run(sandbox_root, env)
+
+    assert result.returncode == 2, result.stderr
+    assert "could not ask" in result.stderr.lower() or "docker" in result.stderr.lower()
+
+    assert not (sandbox_root / ".env").exists(), "the guard must not write .env before refusing"
+
+    calls = docker_log.read_text(encoding="utf-8")
+    assert "ps -a --filter name=^circuitbreaker$" in calls
+    assert "up -d" not in calls
+    assert "down -v" not in calls

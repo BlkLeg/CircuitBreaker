@@ -41,19 +41,35 @@ CB_SMOKE_SLEEP="${CB_SMOKE_SLEEP:-5}"
 
 # `make verify-composed-mono` runs this against a developer's own working
 # tree, not a disposable CI checkout. A pre-existing .env is very likely a
-# real `cp .env.example .env`, and docker-compose.yml pins both the compose
-# project and `container_name: circuitbreaker`, so a stack already running
-# under that name is very likely the developer's own — `up -d` would
-# recreate it and teardown's `down -v` would remove it. In CI the checkout
-# is always fresh, so neither condition ever fires there.
+# real `cp .env.example .env`, and docker-compose.yml pins
+# `container_name: circuitbreaker`, so a container already running (or left
+# stopped) under that name is very likely the developer's own — `up -d`
+# would reuse or recreate it and teardown's `down -v` would remove it and
+# its volumes. In CI the checkout is always fresh, so neither condition ever
+# fires there.
 refuse_if_unsafe_to_start() {
   if [ -e .env ]; then
     printf '::error::%s/.env already exists — refusing to overwrite a developer .env with smoke secrets. Move it aside (e.g. mv .env .env.bak) and rerun.\n' \
       "$CB_REPO_ROOT" >&2
     exit 2
   fi
-  if [ -n "$(docker compose -f docker-compose.yml ps -q)" ]; then
-    printf '::error::a circuitbreaker compose stack is already running — refusing to recreate or remove it. Stop it first (docker compose -f docker-compose.yml down) and rerun.\n' >&2
+
+  # Asked of the Docker engine directly, not through `docker compose ... ps
+  # -q`: docker-compose.yml's ${VAR:?...} guards (CB_DB_PASSWORD,
+  # CB_VAULT_KEY, CB_JWT_SECRET, NATS_AUTH_TOKEN) make Compose interpolate
+  # and fail the whole file before `ps` can run, for every subcommand, while
+  # no .env has been written yet — so `ps -q` would print nothing and exit
+  # non-zero, and "$(...)" being empty reads exactly like "nothing running".
+  # That fails open on the one case this check exists for. `-a` so a
+  # stopped leftover container also counts; `up -d` would reuse or recreate
+  # it and teardown's `down -v` would destroy its volumes either way.
+  if ! running="$(docker ps -a --filter 'name=^circuitbreaker$' --format '{{.ID}}')"; then
+    printf '::error::could not ask the Docker engine whether a circuitbreaker container already exists — refusing to start rather than risk recreating or removing one. Check the daemon is reachable and rerun.\n' >&2
+    exit 2
+  fi
+  if [ -n "${running}" ]; then
+    printf '::error::a container named circuitbreaker already exists (%s) — refusing to recreate or remove it. After checking it is not your real stack: docker rm -f circuitbreaker, or docker compose -f docker-compose.yml down. Then rerun.\n' \
+      "${running}" >&2
     exit 2
   fi
 }
