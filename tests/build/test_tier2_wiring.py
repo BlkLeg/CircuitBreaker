@@ -399,3 +399,23 @@ def test_only_the_push_steps_touch_the_token():
         text = str(step)
         if "GITHUB_TOKEN" in text or "github.token" in text:
             assert "docker push" in str(step.get("run", "")), step.get("name")
+
+
+def test_dev_ci_publishes_through_mono_smoke_and_keeps_the_parity_artifact():
+    """dev-ci's `build-docker` becomes a caller of mono-smoke.yml (Tier 2 slice
+    A3): the build/compose-smoke/publish steps that used to live inline moved
+    to the shared workflow, and this job's own `packages: write` is what lets
+    `publish: true` push. runtime-parity's provenance download must still find
+    an artifact under the name this job asks mono-smoke.yml to produce."""
+    dev = _load("dev-ci.yml")["jobs"]
+    job = dev["build-docker"]
+    assert job["uses"] == "./.github/workflows/mono-smoke.yml"
+    assert job["with"]["publish"] is True
+    assert job["permissions"] == {"contents": "read", "packages": "write"}
+    assert "artifact-smoke" in (job["needs"] if isinstance(job["needs"], list) else [job["needs"]])
+    name = job["with"]["provenance_artifact"]
+    downloads = [s for s in dev["runtime-parity"]["steps"]
+                 if str(s.get("uses", "")).startswith("actions/download-artifact")]
+    assert any(s.get("with", {}).get("name") == name for s in downloads), (
+        f"runtime-parity no longer downloads {name!r}"
+    )
