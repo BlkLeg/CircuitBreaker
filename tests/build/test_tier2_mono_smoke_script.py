@@ -41,3 +41,53 @@ def test_the_secrets_never_outlive_the_script():
     assert "shred" in text
     assert "umask 077" in text
     assert "::add-mask::" in text
+
+
+def test_umask_is_scoped_to_the_env_write():
+    """umask must not leak past the .env write and change file-creation
+    permissions for artifacts/diagnostics or anything written afterwards."""
+    text = _text()
+    assert "( umask 077" in text or "(\n    umask 077" in text, (
+        "umask 077 must run inside a subshell scoped to the .env write, not "
+        "at script scope"
+    )
+
+
+def test_teardown_never_prompts_for_a_password():
+    """sudo must never block a CI run (or a developer's terminal) on a
+    password prompt; -n makes a missing/expired credential a normal failure
+    instead of a hang."""
+    assert "sudo -n rm -rf" in _text()
+
+
+def test_refuses_to_start_against_a_developer_workspace():
+    """A pre-existing .env or an already-running circuitbreaker stack must
+    stop the script before it installs the EXIT trap — see the stub-driven
+    behavior tests in test_tier2_mono_smoke_behavior.py for the runtime
+    proof."""
+    text = _text()
+    assert "refuse_if_unsafe_to_start" in text
+    assert "-e .env" in text
+    assert "ps -q" in text
+    assert text.index("refuse_if_unsafe_to_start\n") < text.index("trap on_exit EXIT"), (
+        "the refuse-to-start check must run before the EXIT trap is installed"
+    )
+
+
+def test_diagnostics_strip_secrets_from_the_inspect_capture():
+    """Config.Env holds the four smoke secrets in clear; ::add-mask:: masks
+    log output only, not an uploaded artifact, so the inspect capture must
+    drop Env before writing the file. See the stub test for runtime proof
+    that a secret embedded in Config.Env does not survive into the file."""
+    text = _text()
+    assert 'pop("Env"' in text
+    assert "docker inspect circuitbreaker" in text
+
+
+def test_retry_loops_use_an_overridable_sleep_with_the_old_default():
+    """A test harness without a real container needs to drive the retry
+    loops without paying five seconds per attempt; CI must keep today's
+    cadence, so the default has to stay 5."""
+    text = _text()
+    assert "CB_SMOKE_SLEEP:-5" in text
+    assert "sleep 5" not in text, "a literal sleep 5 is no longer overridable by CB_SMOKE_SLEEP"

@@ -116,6 +116,10 @@ htmlcov/
 # CI artifacts: written by `make verify` (local CI scripts) — never committed
 artifacts/
 
+# scripts/ci/tier2-mono-smoke.sh's compose data dir when RUNNER_TEMP is unset
+# (a local `make verify-composed-mono` run)
+.smoke-tmp/
+
 # Generated security scan reports (keep STANDING reports untracked naturally)
 SECURITY_REPORTS/security_scan_report*.md
 /security_scan_report.md

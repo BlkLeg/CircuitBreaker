@@ -28,13 +28,35 @@ cb::require_tool python3
 
 CB_IMAGE="$1"
 # Not 80/443 by default: the runner already has services on the low ports,
-# and a bind failure here would read as a container fault. Overridable so a
-# caller running two smokes at once does not collide.
+# and a bind failure here would read as a container fault.
 CB_SMOKE_PORT="${CB_SMOKE_PORT:-18080}"
 CB_SMOKE_PORT_HTTPS="${CB_SMOKE_PORT_HTTPS:-18443}"
 # RUNNER_TEMP is a GitHub Actions runner path; the fallback keeps this script
 # runnable outside that environment too.
 CB_SMOKE_DATA_DIR="${RUNNER_TEMP:-$CB_REPO_ROOT/.smoke-tmp}/cb-smoke-data"
+# Retry-loop backoff, seconds. Overridable so a test harness without a real
+# container can drive the wait loops without paying five seconds per attempt;
+# CI keeps today's cadence because the default is unchanged.
+CB_SMOKE_SLEEP="${CB_SMOKE_SLEEP:-5}"
+
+# `make verify-composed-mono` runs this against a developer's own working
+# tree, not a disposable CI checkout. A pre-existing .env is very likely a
+# real `cp .env.example .env`, and docker-compose.yml pins both the compose
+# project and `container_name: circuitbreaker`, so a stack already running
+# under that name is very likely the developer's own — `up -d` would
+# recreate it and teardown's `down -v` would remove it. In CI the checkout
+# is always fresh, so neither condition ever fires there.
+refuse_if_unsafe_to_start() {
+  if [ -e .env ]; then
+    printf '::error::%s/.env already exists — refusing to overwrite a developer .env with smoke secrets. Move it aside (e.g. mv .env .env.bak) and rerun.\n' \
+      "$CB_REPO_ROOT" >&2
+    exit 2
+  fi
+  if [ -n "$(docker compose -f docker-compose.yml ps -q)" ]; then
+    printf '::error::a circuitbreaker compose stack is already running — refusing to recreate or remove it. Stop it first (docker compose -f docker-compose.yml down) and rerun.\n' >&2
+    exit 2
+  fi
+}
 
 # The .env holds four live secrets. They are ephemeral and single-run, but the
 # workspace is not guaranteed to be discarded before another step reads it,
@@ -46,30 +68,48 @@ teardown() {
   if ! docker compose -f docker-compose.yml down -v --remove-orphans; then
     echo "::warning::docker compose down failed during smoke teardown"
   fi
-  shred -u .env 2>/dev/null || rm -f .env
-  if ! sudo rm -rf "${CB_SMOKE_DATA_DIR}"; then
+  if ! { shred -u .env 2>/dev/null || rm -f .env; }; then
+    echo "::warning::could not remove .env during smoke teardown"
+  fi
+  if ! sudo -n rm -rf "${CB_SMOKE_DATA_DIR}"; then
     echo "::warning::could not remove ${CB_SMOKE_DATA_DIR}"
   fi
 }
 
-# if: always() — the run that most needs its logs is the one that failed
-# before reaching the step that would have collected them.
+# Runs from the EXIT trap, not a workflow `if: always()` — the run that most
+# needs its logs is the one that failed before reaching the step that would
+# have collected them.
 collect_diagnostics() {
   mkdir -p artifacts/diagnostics
   if ! docker compose -f docker-compose.yml ps -a > artifacts/diagnostics/compose-ps.txt 2>&1; then :; fi
   if ! docker compose -f docker-compose.yml logs --no-color --timestamps \
     > artifacts/diagnostics/container.log 2>&1; then :; fi
-  if ! docker inspect circuitbreaker > artifacts/diagnostics/inspect.json 2>&1; then :; fi
+  # Config.Env carries the four smoke secrets in clear (CB_DB_PASSWORD,
+  # CB_JWT_SECRET, NATS_AUTH_TOKEN, CB_VAULT_KEY). ::add-mask:: only masks
+  # log output, not an uploaded artifact, so it is stripped before this
+  # inspect output is written to disk.
+  if ! docker inspect circuitbreaker \
+    | python3 -c 'import json, sys
+data = json.load(sys.stdin)
+for container in data:
+    container.get("Config", {}).pop("Env", None)
+json.dump(data, sys.stdout, indent=2)' \
+    > artifacts/diagnostics/inspect.json 2>&1; then :; fi
   if ! cp /tmp/supervisor-status.txt artifacts/diagnostics/ 2>/dev/null; then :; fi
   if ! cp /tmp/readyz.json artifacts/diagnostics/ 2>/dev/null; then :; fi
 }
 
 on_exit() {
   local rc=$?
+  # A failure inside this trap must not abort the rest of teardown, and must
+  # not replace the exit code being reported with its own.
+  set +e
   collect_diagnostics
   teardown
   exit "$rc"
 }
+
+refuse_if_unsafe_to_start
 trap on_exit EXIT
 
 # The image must be STARTED, not just built: a broken entrypoint, failed
@@ -101,19 +141,24 @@ mint_secrets() {
 
   # printf per line rather than a heredoc: the values are written
   # verbatim with no chance of picking up the block's indentation.
-  umask 077
-  {
-    printf 'CB_DB_PASSWORD=%s\n' "${DB_PASSWORD}"
-    printf 'CB_JWT_SECRET=%s\n' "${JWT_SECRET}"
-    printf 'NATS_AUTH_TOKEN=%s\n' "${NATS_TOKEN}"
-    printf 'CB_VAULT_KEY=%s\n' "${VAULT_KEY}"
-    printf 'CB_IMAGE=%s\n' "${CB_IMAGE}"
-    # Not 80/443: the runner already has services on the low ports, and
-    # a bind failure here would read as a container fault.
-    printf 'CB_PORT=%s\n' "${CB_SMOKE_PORT}"
-    printf 'CB_PORT_HTTPS=%s\n' "${CB_SMOKE_PORT_HTTPS}"
-    printf 'CB_DATA_DIR=%s\n' "${CB_SMOKE_DATA_DIR}"
-  } > .env
+  # umask is scoped to this subshell, not the whole script, so it does not
+  # change file-creation permissions for artifacts/diagnostics or anything
+  # after this function returns.
+  (
+    umask 077
+    {
+      printf 'CB_DB_PASSWORD=%s\n' "${DB_PASSWORD}"
+      printf 'CB_JWT_SECRET=%s\n' "${JWT_SECRET}"
+      printf 'NATS_AUTH_TOKEN=%s\n' "${NATS_TOKEN}"
+      printf 'CB_VAULT_KEY=%s\n' "${VAULT_KEY}"
+      printf 'CB_IMAGE=%s\n' "${CB_IMAGE}"
+      # Not 80/443: the runner already has services on the low ports, and
+      # a bind failure here would read as a container fault.
+      printf 'CB_PORT=%s\n' "${CB_SMOKE_PORT}"
+      printf 'CB_PORT_HTTPS=%s\n' "${CB_SMOKE_PORT_HTTPS}"
+      printf 'CB_DATA_DIR=%s\n' "${CB_SMOKE_DATA_DIR}"
+    } > .env
+  )
   echo "wrote .env with $(wc -l < .env) settings (values masked)"
 }
 
@@ -138,7 +183,7 @@ wait_livez() {
       echo "live after ${attempt} attempt(s)"
       return 0
     fi
-    sleep 5
+    sleep "${CB_SMOKE_SLEEP}"
   done
   echo "::error::container never reported live within 300s"
   exit 1
@@ -160,7 +205,7 @@ wait_readyz() {
       cat /tmp/readyz.json
       return 0
     fi
-    sleep 5
+    sleep "${CB_SMOKE_SLEEP}"
   done
   echo "::error::container never became ready within 180s; last /readyz body:"
   cat /tmp/readyz.json 2>/dev/null || echo "(no response body)"
@@ -234,7 +279,7 @@ assert_supervisord_running() {
       break
     fi
     echo "attempt ${attempt}: not yet all RUNNING"
-    sleep 5
+    sleep "${CB_SMOKE_SLEEP}"
   done
   cat /tmp/supervisor-status.txt
 
