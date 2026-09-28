@@ -28,11 +28,12 @@ a real start would surface.
 ## Testing
 
 ```bash
-make test-backend    # tests/integration — provisions the test DB first
-make test-frontend   # vitest
-make test            # both
-make verify          # the pre-push gate
-make verify-composed # Tier 2: the browser suite and the composed journey
+make test-backend         # tests/integration — provisions the test DB first
+make test-frontend        # vitest
+make test                 # both
+make verify               # the pre-push gate
+make verify-composed      # Tier 2: the browser suite, the composed journey and the mono smoke
+make verify-composed-mono # Tier 2: build Dockerfile.mono and run the compose smoke CI runs
 ```
 
 `CB_COMPOSED_QUARANTINED=0` lifts QUAR-001 locally: the suite runs, minus the tests that have live register

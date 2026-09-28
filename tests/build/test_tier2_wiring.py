@@ -118,17 +118,30 @@ def test_the_html_reporter_cannot_clear_the_junit_report():
     )
 
 
-def test_verify_composed_runs_both_suites_and_is_documented():
+def test_verify_composed_runs_all_three_suites_and_is_documented():
     text = MAKEFILE.read_text(encoding="utf-8")
     line = re.search(r"^verify-composed:([^\n]*)$", text, re.M)
     assert line, "no verify-composed target"
     deps, _, help_text = line.group(1).partition("##")
-    assert set(deps.split()) == {"verify-composed-browser", "verify-composed-agent"}
+    assert set(deps.split()) == {
+        "verify-composed-browser",
+        "verify-composed-agent",
+        "verify-composed-mono",
+    }
     assert "Tier 2" in help_text, "verify-composed must say what it is in `make help`"
 
 
 def test_verify_composed_browser_calls_the_script():
     assert BROWSER_SCRIPT in _recipe("verify-composed-browser")
+
+
+def test_verify_composed_mono_builds_and_calls_the_script():
+    """Mirrors test_mono_workflow_calls_the_script_and_inlines_nothing: the
+    laptop target and mono-smoke.yml must build the same way and call the
+    same script (design D1/P1)."""
+    recipe = _recipe("verify-composed-mono")
+    assert "docker build -f Dockerfile.mono" in recipe
+    assert MONO_SCRIPT in recipe
 
 
 def test_verify_composed_agent_honours_the_register_or_runs_the_real_suite():

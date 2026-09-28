@@ -53,6 +53,7 @@ EVIDENCE_OWING_JOBS = {
     "ci.yml": ("lint", "backend-tests", "fresh-install-migrations", "test"),
     "dev-ci.yml": ("lint", "backend-tests", "fresh-install-migrations", "test"),
     "browser-e2e.yml": ("browser-e2e",),
+    "mono-smoke.yml": ("mono-smoke",),
 }
 
 # Where the artifact classes below are allowed to live. composed-e2e.yml carries
@@ -60,7 +61,7 @@ EVIDENCE_OWING_JOBS = {
 # A1 moved the suite out); browser-e2e.yml carries Playwright's traces,
 # screenshots and video, which is why scanning ci.yml alone stopped being
 # enough once the suite moved out of it.
-ARTIFACT_SOURCE_WORKFLOWS = ("ci.yml", "composed-e2e.yml", "browser-e2e.yml")
+ARTIFACT_SOURCE_WORKFLOWS = ("ci.yml", "composed-e2e.yml", "browser-e2e.yml", "mono-smoke.yml")
 
 
 def _load(name: str) -> dict:
