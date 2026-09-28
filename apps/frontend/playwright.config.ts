@@ -26,7 +26,10 @@ export default defineConfig({
   reporter: process.env.CI
     ? [
         ['junit', { outputFile: 'playwright-report/junit.xml' }],
-        ['html', { open: 'never' }],
+        // The HTML reporter empties its outputFolder when it writes. Sharing
+        // playwright-report/ with the JUnit file deleted junit.xml on every CI
+        // run, so the HTML report gets a folder of its own.
+        ['html', { open: 'never', outputFolder: 'playwright-report/html' }],
       ]
     : [['list']],
   timeout: 30_000,

@@ -18,6 +18,12 @@ import (
 // revoked local_discovery grant would keep reading as a discovery-ready vantage forever.
 var DiscoverNames = []string{"discovery.neighbor", "discovery.icmp", "discovery.tcp", "discovery.dns"}
 
+// MissingAFNetlink is the Readiness.Missing entry a discovery.neighbor row carries when the
+// sandbox refuses AF_NETLINK (ErrNetlinkBlocked). It is the machine-readable half of
+// netlinkBlockedRemediation: the server lists the agents whose unit still needs rewriting by
+// this token, never by matching the prose of Reason, which is free to change.
+const MissingAFNetlink = "AF_NETLINK"
+
 // The operator-facing instructions discovery readiness can attach. They are constants because a
 // remediation is something someone pastes into a shell, not prose to be reworded per call site.
 //
@@ -26,6 +32,7 @@ var DiscoverNames = []string{"discovery.neighbor", "discovery.icmp", "discovery.
 // telling one operator two different things about one kernel setting.
 const (
 	neighborReadinessRemediation = "allow the agent to open an AF_NETLINK/NETLINK_ROUTE socket — a seccomp profile or a container without CAP_NET_ADMIN-free netlink access will block the neighbor dump"
+	netlinkBlockedRemediation    = "rewrite this host's cb-agent unit, which predates AF_NETLINK: re-run the install command from Agents → Add agent, or run `sudo systemctl edit cb-agent`, add `[Service]` and `RestrictAddressFamilies=AF_NETLINK`, then `sudo systemctl restart cb-agent`. Outside systemd, allow AF_NETLINK (NETLINK_ROUTE) sockets in the seccomp/LSM policy confining the agent"
 	dnsReadinessRemediation      = "configure at least one nameserver in /etc/resolv.conf so discovered addresses can be resolved to names"
 )
 
@@ -89,6 +96,15 @@ func neighborReadiness(ctx context.Context, read func(context.Context) ([]Neighb
 			Collector: "discovery.neighbor",
 			State:     "unavailable",
 			Reason:    err.Error(),
+		}
+		// A refused socket() is the sandbox, not the kernel's table, and on a native install it is
+		// almost always a unit written before the installer granted AF_NETLINK. That host's
+		// discovery and probe scope are empty too (net.Interfaces needs the same socket), so the
+		// row names the exact fix rather than the generic one.
+		if errors.Is(err, ErrNetlinkBlocked) {
+			row.Remediation = netlinkBlockedRemediation
+			row.Missing = []string{MissingAFNetlink}
+			return row
 		}
 		// ErrNeighborsUnsupported is a property of the build, not of the host: the agent ships
 		// linux/amd64 and linux/arm64 only, and there is nothing an operator on any other

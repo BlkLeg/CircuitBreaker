@@ -66,7 +66,9 @@ describe('ParkedMessagesPage', () => {
 
     expect(list.mock.calls[0][0]).toMatchObject({ include_resolved: false });
 
-    fireEvent.click(screen.getByLabelText(/show resolved/i));
+    // `list` is called on mount while the skeleton is still up; the checkbox only
+    // exists once that call resolves, so wait for the control, not the call.
+    fireEvent.click(await screen.findByLabelText(/show resolved/i));
 
     await waitFor(() =>
       expect(list.mock.calls.at(-1)[0]).toMatchObject({ include_resolved: true })

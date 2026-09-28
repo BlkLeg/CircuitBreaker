@@ -44,6 +44,7 @@ the schema, not the uploads and not the vault key. What was missing was a consum
 
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
 import json
@@ -68,6 +69,11 @@ BAD_SQL = (
     + "CREATE TABLE tail_table (id integer);\n"
 )
 
+# Generated per run rather than written into the fixture: CLAUDE.md forbids a hardcoded
+# vault key even in a test, and restore.sh now refuses a vault.key that is not shaped like
+# one (32 url-safe base64 bytes), so the old placeholder string would not restore at all.
+VAULT_KEY = base64.urlsafe_b64encode(os.urandom(32)).decode()
+
 # Everything restore.sh shells out to that must not be allowed to reach the host.
 # `systemctl` is the dangerous one and `dropdb` is the destructive one; a bare exit 0
 # is all either needs to be for this script's purposes.
@@ -85,6 +91,9 @@ case "$*" in
   *db_checksum_sha256*)
     sed -n \'s/.*"db_checksum_sha256"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$file"
     ;;
+  # Any other -r query (format_version, uploads_count, config_files) answers as absent,
+  # which is what these fixtures' manifests are: they carry only the checksum.
+  -r*) ;;
   *) cat "$file" ;;
 esac
 """
@@ -128,7 +137,7 @@ def _write_snapshot(tmp_path: Path, sql: str) -> Path:
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as handle:
             handle.write(sql.encode())
 
-    (staging / "vault.key").write_text("dGVzdC12YXVsdC1rZXk=\n")
+    (staging / "vault.key").write_text(VAULT_KEY + "\n")
     (staging / "manifest.json").write_text(
         json.dumps(
             {
@@ -225,7 +234,7 @@ def test_a_clean_dump_still_restores_end_to_end(tmp_path: Path):
         "uploads were not restored:\n" + combined
     )
     env_text = (tmp_path / "etc" / "circuitbreaker.env").read_text()
-    assert "CB_VAULT_KEY=dGVzdC12YXVsdC1rZXk=" in env_text, env_text
+    assert f"CB_VAULT_KEY={VAULT_KEY}" in env_text, env_text
 
 
 # ── the bare pre-upgrade dump (the other artifact restore.sh takes) ───────────
@@ -252,6 +261,10 @@ def _run_dump(
 # plain SQL under pg_dump's own header. The header is what tells a truncated artifact from
 # a whole one, so it belongs in the fixture rather than being assumed away.
 PG_DUMP_HEADER = "--\n-- PostgreSQL database dump\n--\n\n"
+# ...and closes with this. restore.sh refuses a dump that has the header and not the
+# trailer: that is a dump cut short by a full disk or a kill, and psql would replay the
+# part it has and report success (ACC-15, partial snapshot).
+PG_DUMP_TRAILER = "\n--\n-- PostgreSQL database dump complete\n--\n\n"
 
 
 def test_a_bare_pre_upgrade_dump_is_restored_rather_than_rejected(tmp_path: Path):
@@ -262,7 +275,7 @@ def test_a_bare_pre_upgrade_dump_is_restored_rather_than_rejected(tmp_path: Path
     and exit 1 -- so the only artifact standing between a bad migration and a lost
     install was one no tool in the repository would take.
     """
-    result = _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL)
+    result = _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL + PG_DUMP_TRAILER)
     combined = result.stdout + result.stderr
 
     assert result.returncode == 0, (
@@ -279,7 +292,7 @@ def test_a_bare_pre_upgrade_dump_is_restored_rather_than_rejected(tmp_path: Path
 
 def test_the_bare_dump_is_replayed_with_on_error_stop_too(tmp_path: Path):
     """The new path must not be the one place the ON_ERROR_STOP fix does not reach."""
-    _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL)
+    _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL + PG_DUMP_TRAILER)
     argv = (tmp_path / "psql-argv.log").read_text()
     assert "ON_ERROR_STOP=1" in argv, (
         "the bare dump was replayed without ON_ERROR_STOP=1, so psql would run on "
@@ -289,7 +302,7 @@ def test_the_bare_dump_is_replayed_with_on_error_stop_too(tmp_path: Path):
 
 def test_a_bare_dump_that_does_not_replay_cleanly_fails_the_restore(tmp_path: Path):
     """Same contract as the snapshot path: a partial load is not a restore."""
-    result = _run_dump(tmp_path, PG_DUMP_HEADER + BAD_SQL)
+    result = _run_dump(tmp_path, PG_DUMP_HEADER + BAD_SQL + PG_DUMP_TRAILER)
     combined = result.stdout + result.stderr
 
     assert result.returncode != 0, combined
@@ -308,7 +321,7 @@ def test_a_bare_dump_leaves_the_vault_key_and_the_uploads_alone(tmp_path: Path):
     uploads.mkdir(parents=True)
     (uploads / "logo.png").write_bytes(b"the file this host is still serving")
 
-    result = _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL)
+    result = _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL + PG_DUMP_TRAILER)
     combined = result.stdout + result.stderr
     assert result.returncode == 0, combined
 
@@ -324,7 +337,7 @@ def test_a_bare_dump_leaves_the_vault_key_and_the_uploads_alone(tmp_path: Path):
 
 def test_the_confirmation_says_what_a_database_only_restore_does_not_touch(tmp_path: Path):
     """"REPLACE all data" is not true of this path, and the operator answers y to it."""
-    result = _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL)
+    result = _run_dump(tmp_path, PG_DUMP_HEADER + GOOD_SQL + PG_DUMP_TRAILER)
     prompt = result.stdout[: result.stdout.find("Continue?")]
     assert "NOT touched" in prompt, (
         "the operator was asked to confirm a restore described as replacing all "

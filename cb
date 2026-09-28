@@ -1717,6 +1717,26 @@ cmd_restore() {
 _restore_container() {
   local archive="$1"
 
+  # Unpacked BEFORE the application is stopped (ACC-15). Unpacking needs nothing
+  # stopped, and it is where a full data volume or an unwritable staging directory
+  # surfaces: caught here it is a failed command on a running install; caught after
+  # the stop it was an outage over an archive that could never have been applied.
+  # The archive is already inside the container: step 1 copied it there to verify it,
+  # and the verifier refuses links, absolute paths and `..` members, so
+  # --strip-components=1 unpacks only the snapshot's own tree.
+  _info "Unpacking the archive…"
+  docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" sh -c '
+    set -e
+    stage="${CB_DATA_DIR}/tmp/cb-restore"
+    rm -rf "$stage" && mkdir -p "$stage"
+    tar -xzf "${stage}.tar.gz" -C "$stage" --strip-components=1
+    gunzip -c "$stage/db.sql.gz" > "$stage/db.sql"
+  ' || {
+    docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" \
+      sh -c 'rm -rf "${CB_DATA_DIR}/tmp/cb-restore" "${CB_DATA_DIR}/tmp/cb-restore.tar.gz"' 2>/dev/null || true
+    _fail "Could not unpack the archive inside the container (full volume or permissions?). Nothing has been changed; the application is still running."
+  }
+
   # A restore that runs under live writers is not a restore. Nothing has been destroyed
   # at this point — the archive is verified and the safety snapshot is taken — so a stop
   # that did not happen is a reason to abort, not a reason to warn.
@@ -1748,15 +1768,6 @@ _restore_container() {
   fi
 
   _info "Restoring the database…"
-  # The archive is already inside the container: step 1 copied it there to verify it.
-  docker exec -e "CB_DATA_DIR=${CB_DATA_DIR}" "$CB_BACKEND_CONTAINER" sh -c '
-    set -e
-    stage="${CB_DATA_DIR}/tmp/cb-restore"
-    rm -rf "$stage" && mkdir -p "$stage"
-    tar -xzf "${stage}.tar.gz" -C "$stage" --strip-components=1
-    gunzip -c "$stage/db.sql.gz" > "$stage/db.sql"
-  ' || _fail "Could not unpack the archive inside the container."
-
   docker exec "$CB_BACKEND_CONTAINER" sh -c "${_DB_CONN_SH}; exec psql \"\$@\" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'" \
     || _fail "Could not reset the database schema. The safety snapshot is in your backup directory."
 

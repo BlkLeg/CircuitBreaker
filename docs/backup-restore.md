@@ -286,6 +286,30 @@ is run on.
 Do not rearrange those steps. Verification before stopping and a safety snapshot before destroying
 are the two properties that make the command safe to run under pressure.
 
+### What a restore refuses, and what to do about it
+
+Every refusal below happens **before anything is stopped, dropped or written**, prints the cause,
+and ends with "Nothing has been changed". The backend verifier (every `cb restore`) and
+`deploy/scripts/restore.sh` (the native and disaster-recovery path) both enforce them; the automated
+fault matrix is `apps/backend/tests/services/test_restore_fault_matrix.py` and
+`tests/build/test_restore_fault_matrix.py`.
+
+| Fault | How it is detected | Recovery |
+|---|---|---|
+| Disk full | `restore.sh` measures free space for the unpack and the uploads before stopping anything, and unpacks before stopping; `cb` checks the container's data volume and unpacks before stopping the application. A snapshot that runs out of space while being written is discarded and never gets a `cb-snapshot-*.tar.gz` name | Free space, re-run. Use `TMPDIR` to unpack on a larger filesystem |
+| Permission failure | An unreadable archive is reported as such; `restore.sh` checks that the uploads directory and the env file can be written before stopping anything | Run as root or the owner, or fix the path's permissions |
+| Corrupt or truncated archive | The whole gzip stream is read and its CRC checked; links, absolute paths, `..` members, a second top-level directory and repeated member names are refused | Use another copy of the snapshot |
+| Checksum mismatch | `db.sql.gz` against the manifest's SHA-256 | Use another copy of the snapshot |
+| Missing or wrong vault key | `vault.key` missing, empty, not a vault key, or not the key the dump's `app_settings.vault_key_hash` records | Take a fresh snapshot on the source install |
+| Incompatible schema | Snapshot format newer than this build reads; release newer than the installed one (`--force` waives only this); a dump whose `alembic_version` is a revision this build does not ship (`cb restore` only — `restore.sh` has no build to compare against) | Upgrade this install first, or restore with the build that took it |
+| Partial snapshot | A dump that opens with pg_dump's header but never reaches `-- PostgreSQL database dump complete`, an incomplete `db.sql.gz` gzip stream, an empty dump, or fewer uploads/config files than the manifest records. Applies to bare pre-upgrade dumps too | Use an earlier snapshot |
+
+What is **not** atomic: once validation has passed and the database has been dropped, a replay that
+fails partway (the database volume filling up, a missing extension) leaves the service stopped and a
+partial database that must not be served. The script says so. Re-running the restore with the same
+archive discards the partial load; `cb restore` also took a safety snapshot of the pre-restore state
+first.
+
 ### Per-mode mechanics
 
 | Mode | How the restore is carried out |
@@ -302,7 +326,7 @@ sudo deploy/scripts/restore.sh /path/to/cb-snapshot-20260814-020000.tar.gz
 Use it directly when `cb` or its `install.conf` is part of what was lost.
 
 It accepts **two artifacts**, and what it requires depends on which you hand it. A full snapshot
-(`cb-snapshot-*.tar.gz`) needs `tar`, `gzip`, `psql`, `rsync`, `jq`, `sed` and `sha256sum`. A bare
+(`cb-snapshot-*.tar.gz`) needs `tar`, `gzip`, `psql`, `rsync`, `jq`, `sed`, `sha256sum` and `awk`. A bare
 `.sql`/`.sql.gz` — which is what `install.sh --upgrade` writes to `${CB_DATA_DIR}/backups/` before it
 migrates — needs only `gzip`, `psql` and `sed`, because there is no manifest to read, no checksum to
 verify and no `uploads/` to sync. Demanding the full set for a database-only restore would refuse a

@@ -3,10 +3,12 @@ package discover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"circuitbreaker.dev/cb-agent/internal/collect/probe"
 )
@@ -151,6 +153,61 @@ func TestDiscoverReadiness_NeighborCacheUnavailability(t *testing.T) {
 				t.Errorf("discovery.neighbor remediation = %q, want a remediation: %v", neighbor.Remediation, tc.wantRemediation)
 			}
 		})
+	}
+}
+
+// TestDiscoverReadiness_NetlinkBlockedNamesTheUnitFix pins RISK-011's detection half. An agent
+// whose unit predates AF_NETLINK gets EAFNOSUPPORT from socket() and, before this row existed,
+// reported the generic seccomp/container wording — which never mentions the unit file that is
+// actually at fault. The row must name the exact fix and carry the machine-readable Missing
+// token the server lists affected hosts by; the kernel's own errno must stay in Reason so a
+// support thread still sees what the kernel said.
+func TestDiscoverReadiness_NetlinkBlockedNamesTheUnitFix(t *testing.T) {
+	blocked := fmt.Errorf("discover: open netlink socket: %w (%w)", ErrNetlinkBlocked, errors.New("address family not supported by protocol"))
+	deps := healthyReadinessDeps()
+	deps.neighbors = func(context.Context) ([]Neighbor, error) { return nil, blocked }
+
+	neighbor := evaluateReadiness(context.Background(), deps)[0]
+	if neighbor.Collector != "discovery.neighbor" || neighbor.State != "unavailable" {
+		t.Fatalf("readiness[0] = %s/%s, want discovery.neighbor/unavailable", neighbor.Collector, neighbor.State)
+	}
+	if !strings.Contains(neighbor.Reason, "address family not supported by protocol") {
+		t.Errorf("reason = %q, want it to keep the kernel's errno", neighbor.Reason)
+	}
+	for _, want := range []string{"Add agent", "systemctl edit cb-agent", "RestrictAddressFamilies=AF_NETLINK", "systemctl restart cb-agent"} {
+		if !strings.Contains(neighbor.Remediation, want) {
+			t.Errorf("remediation = %q, want it to contain %q", neighbor.Remediation, want)
+		}
+	}
+	if len(neighbor.Missing) != 1 || neighbor.Missing[0] != MissingAFNetlink {
+		t.Errorf("missing = %v, want [%q]", neighbor.Missing, MissingAFNetlink)
+	}
+	// agent_capability_readiness stores reason and remediation in VARCHAR(512) columns; a longer
+	// string would fail the whole readiness upsert on the server, not just this row.
+	if n := utf8.RuneCountInString(neighbor.Remediation); n > 512 {
+		t.Errorf("remediation is %d characters, want at most the server's 512", n)
+	}
+	if n := utf8.RuneCountInString(neighbor.Reason); n > 512 {
+		t.Errorf("reason is %d characters, want at most the server's 512", n)
+	}
+}
+
+// TestDiscoverReadiness_OtherNetlinkFailuresKeepTheGenericRow proves the unit-file instruction is
+// reserved for a refused socket. A dump the kernel rejected, or a resource limit, is not the
+// unit's fault, and listing that host as needing its unit rewritten would send an operator after
+// a problem they do not have.
+func TestDiscoverReadiness_OtherNetlinkFailuresKeepTheGenericRow(t *testing.T) {
+	deps := healthyReadinessDeps()
+	deps.neighbors = func(context.Context) ([]Neighbor, error) {
+		return nil, errors.New("discover: open netlink socket: too many open files")
+	}
+
+	neighbor := evaluateReadiness(context.Background(), deps)[0]
+	if neighbor.Remediation != neighborReadinessRemediation {
+		t.Errorf("remediation = %q, want the generic %q", neighbor.Remediation, neighborReadinessRemediation)
+	}
+	if len(neighbor.Missing) != 0 {
+		t.Errorf("missing = %v, want none for a failure that is not the sandbox", neighbor.Missing)
 	}
 }
 

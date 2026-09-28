@@ -400,6 +400,25 @@ class TLSPinPendingAgent(BaseModel):
     bucket: str
 
 
+class NetlinkBlockedAgentRead(BaseModel):
+    """One active agent whose service sandbox refuses AF_NETLINK (RISK-011).
+
+    `reason` and `remediation` are the agent's own `discovery.neighbor`
+    readiness text. `legacy_report` is true for an agent built before it
+    reported the machine-readable `AF_NETLINK` token: its `remediation` is the
+    old generic wording, not the unit fix.
+    """
+
+    id: int
+    hostname: str | None
+    name: str | None
+    last_seen_at: datetime | None
+    reported_at: datetime | None
+    reason: str | None
+    remediation: str | None
+    legacy_report: bool
+
+
 class TLSPinRotationStatus(BaseModel):
     """the TLS trust rotation's state, as surfaced to admins.
 

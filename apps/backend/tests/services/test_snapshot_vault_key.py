@@ -118,6 +118,9 @@ def _dump_with_app_settings(vault_key_hash: str | None) -> bytes:
         "COPY public.app_settings (id, vault_key_hash, vault_key_rotated_at) FROM stdin;\n"
         f"1\t{value}\t\\N\n"
         "\\.\n\n\n"
+        # pg_dump's closing line. The verifier refuses a dump that opens with pg_dump's
+        # header and never reaches it — that is a dump cut short (ACC-15, partial snapshot).
+        "--\n-- PostgreSQL database dump complete\n--\n\n"
     ).encode()
 
 
@@ -179,6 +182,8 @@ def test_verify_accepts_a_vault_key_the_dump_agrees_with(tmp_path: Path) -> None
 
 def test_verify_accepts_a_dump_that_records_no_hash(tmp_path: Path) -> None:
     """A pre-hash install has nothing to cross-check against; that is not a refusal."""
-    archive = _archive(tmp_path, dump=_dump_with_app_settings(None), vault="any-key")
+    archive = _archive(
+        tmp_path, dump=_dump_with_app_settings(None), vault=Fernet.generate_key().decode()
+    )
 
     assert verify_archive(archive)["db_name"] == "circuitbreaker"

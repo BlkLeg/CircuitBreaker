@@ -51,6 +51,11 @@ _STREAM_BLOCK = 1024 * 1024
 # repeatedly killed job leaks roughly one tree rather than one per run.
 _STAGING_ORPHAN_MAX_AGE_SECONDS = 6 * 3600
 
+# Suffix of a tarball that is still being packed. Deliberately does NOT match the
+# `cb-snapshot-*.tar.gz` glob prune_local and the restore paths use, so a partial archive
+# can never be mistaken for a recovery point. Same convention as db_backup._PARTIAL_SUFFIX.
+_PARTIAL_SUFFIX = ".part"
+
 
 class BackupError(RuntimeError):
     """Raised when snapshot creation fails."""
@@ -166,6 +171,7 @@ def _build_snapshot_sync(
     inner = staging / f"cb-snapshot-{stamp}"
     inner.mkdir()
     dest = backup_dir / tarball_name
+    part = backup_dir / (tarball_name + _PARTIAL_SUFFIX)
 
     try:
         # 1. pg_dump → db.sql.gz + compute sha256
@@ -255,28 +261,66 @@ def _build_snapshot_sync(
         }
         (inner / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-        # 6. Pack tarball
+        # 6. Pack tarball — under a scratch name, created 0600, renamed only when whole.
+        #
+        # Packing straight into `dest` had two failure shapes. A full disk or a kill
+        # mid-pack left a truncated `cb-snapshot-*.tar.gz` under the real name, which
+        # prune_local counts as a recovery point — so the next runs could delete the
+        # last good snapshots to keep a broken one. And the file was created with the
+        # process umask (0644) and only chmodded after the pack finished, so for the
+        # whole pack an archive holding the plaintext vault key was world-readable.
         backup_dir.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(dest, "w:gz") as tf:
+        _sweep_stale_partials(backup_dir)
+        fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w:gz") as tf:
             tf.add(inner, arcname=f"cb-snapshot-{stamp}")
 
-        # 7. Restrict permissions
-        os.chmod(dest, 0o600)
+        # 7. Restrict permissions (O_CREAT's mode is filtered by umask; a pre-existing
+        # scratch file keeps its old mode) and publish under the real name atomically.
+        os.chmod(part, 0o600)
+        os.replace(part, dest)
 
         _logger.info("Snapshot created: %s (%d KB)", dest.name, dest.stat().st_size // 1024)
         return dest
 
+    # No `dest.unlink()` on failure any more. `dest` is only ever written by the atomic
+    # rename above, so on any failure it is either absent or a *previous* snapshot that
+    # happens to share this second's name — and deleting that one turned a failed backup
+    # into a lost recovery point. The scratch file is the only thing to clean up.
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
-        if dest.exists():
-            dest.unlink(missing_ok=True)
         raise BackupError(f"pg_dump failed: {stderr}") from exc
     except Exception as exc:
-        if dest.exists():
-            dest.unlink(missing_ok=True)
         raise BackupError(str(exc)) from exc
     finally:
+        _unlink_quietly(part)
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Remove a scratch file on the way out of a failed build without masking its error."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        _logger.warning("Could not remove snapshot scratch file %s: %s", path.name, exc)
+
+
+def _sweep_stale_partials(backup_dir: Path) -> None:
+    """Delete scratch tarballs a killed snapshot left in the backup directory.
+
+    The ``finally`` above removes the scratch file on every ordinary failure, but not on
+    SIGKILL. Same age rule and same reasoning as _sweep_orphan_staging; the glob can never
+    match a finished ``cb-snapshot-*.tar.gz``. Never fatal.
+    """
+    cutoff = datetime.now(tz=UTC).timestamp() - _STAGING_ORPHAN_MAX_AGE_SECONDS
+    for path in backup_dir.glob(f"cb-snapshot-*.tar.gz{_PARTIAL_SUFFIX}"):
+        try:
+            if not path.is_file() or path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink(missing_ok=True)
+            _logger.warning("Swept partial snapshot from an interrupted run: %s", path.name)
+        except OSError as exc:
+            _logger.warning("Could not sweep partial snapshot %s: %s", path.name, exc)
 
 
 async def build_snapshot(

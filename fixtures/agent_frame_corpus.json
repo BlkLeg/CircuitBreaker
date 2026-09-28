@@ -835,6 +835,37 @@
     }
   },
   {
+    "description": "capability.readiness — AF_NETLINK refused by the service sandbox (RISK-011): a unit written before the installer granted AF_NETLINK",
+    "json": {
+      "v": 1, "type": "capability.readiness", "seq": 16, "ts": "2026-08-08T12:05:00Z",
+      "payload": {
+        "readiness": [
+          {
+            "collector": "discovery.neighbor", "state": "unavailable",
+            "reason": "discover: open netlink socket: the agent's sandbox does not permit AF_NETLINK sockets (address family not supported by protocol)",
+            "remediation": "rewrite this host's cb-agent unit, which predates AF_NETLINK: re-run the install command from Agents → Add agent, or run `sudo systemctl edit cb-agent`, add `[Service]` and `RestrictAddressFamilies=AF_NETLINK`, then `sudo systemctl restart cb-agent`. Outside systemd, allow AF_NETLINK (NETLINK_ROUTE) sockets in the seccomp/LSM policy confining the agent",
+            "missing": ["AF_NETLINK"]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "description": "capability.readiness — AF_NETLINK refused by the service sandbox, as an agent built before the AF_NETLINK missing token reports it",
+    "json": {
+      "v": 1, "type": "capability.readiness", "seq": 17, "ts": "2026-08-08T12:06:00Z",
+      "payload": {
+        "readiness": [
+          {
+            "collector": "discovery.neighbor", "state": "unavailable",
+            "reason": "discover: open netlink socket: address family not supported by protocol",
+            "remediation": "allow the agent to open an AF_NETLINK/NETLINK_ROUTE socket — a seccomp profile or a container without CAP_NET_ADMIN-free netlink access will block the neighbor dump"
+          }
+        ]
+      }
+    }
+  },
+  {
     "description": "tls.pin.rotate — successor self-signed certificate pin",
     "json": {
       "v": 1,

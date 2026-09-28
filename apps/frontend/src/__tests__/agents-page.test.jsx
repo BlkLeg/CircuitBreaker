@@ -75,6 +75,10 @@ vi.mock('../components/agents/ServerKeyRotationPanel', () => ({
   default: () => <div data-testid="server-key-rotation-panel" />,
 }));
 
+vi.mock('../components/agents/NetlinkRemediationPanel', () => ({
+  default: () => <div data-testid="netlink-remediation-panel" />,
+}));
+
 const mockAuthUser = vi.hoisted(() => ({ value: { role: 'admin' } }));
 vi.mock('../context/AuthContext', () => ({
   useAuth: () => ({ user: mockAuthUser.value }),
@@ -814,6 +818,7 @@ it('shows the server-key rotation panel to an admin', async () => {
     </MemoryRouter>
   );
   await waitFor(() => expect(screen.getByTestId('server-key-rotation-panel')).toBeInTheDocument());
+  expect(screen.getByTestId('netlink-remediation-panel')).toBeInTheDocument();
 });
 
 it('hides the server-key rotation panel from a non-admin', async () => {
@@ -825,5 +830,7 @@ it('hides the server-key rotation panel from a non-admin', async () => {
   );
   await waitFor(() => expect(screen.getByRole('heading', { name: /agents/i })).toBeInTheDocument());
   expect(screen.queryByTestId('server-key-rotation-panel')).not.toBeInTheDocument();
+  // GET /agents/netlink-blocked is admin-only; a viewer would only ever see its 403.
+  expect(screen.queryByTestId('netlink-remediation-panel')).not.toBeInTheDocument();
   mockAuthUser.value = { role: 'admin' };
 });

@@ -38,6 +38,9 @@ const DEFAULTS: Record<string, unknown> = {
   agents: [],
   'agents/presence': [],
   'agents/metrics/series': [],
+  // Its own entry, or the longest-prefix match hands it whatever `agents` is
+  // stubbed with and the RISK-011 panel lists the whole fleet as blocked.
+  'agents/netlink-blocked': [],
   'agents/install-command': { command: 'curl -fsSL https://example.test/install.sh | sh' },
 
   // Monitoring and discovery

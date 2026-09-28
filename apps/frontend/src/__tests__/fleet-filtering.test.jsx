@@ -122,6 +122,7 @@ vi.mock('../components/common/Toast', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() }),
 }));
 vi.mock('../components/agents/ServerKeyRotationPanel', () => ({ default: () => null }));
+vi.mock('../components/agents/NetlinkRemediationPanel', () => ({ default: () => null }));
 vi.mock('../context/AuthContext', () => ({ useAuth: () => ({ user: { role: 'admin' } }) }));
 
 import * as api from '../api/agents';
