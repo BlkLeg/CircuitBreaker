@@ -302,20 +302,30 @@ def verified_verdict_artifact(
 
     `fetch_run` returns `repos/{repo}/actions/runs/{id}`. Its errors propagate:
     an API failure is a lookup that did not answer, never "no verdict".
+
+    Skipped candidates are counted, not named: `run_id`, the artifact name and
+    every other field here comes from the GitHub API, and CodeQL's
+    py/clear-text-logging-sensitive-data treats that as sensitive regardless
+    of how unremarkable the value actually is. The job log gets a fixed label
+    plus our own `len()` count once the loop ends — never API-derived text —
+    matching the design's "fixed label, never raw message text" rule
+    (docs/design/2026-09-27-tier2-composed-and-triage-design.md §7.1 item 4).
     """
+    skipped = 0
+    found: Mapping[str, object] | None = None
     for artifact in candidates:
         workflow_run = artifact.get("workflow_run")
         run_id = workflow_run.get("id") if isinstance(workflow_run, Mapping) else None
         if not isinstance(run_id, int):
             # ValueError (TRY004): `check` turns ValueError into a closed ::error::.
-            raise ValueError(f"verdict artifact {artifact.get('name')!r} has no workflow_run.id to verify")  # noqa: TRY004
+            raise ValueError("a verdict artifact has no workflow_run.id to verify")  # noqa: TRY004
         if run_is_same_repo(fetch_run(run_id)):
-            return artifact
-        print(
-            f"::warning::skipping verdict artifact from run {run_id}: its head repository is not this repository",
-            file=sys.stderr,
-        )
-    return None
+            found = artifact
+            break
+        skipped += 1
+    if skipped:
+        print(f"::warning::skipped {skipped} verdict artifact(s) whose run is not from this repository", file=sys.stderr)
+    return found
 
 
 def deselect_args(quarantined: frozenset[str]) -> list[str]:
@@ -404,16 +414,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     fp = fingerprint(git_listing(REPO_ROOT))
     try:
         previous = _fetch_previous(os.environ["REPO"], int(os.environ["REPO_ID"]), fp)
-    except ValueError as exc:
+    except ValueError:
         # An incomplete artifact listing (merge_artifact_pages) or a verdict
         # artifact that won't parse (Verdict.from_json) both mean the lookup
-        # did not answer trustworthily. Failing closed here, with a specific
-        # reason, is what stops either case from being read as "no earlier
-        # verdict" and letting an unaddressed failure re-run.
-        print(f"::error::rerun guard could not read the previous verdict: {exc}")
+        # did not answer trustworthily. Failing closed here is what stops
+        # either case from being read as "no earlier verdict" and letting an
+        # unaddressed failure re-run. The exception text itself is not
+        # printed: both raise paths can carry content read from the artifact
+        # (e.g. Verdict.from_json's outcome field), and CodeQL's
+        # py/clear-text-logging-sensitive-data treats anything derived from
+        # the authenticated API as sensitive. A fixed label carries the same
+        # operational meaning — see the step's own exit code and traceback
+        # for detail during local debugging.
+        print("::error::rerun guard could not read the previous verdict; failing closed")
         return 1
     if previous is not None and previous.fingerprint != fp:
-        print(f"::error::verdict artifact for {fp} records fingerprint {previous.fingerprint}")
+        # `fp` is our own git_listing-derived fingerprint, safe to print.
+        # `previous.fingerprint` came from the artifact's contents (API data)
+        # and is deliberately left out of the log line for the same reason.
+        print(f"::error::verdict artifact fetched for fingerprint {fp} does not match it")
         return 1
     allowed, reason = decide(previous, quarantined_tests(REGISTER, _today()))
     print(f"inputs fingerprint: {fp}")

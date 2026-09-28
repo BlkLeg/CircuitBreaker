@@ -276,6 +276,20 @@ def test_verification_skips_a_candidate_whose_run_is_a_fork():
     assert chosen is not None and chosen["workflow_run"]["id"] == 11
 
 
+def test_skip_warning_names_no_run_id_only_a_count(capsys):
+    """CodeQL (py/clear-text-logging-sensitive-data): the warning for a
+    foreign-repo run must be a fixed label plus our own len() count, never
+    the run id or any other value read from the API response."""
+    foreign_run_id = 918273645
+    listing = {"artifacts": [_artifact("2026-09-26T00:00:00Z", run_id=foreign_run_id), _artifact("2026-09-25T00:00:00Z", run_id=11)]}
+    runs = {foreign_run_id: _run("fork/cb", "BlkLeg/cb"), 11: _run("BlkLeg/cb", "BlkLeg/cb")}
+    chosen = verified_verdict_artifact(verdict_candidates(listing, 7), runs.__getitem__)
+    assert chosen is not None and chosen["workflow_run"]["id"] == 11
+    err = capsys.readouterr().err
+    assert str(foreign_run_id) not in err
+    assert err == "::warning::skipped 1 verdict artifact(s) whose run is not from this repository\n"
+
+
 def test_no_surviving_candidate_means_no_previous_verdict():
     listing = {"artifacts": [_artifact("2026-09-26T00:00:00Z", run_id=10)]}
     assert verified_verdict_artifact(verdict_candidates(listing, 7), lambda _run_id: _run("fork/cb", "BlkLeg/cb")) is None
