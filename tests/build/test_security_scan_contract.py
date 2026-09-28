@@ -56,7 +56,7 @@ def test_dockerised_trivy_reuses_its_vulnerability_database():
         "TRIVY_CACHE_MOUNT must map a host directory onto trivy's cache path"
     )
     for line in text.splitlines():
-        if "aquasec/trivy" not in line or not line.strip().startswith(("docker run", "if ! docker run")):
+        if '"$TRIVY_IMAGE"' not in line or not line.strip().startswith(("docker run", "if ! docker run")):
             continue
         assert "TRIVY_CACHE_MOUNT" in line, (
             "the dockerised trivy must mount a persistent cache, or it "
