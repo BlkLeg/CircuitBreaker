@@ -173,7 +173,7 @@ jobs:
     with:
       previous_release: ${{ vars.CB_PREVIOUS_PYINSTALLER_RELEASE }}
 
-  # ── Browser E2E (Playwright against the candidate commit) ────────────────────
+  # ── Tier 2 (browser suite against the candidate commit) ──────────────────────
   # The gap this closes: every other gate here covers packaging — artifact
   # smoke, the installer journey, runtime parity — so a release could publish
   # having never rendered a page. `make verify` and `make verify-full` run no
@@ -186,14 +186,27 @@ jobs:
   # the image legs instead of queueing behind them. The image build and merge
   # dominate the critical path, so the release should not get longer.
   #
-  # The composed agent journey is deliberately absent: e2e.yml is disabled under
-  # QUAR-001 (issue #162, expiry 2026-12-21) and would make every release red.
-  # browser-e2e.yml's header records what closing that half would take.
-  browser-e2e:
-    name: Browser E2E
+  # Tier 2 gates the candidate, with the browser suite only. The composed agent
+  # journey is deliberately NOT a release gate (AGT-01, reaffirmed by the
+  # maintainer 2026-09-27): it runs nightly through tier2.yml and on tag pushes
+  # through e2e.yml, and its rerun guard keeps a known failure from being
+  # re-run until it is fixed or quarantined. `suites` must stay explicit: the
+  # tier's default includes composed.
+  #
+  # Read-only on purpose: this workflow's top-level token can write releases and
+  # packages, and a test suite needs neither. Check runs read
+  # `Tier 2 / Browser E2E / browser-e2e (shard 1/2)`, three levels of nesting,
+  # inside GitHub's limit of four (design §7.4).
+  tier2:
+    name: Tier 2
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
     needs: [version, gate]
-    uses: ./.github/workflows/browser-e2e.yml
+    permissions:
+      actions: read      # the rerun guard in composed-e2e.yml reads earlier verdict artifacts
+      contents: read
+    uses: ./.github/workflows/tier2.yml
+    with:
+      suites: '["browser"]'
 
   # ── Container image, built natively per architecture ─────────────────────────
   # One runner per architecture, never a single emulated
@@ -442,7 +455,7 @@ jobs:
   release:
     name: Stage Draft Release
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
-    needs: [version, build, artifact-smoke, browser-e2e, installer-journey, image-merge, runtime-parity]
+    needs: [version, build, artifact-smoke, tier2, installer-journey, image-merge, runtime-parity]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
