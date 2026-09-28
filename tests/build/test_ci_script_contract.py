@@ -82,6 +82,7 @@ TIER_SCRIPTS = [
     "tier1-unit.sh",
     "tier2-browser.sh",
     "tier2-agent-journey.sh",
+    "tier2-mono-smoke.sh",
     "tier3-artifact.sh",
 ]
 
