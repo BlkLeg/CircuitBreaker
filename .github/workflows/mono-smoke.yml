@@ -39,11 +39,17 @@ name: Mono image smoke
 # not what was tested.
 #
 # ── A read-only caller's run cannot push ────────────────────────────────────
-# The push steps' `if:` needs `inputs.publish` AND a push to `dev` (inside a
-# called workflow `github` is the CALLER's context, so that reads the caller's
-# event). But the `if:` is the second line of defence. The first is the token:
-# a caller that grants only `contents: read` hands down a GITHUB_TOKEN that
-# GHCR rejects for a push, whatever any input says.
+# The push steps' `if:` needs `inputs.publish`, `inputs.ref == ''` AND a push
+# to `dev` (inside a called workflow `github` is the CALLER's context, so that
+# reads the caller's event). But the `if:` is the second line of defence. The
+# first is the token: a caller that grants only `contents: read` hands down a
+# GITHUB_TOKEN that GHCR rejects for a push, whatever any input says.
+#
+# `inputs.ref == ''` ties the push to the commit that triggered the run: a
+# caller passing `publish: true` together with a non-empty `ref` would build
+# and smoke a DIFFERENT commit than the one that triggered it, then push that
+# other commit's image tagged `:dev`/`:nightly` — a checkout out of step with
+# the run that requested it.
 
 on:
   workflow_call:
@@ -140,7 +146,7 @@ jobs:
       # caller opts in. The token and actor reach `run:` through env, never by
       # interpolation.)
       - name: Publish :nightly
-        if: inputs.publish && github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        if: inputs.publish && inputs.ref == '' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
         env:
           CB_VERSION: ${{ steps.ver.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -170,7 +176,7 @@ jobs:
       # (A3: that `packages: write` grant is now the calling job's in
       # dev-ci.yml — this workflow inherits it; see the header.)
       - name: Push the dev image
-        if: inputs.publish && github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        if: inputs.publish && inputs.ref == '' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
         env:
           CB_VERSION: ${{ steps.ver.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

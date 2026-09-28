@@ -365,16 +365,37 @@ def test_mono_smoke_inherits_its_callers_grant():
 
 
 def test_mono_push_is_gated_on_publish_and_a_push_to_dev():
+    """A caller that passes `publish: true` together with a non-empty `ref`
+    would push a different commit than the one that triggered the run, tagged
+    `:dev`/`:nightly` — so `inputs.ref == ''` gates the push exactly as
+    `inputs.publish` does (A3 controller ruling R1)."""
     steps = _load("mono-smoke.yml")["jobs"]["mono-smoke"]["steps"]
     pushes = [s for s in steps if "docker push" in str(s.get("run", ""))]
     assert pushes, "no push step"
     for step in pushes:
         cond = str(step.get("if", ""))
-        for part in ("inputs.publish", "github.event_name == 'push'", "github.ref == 'refs/heads/dev'"):
+        for part in (
+            "inputs.publish",
+            "inputs.ref == ''",
+            "github.event_name == 'push'",
+            "github.ref == 'refs/heads/dev'",
+        ):
             assert part in cond, f"push step {step.get('name')!r} is missing {part!r}"
+
+
+def test_dev_ci_build_docker_passes_no_ref():
+    """Pairs with test_mono_push_is_gated_on_publish_and_a_push_to_dev: the
+    gate only protects a caller that never sets `ref`, so dev-ci — the one
+    caller with `publish: true` — must be that caller (R1)."""
+    job = _load("dev-ci.yml")["jobs"]["build-docker"]
+    assert "ref" not in (job.get("with") or {}), (
+        "build-docker must not pass a ref; publish: true relies on inputs.ref == '' "
+        "to tie the push to the commit that triggered this run"
+    )
 
 
 def test_only_the_push_steps_touch_the_token():
     for step in _load("mono-smoke.yml")["jobs"]["mono-smoke"]["steps"]:
-        if "GITHUB_TOKEN" in str(step):
+        text = str(step)
+        if "GITHUB_TOKEN" in text or "github.token" in text:
             assert "docker push" in str(step.get("run", "")), step.get("name")
