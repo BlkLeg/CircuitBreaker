@@ -30,5 +30,6 @@ variables:
 include:
   - local: ci/gitlab/image.yml
   - local: ci/gitlab/verify.yml
+  - local: ci/gitlab/security.yml
   - template: Jobs/SAST.gitlab-ci.yml
   - template: Jobs/Secret-Detection.gitlab-ci.yml

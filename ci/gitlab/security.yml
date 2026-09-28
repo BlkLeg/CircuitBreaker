@@ -1,0 +1,71 @@
+# Ports .github/workflows/security.yml. SARIF upload goes away (no GitHub code
+# scanning here); reports are artifacts. trivy is v0.70.0, the default of the
+# trivy-action@v0.36.0 GitHub used, so the two systems scan with one binary.
+.scanner:
+  extends: .cb-docker
+  stage: security
+  needs: []
+  timeout: 20m
+
+"Security Suppression Metadata":
+  extends: .scanner
+  script:
+    - python3.12 scripts/validate_security_suppressions.py
+
+"Trivy Filesystem Scan":
+  extends: .scanner
+  script:
+    - scripts/ci/install_scanners.sh /usr/local/bin
+    - trivy fs . --severity CRITICAL,HIGH,MEDIUM --exit-code 1 --skip-dirs .venv,node_modules,dist
+
+"Trivy Config / IaC Scan":
+  extends: .scanner
+  script:
+    - scripts/ci/install_scanners.sh /usr/local/bin
+    - trivy config . --severity CRITICAL,HIGH --exit-code 1 --skip-dirs .venv,node_modules,dist --ignorefile .trivyignore
+
+"Semgrep (SAST)":
+  extends: .scanner
+  script:
+    - pip install semgrep
+    - semgrep scan --config p/default --error --severity ERROR apps/backend/src/ apps/frontend/src/
+
+"Bandit (Python SAST)":
+  extends: .scanner
+  script:
+    - pip install bandit
+    - bandit -r apps/backend/src/ -lll --skip B101
+
+# gitleaks-action reads the GitHub API, so the binary scans the full history,
+# which is what security.yml's weekly run does, with the same config.
+"Gitleaks (Secret Scanning)":
+  extends: .scanner
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - scripts/ci/install_scanners.sh /usr/local/bin
+    - gitleaks git . --config .gitleaks.toml --redact -v
+
+"Checkov (GitHub Actions / IaC)":
+  extends: .scanner
+  script:
+    - pip install checkov
+    - checkov -d .github/workflows/ --skip-path '(^|/)\.github/workflows/mono-smoke\.yml$' --quiet
+    - checkov -f .github/workflows/mono-smoke.yml --skip-check CKV2_GHA_1 --quiet
+
+"Python Dependency Audit":
+  extends: .scanner
+  script:
+    - python3.12 -m venv /tmp/audit && /tmp/audit/bin/pip install --upgrade pip pip-audit
+    - /tmp/audit/bin/pip-audit -r apps/backend/requirements.txt -r apps/backend/requirements-pg.txt
+
+"Frontend Dependency Audit":
+  extends: .scanner
+  script:
+    - cd apps/frontend && npm ci && npm audit --audit-level=high
+
+"Go Vulnerability Scan":
+  extends: .scanner
+  script:
+    - go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+    - cd apps/agent && govulncheck ./...
