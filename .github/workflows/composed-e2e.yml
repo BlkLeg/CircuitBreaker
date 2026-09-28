@@ -128,13 +128,25 @@ jobs:
       # REL-20: seed and PYTHONHASHSEED are constants, not derived from the
       # run id, so a green run can be used to characterise a red one. Both are
       # recorded below, making a change to them visible.
+      #
+      # `commit` and `tested_commit` differ on purpose. `commit` is
+      # `GITHUB_SHA`, the commit that triggered THIS run — on a `schedule` or
+      # `workflow_dispatch` with `ref:` set, that is the default branch's copy
+      # of this workflow file, not necessarily the tree the journey actually
+      # exercises. `tested_commit` is `git rev-parse HEAD` after this job
+      # checked out `needs.rerun-guard.outputs.sha` above — the same SHA the
+      # rerun guard fingerprinted and the one this job's suite really ran
+      # against. Keeping both means nothing that already reads `commit=`
+      # breaks, while a reader who wants the tested tree has a field for it.
       - name: Record the run manifest
         env:
           CB_E2E_SEED: "20260826"
         run: |
           mkdir -p diagnostics
+          tested_commit="$(git rev-parse HEAD)"
           {
             echo "commit=${GITHUB_SHA}"
+            echo "tested_commit=${tested_commit}"
             echo "workflow=${GITHUB_WORKFLOW}"
             echo "job=composed-journey"
             echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"

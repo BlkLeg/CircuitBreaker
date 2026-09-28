@@ -58,9 +58,10 @@ from quarantine_notice import REGISTER, RegisterError, rows_for_check
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHECK = "Composed Agent E2E / composed-journey"
+TEST_FILE = REPO_ROOT / "apps" / "agent" / "e2e" / "test_agent_e2e.py"
 # pytest.ini at the repo root makes node ids rootdir-relative. A bare
 # `test_agent_e2e.py::` prefix deselects nothing, silently.
-NODE_PREFIX = "apps/agent/e2e/test_agent_e2e.py::"
+NODE_PREFIX = f"{TEST_FILE.relative_to(REPO_ROOT)}::"
 ARTIFACT_PREFIX = "composed-journey-verdict-"
 
 # What the journey exercises: the agent and its E2E harness, the backend, the
@@ -236,14 +237,33 @@ def merge_artifact_pages(pages: list[Mapping[str, object]]) -> dict[str, object]
     re-run. A short count is the one signal that distinguishes that case from
     an actually-empty listing, so it is treated as failure, not as "found
     nothing".
+
+    Also raises ValueError when the first page carries no usable (integer)
+    `total_count` at all. `isinstance(total_count, int) and len(merged) <
+    total_count` used to be the whole check: a missing or non-int
+    `total_count` (`None`, a numeral string, a float) made that `and`
+    short-circuit to False, so the listing was silently treated as complete —
+    fail-open, exactly the case this function exists to fail closed on. An
+    empty page list is not this case: it means "no pages fetched", which is
+    valid and reports zero artifacts, not "a page fetched but malformed".
     """
     merged: list[object] = []
     for page in pages:
         artifacts = page.get("artifacts")
         if isinstance(artifacts, list):
             merged.extend(artifacts)
-    total_count = pages[0].get("total_count") if pages else 0
-    if isinstance(total_count, int) and len(merged) < total_count:
+    if not pages:
+        return {"total_count": 0, "artifacts": merged}
+    total_count = pages[0].get("total_count")
+    if not isinstance(total_count, int):
+        # ValueError, not TypeError (TRY004): every malformed-listing path in
+        # this function raises ValueError by contract — callers (`check`)
+        # catch one type.
+        raise ValueError(  # noqa: TRY004
+            f"artifact listing's first page has no integer total_count (got {total_count!r}); "
+            "failing closed rather than treating the listing as complete"
+        )
+    if len(merged) < total_count:
         raise ValueError(
             f"artifact listing incomplete: the API reported {total_count} artifact(s) "
             f"but only {len(merged)} came back across {len(pages)} page(s)"
@@ -328,9 +348,46 @@ def verified_verdict_artifact(
     return found
 
 
-def deselect_args(quarantined: frozenset[str]) -> list[str]:
-    """Return one pytest --deselect argument per quarantined test, sorted."""
-    return [f"--deselect={NODE_PREFIX}{name}" for name in sorted(quarantined)]
+def collect_node_ids(test_file: Path) -> list[str]:
+    """Return every node id `pytest --collect-only -q` reports for `test_file`.
+
+    Real collection, not a name guess: `deselect_args` can then only ever
+    match a node id that genuinely exists. Before this, `deselect` built
+    `--deselect=<prefix>{name}` straight from a register scope name, and
+    pytest's own `--deselect` drops any node id that STARTS WITH the given
+    string — a row naming `test_agent_update` would therefore also deselect
+    `test_agent_update_success_and_forced_rollback`.
+
+    Rootdir-agnostic on purpose (matched by filename, not by a hardcoded
+    REPO_ROOT-relative prefix), so the same function collects both the real
+    suite (rootdir = repo root, ids like
+    `apps/agent/e2e/test_agent_e2e.py::test_x`) and a synthetic tmp_path
+    project used in tests (rootdir = tmp_path, ids like `test_x.py::test_x`).
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", test_file.name, "--collect-only", "-q"],
+        cwd=test_file.parent, capture_output=True, text=True, check=True,
+    )
+    ids = []
+    for line in result.stdout.splitlines():
+        file_part = line.split("::", 1)[0]
+        if "::" in line and file_part.endswith(test_file.name):
+            ids.append(line)
+    return ids
+
+
+def deselect_args(quarantined: frozenset[str], node_ids: Sequence[str]) -> list[str]:
+    """Return one pytest --deselect argument per collected node id that is quarantined, sorted.
+
+    `node_ids` must be real, collected ids (`collect_node_ids`) — never
+    reconstructed from a register scope name — so a quarantined test can only
+    ever deselect itself, not every test whose name it happens to prefix.
+    Matching compares base names via `_base`, the same normalising function
+    `decide()` uses against JUnit failures, so a parametrised id
+    (`test_x[a]`) is deselected by a register row naming `test_x`.
+    """
+    matched = {node_id for node_id in node_ids if _base(node_id.rsplit("::", 1)[-1]) in quarantined}
+    return [f"--deselect={node_id}" for node_id in sorted(matched)]
 
 
 def _today() -> date:
@@ -389,9 +446,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "deselect":
         quarantined = quarantined_tests(REGISTER, _today())
+        node_ids = collect_node_ids(TEST_FILE) if quarantined else []
         if quarantined:
             print(f"quarantined, deselected: {', '.join(sorted(quarantined))}", file=sys.stderr)
-        for arg in deselect_args(quarantined):
+        for arg in deselect_args(quarantined, node_ids):
             print(arg)
         return 0
     if args.command == "record":
