@@ -110,7 +110,14 @@ def test_every_dockerfile_mono_copy_source_is_a_suite_input_or_frontend():
     assert not uncovered, f"Dockerfile.mono COPYs from paths not in SUITE_INPUTS: {uncovered}"
 
 
-def test_git_listing_fails_loudly_outside_a_repo(tmp_path):
+def test_git_listing_fails_loudly_outside_a_repo(tmp_path, monkeypatch):
+    # A git hook exports GIT_DIR (absolute in a linked worktree), and GIT_DIR
+    # overrides `git -C`. Under the husky pre-push `make verify`, tmp_path then
+    # "is" the repository and this test fails. Clear what git exported, and put
+    # a ceiling above tmp_path so it cannot find an enclosing repo either.
+    for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_PREFIX"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     with pytest.raises(subprocess.CalledProcessError):
         git_listing(tmp_path)
 
