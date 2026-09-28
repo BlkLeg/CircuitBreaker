@@ -443,41 +443,22 @@ jobs:
       # architecture. Reading the format out of install.sh rather than
       # restating it here is the point: a rename on either side fails this
       # step instead of failing every `curl | bash` install after publication.
+      #
+      # scripts/ci/installer_assets.py is the one definition of "the name
+      # install.sh downloads"; test_release_publication_is_gated.py uses it
+      # too. An inline regex here once took the first `tarball_name=` in
+      # install.sh — a function parameter, `$2` — and looked for an asset
+      # named that. System python3 (3.10): this job has no setup-python.
       - name: Assert install.sh can discover every asset it asks for
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import os, re, sys
-          from pathlib import Path
-
-          version = os.environ["VERSION"]
-          installer = Path("install.sh").read_text(encoding="utf-8")
-
-          match = re.search(r'tarball_name="([^"]+)"', installer)
-          if match is None:
-              print("::error::install.sh no longer builds a tarball_name; this check "
-                    "cannot know what it downloads. Update it rather than deleting it.")
-              sys.exit(1)
-
-          template = match.group(1)
-          print(f"install.sh downloads: {template}")
-
-          missing = []
-          for arch in ("amd64", "arm64"):
-              name = (template
-                      .replace("${CB_VERSION}", version)
-                      .replace("${ARCH}", arch))
-              if not (Path("dist/release") / name).exists():
-                  missing.append(name)
-
-          if missing:
-              print(f"::error::the build produced no asset named {missing}")
-              print("present:", sorted(p.name for p in Path("dist/release").iterdir()))
-              sys.exit(1)
-          print("every asset install.sh resolves is present")
-          PY
+          python3 scripts/ci/installer_assets.py \
+            --installer install.sh \
+            --version "${VERSION}" \
+            --arch amd64 --arch arm64 \
+            --release-dir dist/release
 
       - name: Verify the staged tarball against the staged checksums
         env:
