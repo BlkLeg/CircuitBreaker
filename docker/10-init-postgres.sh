@@ -23,7 +23,17 @@ echo "${CB_DB_PASSWORD}" > "${DATA_DIR}/.pg_pass"
 chmod 600 "${DATA_DIR}/.pg_pass"
 
 # Debian postgresql package installs binaries under /usr/lib/postgresql/15/bin (not in PATH)
-/usr/lib/postgresql/15/bin/initdb -D "${PGDATA}" --username=breaker --pwfile="${DATA_DIR}/.pg_pass"
+#
+# Encoding and locale are explicit, never inherited. initdb otherwise derives
+# both from the environment, and a process with no LANG gets the POSIX locale
+# and a SQL_ASCII cluster: every non-ASCII value then fails to insert with
+# "'ascii' codec can't encode character". That shipped in 0.4.4, when the
+# runtime base moved to debian:12-slim, which sets no locale. The C locale is
+# compatible with any encoding on every libc, so this cannot fail on a host
+# that lacks a particular UTF-8 locale. See app/db/encoding.py for how
+# clusters already created as SQL_ASCII keep working.
+/usr/lib/postgresql/15/bin/initdb -D "${PGDATA}" --username=breaker --pwfile="${DATA_DIR}/.pg_pass" \
+  --encoding=UTF8 --locale=C
 rm -f "${DATA_DIR}/.pg_pass"
 
 cat > "${CONF_FILE}" <<EOF

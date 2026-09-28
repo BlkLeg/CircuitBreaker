@@ -652,7 +652,7 @@ stage3_configure_postgres() {
   # Initialize database
   if [[ ! -f "${CB_DATA_DIR}/postgres/PG_VERSION" ]]; then
     cb_step "Initializing PostgreSQL database"
-    if ! su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres" >> "$LOG_FILE" 2>&1; then
+    if ! su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres --encoding=UTF8 --locale=C" >> "$LOG_FILE" 2>&1; then
       echo ""
       echo "  Last 20 lines from install log:"
       tail -20 "$LOG_FILE" | sed 's/^/  /'
