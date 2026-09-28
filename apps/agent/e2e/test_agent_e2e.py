@@ -1294,6 +1294,31 @@ def _agent_route_networks(env: dict | None = None, *, service: str = _AGENT_SERV
     return networks
 
 
+def _up_agent(service: str, env: dict | None = None, *, build: bool = False) -> None:
+    """Start (or restart) an agent container WITHOUT touching the server.
+
+    `--no-deps` is load-bearing, for the reason `_enroll_agent` gives for its
+    `compose run`: both agent services declare `depends_on: [circuitbreaker]`
+    with no condition, and `compose up <agent>` is entitled to recreate a
+    dependency it considers out of date. On CI it does exactly that on the
+    suite's first agent start — the composed nightly logged
+
+        cb-agent  Built
+        Container circuitbreaker  Recreate
+
+    between `up -d cb-agent` and the first poll, the server container's
+    StartedAt moved by 50s with RestartCount 0, and the test failed with
+    `Connection reset by peer` or a presence stream closed without a close
+    frame, in every nightly that reached pytest. Every caller has already run
+    `_up_server()`, so the dependency is satisfied and the server this test
+    bootstrapped, enrolled against and is watching must be left alone.
+    """
+    command = [*COMPOSE, "up", "-d", "--no-deps"]
+    if build:
+        command.append("--build")
+    subprocess.run([*command, service], check=True, cwd=E2E_DIR, env=env)
+
+
 def _up_fixture_target(service: str, env: dict | None = None) -> None:
     """Brings up one isolated fixture target (probe-target, probe-target-2 or
     late-target). Built separately from `_up_server` because each sits on a
@@ -1555,7 +1580,7 @@ def test_agent_full_lifecycle_enroll_through_revoke_and_reconnect():
         # ---- Steps 2,3,4 ----
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _up_agent("cb-agent")
 
             # ---- Step 5: online=true and heartbeats ----
             try:
@@ -1744,7 +1769,7 @@ def test_agent_uninstall_marks_server_revoked_and_removes_local_files():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _up_agent("cb-agent")
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=20,
@@ -1838,9 +1863,7 @@ def test_agent_noise_rekey_interval_with_accelerated_clock():
 
         agent_id, stream = _enroll_agent(client, headers, env=rekey_env)
         try:
-            subprocess.run(
-                [*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR, env=rekey_env
-            )
+            _up_agent("cb-agent", rekey_env)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=20,
@@ -2023,9 +2046,7 @@ def test_agent_update_success_and_forced_rollback():
             # margin, costs one second per re-exec, and is unset in real
             # deployments.
             reexec_delay_env = {**os.environ, "CB_AGENT_TEST_PRE_REEXEC_DELAY_MS": "1000"}
-            subprocess.run(
-                [*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR, env=reexec_delay_env
-            )
+            _up_agent("cb-agent", reexec_delay_env)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=20,
@@ -2143,7 +2164,7 @@ def test_agent_independent_restarts_recover_without_new_setup():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _up_agent("cb-agent")
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=20,
@@ -2319,7 +2340,7 @@ def test_agent_host_telemetry_first_sample_catchup_and_disable():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _up_agent("cb-agent")
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=20,
@@ -2727,7 +2748,7 @@ def test_agent_black_hole_partition_is_detected_and_spools():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _up_agent("cb-agent")
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=20,
@@ -3056,7 +3077,7 @@ def test_remote_probe_assignment_execution_and_unavailability():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _up_agent("cb-agent")
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=20,
@@ -3644,7 +3665,7 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+            _up_agent(_AGENT_SERVICE)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=30,
@@ -3753,9 +3774,7 @@ def test_e2e_harness_topology_is_pinned_and_two_agents_stay_isolated():
 
             agent2_id, stream2 = _enroll_agent(client, headers, service=_AGENT_2_SERVICE)
             try:
-                subprocess.run(
-                    [*COMPOSE, "up", "-d", _AGENT_2_SERVICE], check=True, cwd=E2E_DIR
-                )
+                _up_agent(_AGENT_2_SERVICE)
                 _wait_until(
                     lambda: client.get(f"/api/v1/agents/{agent2_id}").json()["status"]
                     == "active",
@@ -4323,7 +4342,7 @@ def _rewind_spool_head(env: dict | None = None, *, service: str = _AGENT_SERVICE
     # back on its own, exactly as the real systemd unit would; this is the
     # explicit, idempotent version of that so the test never depends on the
     # engine's timing.
-    subprocess.run([*COMPOSE, "up", "-d", service], check=True, cwd=E2E_DIR, env=env)
+    _up_agent(service, env)
 
 
 def _assert_backend_cannot_reach(address: str, subnet: str) -> None:
@@ -4535,7 +4554,7 @@ def test_agent_zero_configuration_discovery_import_and_replay():
         try:
             agent_id, stream = _enroll_agent(client, headers)
             try:
-                subprocess.run([*COMPOSE, "up", "-d", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+                _up_agent(_AGENT_SERVICE)
                 _wait_until(
                     lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                     timeout=30,
@@ -5389,7 +5408,7 @@ def test_agent_discovery_capability_disable_cancels_and_late_findings_die():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+            _up_agent(_AGENT_SERVICE)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=30,
@@ -5700,7 +5719,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", _AGENT_SERVICE], check=True, cwd=E2E_DIR)
+            _up_agent(_AGENT_SERVICE)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=30,
@@ -6070,9 +6089,7 @@ def test_agent_discovery_reconnects_per_agent_and_requeues_only_changes():
 
             agent2_id, stream2 = _enroll_agent(client, headers, service=_AGENT_2_SERVICE)
             try:
-                subprocess.run(
-                    [*COMPOSE, "up", "-d", _AGENT_2_SERVICE], check=True, cwd=E2E_DIR
-                )
+                _up_agent(_AGENT_2_SERVICE)
                 _wait_until(
                     lambda: client.get(f"/api/v1/agents/{agent2_id}").json()["status"] == "active",
                     timeout=30,
@@ -6249,7 +6266,7 @@ def test_certificate_rotation_does_not_strand_the_fleet():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _up_agent("cb-agent")
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=30,
@@ -6361,7 +6378,7 @@ def test_activation_is_refused_while_an_agent_cannot_confirm():
 
         agent_id, stream = _enroll_agent(client, headers)
         try:
-            subprocess.run([*COMPOSE, "up", "-d", "cb-agent"], check=True, cwd=E2E_DIR)
+            _up_agent("cb-agent")
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=30,
@@ -6476,12 +6493,7 @@ def test_tampered_agent_binary_is_refused():
 
         agent_id, stream = _enroll_agent(client, headers, env=enforce_env)
         try:
-            subprocess.run(
-                [*COMPOSE, "up", "-d", "--build", "cb-agent"],
-                check=True,
-                cwd=E2E_DIR,
-                env=enforce_env,
-            )
+            _up_agent("cb-agent", enforce_env, build=True)
             _wait_until(
                 lambda: client.get(f"/api/v1/agents/{agent_id}").json()["status"] == "active",
                 timeout=30,

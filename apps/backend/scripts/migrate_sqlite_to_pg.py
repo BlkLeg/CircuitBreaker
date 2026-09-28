@@ -56,10 +56,10 @@ def migrate(src_url: str, dst_url: str, dry_run: bool = False) -> None:
         print("[DRY RUN] No data will be written.\n")
 
     src_engine = create_engine(src_url, connect_args={"check_same_thread": False})
-    # UTF8 whatever the target cluster's encoding, as app.db.pg_encoding does for
+    # UTF8 whatever the target cluster's encoding, as app.db.encoding does for
     # the application (#162); spelled inline because this script imports no app code.
     dst_engine = create_engine(
-        dst_url, connect_args={"client_encoding": "utf8"}, pool_pre_ping=True
+        dst_url, connect_args={"client_encoding": "UTF8"}, pool_pre_ping=True
     )
     dst_meta = MetaData()
 

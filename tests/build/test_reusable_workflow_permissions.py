@@ -123,15 +123,23 @@ def violations(workflows: Mapping[str, Mapping[str, object]]) -> list[str]:
         for job_id, job in (callee.get("jobs") or {}).items():
             job = job or {}
             grant = _effective(callee, job)
-            if grant is None:
-                continue
-            for scope in excess_scopes(grant, bound):
-                asked, given = _level_name(grant, scope), _level_name(bound, scope)
-                via = " -> ".join((*chain, callee_file))
-                found.append(
-                    f"{root} (via {via}) calls {callee_file}:{job_id}, which asks for "
-                    f"{scope}: {asked} but the caller grants {scope}: {given}"
-                )
+            # A job with no permissions block, in a workflow with no top-level
+            # one either, inherits the CALLER's grant (GitHub's own rule) — it
+            # is not "unknowable" the way the very first caller in the chain
+            # can be (test_a_caller_without_any_permissions_block_is_skipped_
+            # not_guessed). There is nothing to compare against `bound` in
+            # that case (the job IS `bound`, so it can never exceed it), but
+            # its own `uses:` still has to be walked: skipping straight to the
+            # next job here silently stopped the walk one level early and let
+            # a deeper violation through undetected.
+            if grant is not None:
+                for scope in excess_scopes(grant, bound):
+                    asked, given = _level_name(grant, scope), _level_name(bound, scope)
+                    via = " -> ".join((*chain, callee_file))
+                    found.append(
+                        f"{root} (via {via}) calls {callee_file}:{job_id}, which asks for "
+                        f"{scope}: {asked} but the caller grants {scope}: {given}"
+                    )
             uses = str(job.get("uses", ""))
             if uses.startswith(LOCAL_PREFIX):
                 walk(root, bound, uses[len(LOCAL_PREFIX):], (*chain, callee_file))
@@ -207,6 +215,36 @@ def test_violations_names_caller_callee_and_scope_and_recurses():
     tree["top.yml"]["jobs"]["call"]["permissions"] = {"actions": "read", "contents": "read"}
     tree["mid.yml"]["jobs"]["call"]["permissions"] = {"actions": "read", "contents": "read"}
     assert violations(tree) == []
+
+
+def test_a_no_grant_intermediate_job_still_recurses_into_its_own_calls():
+    """GitHub's rule: a job with no permissions block inherits its workflow's
+    top-level block; if that is also absent, it gets the caller's grant. Before
+    this fix, `walk` hit `continue` the instant an intermediate job's own
+    `_effective` grant was None — before reaching that job's `uses:` line —
+    which silently stopped the walk one level early and let a deeper violation
+    through undetected. `mid.yml`'s `call` job here has no permissions block of
+    its own AND `mid.yml` has no top-level block either, so its grant is
+    unknowable; that must not stop `leaf.yml`'s excess `actions: read` (over
+    `top.yml`'s `contents: read`-only bound) from being caught."""
+    tree = {
+        "top.yml": {
+            "permissions": {"contents": "read"},
+            "jobs": {"call": {"uses": "./.github/workflows/mid.yml"}},
+        },
+        "mid.yml": {
+            "jobs": {"call": {"uses": "./.github/workflows/leaf.yml"}},
+        },
+        "leaf.yml": {
+            "permissions": {"contents": "read"},
+            "jobs": {"guard": {"permissions": {"actions": "read", "contents": "read"}}},
+        },
+    }
+    found = violations(tree)
+    assert any(
+        "top.yml:call" in line and "leaf.yml:guard" in line and "actions: read" in line and "actions: none" in line
+        for line in found
+    ), found
 
 
 def test_a_caller_without_any_permissions_block_is_skipped_not_guessed():

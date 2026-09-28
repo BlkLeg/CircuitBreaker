@@ -438,11 +438,11 @@ def _read_app_settings(url: str) -> tuple[str | None, str | None, str | None] | 
     """
     from sqlalchemy import create_engine, text
 
-    from app.db.pg_encoding import pg_connect_args
+    from app.db.encoding import libpq_connect_args
 
     engine = create_engine(
         url,
-        connect_args=pg_connect_args(connect_timeout=_DATABASE_TIER_TIMEOUT_SECONDS),
+        connect_args=libpq_connect_args(connect_timeout=_DATABASE_TIER_TIMEOUT_SECONDS),
         pool_pre_ping=False,
     )
     try:

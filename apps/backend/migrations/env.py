@@ -64,11 +64,9 @@ def run_migrations_online() -> None:
     """Run migrations using a direct DB connection (bypasses pgbouncer)."""
     from sqlalchemy import create_engine as _create_engine
 
-    from app.db.pg_encoding import pg_connect_args
+    from app.db.encoding import libpq_connect_args
 
-    # UTF8 whatever the cluster's encoding: a migration writing non-ASCII data
-    # must not fail on a SQL_ASCII cluster (#162).
-    migration_engine = _create_engine(db_url, connect_args=pg_connect_args())
+    migration_engine = _create_engine(db_url, connect_args=libpq_connect_args())
 
     # Step 1: Widen alembic_version.version_num in its own committed transaction
     # BEFORE Alembic acquires the advisory lock and begins the migration transaction.

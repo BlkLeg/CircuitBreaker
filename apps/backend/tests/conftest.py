@@ -330,6 +330,7 @@ def sql_ascii_database(setup_db):
     from sqlalchemy.engine import make_url
 
     from app.db import models
+    from app.db.encoding import libpq_connect_args
 
     admin_url = _PG_CONTAINER.get_connection_url().replace("postgresql+psycopg2", "postgresql")
     admin = psycopg2.connect(admin_url)
@@ -341,7 +342,7 @@ def sql_ascii_database(setup_db):
             "LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0"
         )
     ascii_url = make_url(_PG_CONTAINER.get_connection_url()).set(database=SQL_ASCII_DB_NAME)
-    schema_engine = create_engine(ascii_url, connect_args={"client_encoding": "utf8"})
+    schema_engine = create_engine(ascii_url, connect_args=libpq_connect_args())
     try:
         with schema_engine.begin() as conn:
             server_encoding = conn.exec_driver_sql("SHOW server_encoding").scalar()

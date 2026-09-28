@@ -11,18 +11,21 @@ of quietly stopping:
 * **New clusters are UTF8.** Every `initdb` the product runs names the encoding
   instead of inheriting it from whatever locale the process happens to have.
 * **Existing clusters still work.** A SQL_ASCII cluster cannot be re-encoded in
-  place, so every psycopg2 engine the backend creates asks for the UTF8 client
-  encoding. SQL_ASCII performs no conversion, so the UTF-8 bytes are stored and
-  returned as they are. A new `create_engine` that forgets this reintroduces the
-  bug for every upgraded deployment, which is why each engine is named below:
-  an unlisted one fails here until it is classified.
+  place, so every libpq engine the backend creates declares the UTF8 client
+  encoding through `app.db.encoding` (#192). SQL_ASCII performs no conversion,
+  so the UTF-8 bytes are stored and returned as they are. A new `create_engine`
+  that forgets this reintroduces the bug for every upgraded deployment, which
+  is why each engine is named below: an unlisted one fails here until it is
+  classified.
+
+That the helper itself yields UTF8 is `tests/core/test_db_client_encoding.py`'s
+job; this file guards the call sites and the cluster-creation scripts.
 """
 
 from __future__ import annotations
 
 import ast
 import configparser
-import importlib.util
 import re
 from pathlib import Path
 
@@ -31,15 +34,16 @@ BACKEND = REPO_ROOT / "apps" / "backend"
 APP = BACKEND / "src" / "app"
 MONO_INITDB = REPO_ROOT / "docker" / "10-init-postgres.sh"
 NATIVE_SETUP = REPO_ROOT / "deploy" / "setup.sh"
+DOCKERFILE_MONO = REPO_ROOT / "Dockerfile.mono"
 PGBOUNCER_CONFIGS = (
     REPO_ROOT / "docker" / "pgbouncer.ini",
     REPO_ROOT / "deploy" / "config" / "pgbouncer.ini",
 )
 
-#: The helper every PostgreSQL engine passes as `connect_args`.
-UTF8_HELPER = "pg_connect_args"
+#: The `app.db.encoding` helper every PostgreSQL engine passes as `connect_args`.
+UTF8_HELPER = "libpq_connect_args"
 
-#: Every psycopg2 engine the backend creates: (file relative to apps/backend,
+#: Every libpq engine the backend creates: (file relative to apps/backend,
 #: enclosing function or "<module>").
 POSTGRES_ENGINES = frozenset(
     {
@@ -105,9 +109,11 @@ def _all_engine_calls() -> dict[tuple[str, str], ast.Call]:
 
 
 def _initdb_lines(path: Path) -> list[str]:
+    """Every `initdb -D` command in *path*, with backslash continuations joined."""
+    logical = re.sub(r"\\\n\s*", " ", path.read_text(encoding="utf-8"))
     return [
         line
-        for line in path.read_text(encoding="utf-8").splitlines()
+        for line in logical.splitlines()
         if re.search(r"\binitdb\b\s+-D", line) and not line.lstrip().startswith("#")
     ]
 
@@ -137,24 +143,6 @@ def test_every_postgres_engine_forces_the_utf8_client_encoding():
         )
 
 
-def test_the_helper_asks_psycopg2_for_utf8():
-    """Loaded by path: the helper must stay importable with no app dependencies,
-    because `cli.py` reaches it before the application is configured."""
-    spec = importlib.util.spec_from_file_location(
-        "pg_encoding", APP / "db" / "pg_encoding.py"
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    pg_connect_args = module.pg_connect_args
-
-    assert pg_connect_args()["client_encoding"].lower() in {"utf8", "utf-8"}
-    # Extra arguments ride along without displacing the encoding.
-    merged = pg_connect_args(connect_timeout=5)
-    assert merged["connect_timeout"] == 5
-    assert merged["client_encoding"].lower() in {"utf8", "utf-8"}
-
-
 def test_the_async_engine_is_asyncpg():
     """asyncpg always sends `client_encoding=utf-8` in its startup packet, so the
     async engine needs no helper — as long as it stays asyncpg."""
@@ -167,16 +155,25 @@ def test_the_mono_initdb_creates_a_utf8_cluster():
     lines = _initdb_lines(MONO_INITDB)
     assert len(lines) == 1, lines
     assert "--encoding=UTF8" in lines[0]
-    # C.UTF-8 ships in Debian's libc-bin (/usr/lib/locale/C.utf8), so it exists
-    # in the debian:12-slim runtime without installing `locales`.
-    assert "--locale=C.UTF-8" in lines[0]
+    # The C locale is valid with any encoding on every libc, so this cannot fail
+    # on a runtime that lacks a particular UTF-8 locale.
+    assert "--locale=C" in lines[0]
+
+
+def test_the_mono_runtime_sets_a_utf8_lang():
+    """debian:12-slim sets no locale; without LANG every process in the image
+    (initdb, psql, the backend's subprocesses) runs under POSIX/ASCII."""
+    text = DOCKERFILE_MONO.read_text(encoding="utf-8")
+    assert re.search(r"^\s*LANG=C\.UTF-8\b", text, re.MULTILINE), (
+        "Dockerfile.mono lost LANG=C.UTF-8"
+    )
 
 
 def test_the_native_initdb_creates_a_utf8_cluster():
     lines = _initdb_lines(NATIVE_SETUP)
     assert len(lines) == 1, lines
     assert "--encoding=UTF8" in lines[0]
-    assert "--locale=" in lines[0]
+    assert "--locale=C" in lines[0]
 
 
 def test_pgbouncer_passes_the_client_encoding_through():

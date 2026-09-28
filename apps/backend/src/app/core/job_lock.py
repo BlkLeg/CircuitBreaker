@@ -38,11 +38,14 @@ def lock_session() -> Session:
         from sqlalchemy import create_engine
         from sqlalchemy.pool import NullPool
 
-        from app.db.pg_encoding import pg_connect_args
+        from app.db.encoding import libpq_connect_args
         from app.db.session import db_url
 
         _lock_engine = create_engine(
-            db_url, connect_args=pg_connect_args(), poolclass=NullPool, pool_pre_ping=True
+            db_url,
+            connect_args=libpq_connect_args(),
+            poolclass=NullPool,
+            pool_pre_ping=True,
         )
         _LockSession = sessionmaker(autocommit=False, autoflush=False, bind=_lock_engine)
     return _LockSession()
