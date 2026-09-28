@@ -91,7 +91,11 @@ def _agent(db_session, factories, *, facts=None, config=None, readiness="ready",
     factories.agent_network(agent, facts=_DEFAULT_FACTS if facts is None else facts)
     if readiness is not None:
         factories.agent_capability_readiness(agent, collector="discovery.tcp", state=readiness)
-    db_session.flush()
+    # Committed, as an approved agent is: the bootstrap rolls back after a
+    # failed step (#162), and here that is a SAVEPOINT rollback which would
+    # otherwise take an only-flushed agent with it. The outer transaction still
+    # discards everything at teardown.
+    db_session.commit()
     return agent
 
 
@@ -572,6 +576,64 @@ async def test_one_unusable_subnet_does_not_strand_the_others(db_session, factor
 
     assert [p.normalized_cidr for p in _system_profiles(db_session, agent.id)] == [_SECOND]
     assert len(outcome.created_profile_ids) == 1
+
+
+async def test_a_subnet_whose_write_fails_in_the_database_does_not_poison_the_rest(
+    db_session, factories, monkeypatch
+):
+    """QUAR-001 / #162: a failure *inside* the session, not before it.
+
+    The case above raises before `create_profile` touches the database, so the
+    session is clean when the next subnet runs. The failure seen on the mono
+    image was a commit that died mid-flush, which leaves the session needing a
+    rollback: without one, the next subnet's first lazy load raises
+    `PendingRollbackError` and every remaining subnet is lost with it.
+    """
+    agent = _agent(db_session, factories, facts=_BOTH_FACTS)
+    real = discovery_profiles_service.create_profile
+    failures: list[str] = []
+
+    def fails_in_the_database_once(db, payload, actor, **kwargs):  # type: ignore[no-untyped-def]
+        if not failures:
+            failures.append(payload.cidr)
+            now = utcnow_iso()
+            # NOT NULL violation at flush: the commit fails and the session is
+            # left exactly as a failed INSERT leaves it.
+            db.add(DiscoveryProfile(name=None, cidr=payload.cidr, created_at=now, updated_at=now))
+            db.commit()
+        return real(db, payload, actor, **kwargs)
+
+    monkeypatch.setattr(discovery_profiles_service, "create_profile", fails_in_the_database_once)
+
+    outcome = await discovery_bootstrap.run_bootstrap(db_session, agent.id)
+
+    assert failures == [_SAFE]
+    assert [p.normalized_cidr for p in _system_profiles(db_session, agent.id)] == [_SECOND]
+    assert len(outcome.created_profile_ids) == 1
+
+
+async def test_system_profiles_are_created_on_a_sql_ascii_cluster(sql_ascii_session):
+    """QUAR-001 / #162: every mono cluster initialised before the fix is SQL_ASCII.
+
+    The profile name carries an em dash, so on such a cluster the production
+    engine used to raise `UnicodeEncodeError: 'ascii' codec` for the first
+    subnet and then lose the second to the poisoned session. Both must now be
+    created, and the name must read back byte-for-byte.
+    """
+    from tests.factories import Factories
+
+    agent = _agent(sql_ascii_session, Factories(sql_ascii_session), facts=_BOTH_FACTS)
+    agent.name = "rack-01"
+    sql_ascii_session.commit()
+
+    outcome = await discovery_bootstrap.run_bootstrap(sql_ascii_session, agent.id)
+
+    profiles = _system_profiles(sql_ascii_session, agent.id)
+    assert [p.normalized_cidr for p in profiles] == [_SAFE, _SECOND]
+    assert len(outcome.created_profile_ids) == 2
+    sql_ascii_session.expire_all()
+    names = sorted(p.name for p in _system_profiles(sql_ascii_session, agent.id))
+    assert names == [f"rack-01 — {_SAFE}", f"rack-01 — {_SECOND}"]
 
 
 # ── The trigger ───────────────────────────────────────────────────────────────

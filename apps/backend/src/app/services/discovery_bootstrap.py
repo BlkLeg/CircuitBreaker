@@ -49,6 +49,7 @@ import logging
 from dataclasses import dataclass
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core import agent_scope
@@ -296,6 +297,7 @@ async def run_bootstrap(db: Session, agent_id: int) -> BootstrapOutcome:
                 cidr,
                 exc_info=True,
             )
+            _discard_failed_step(db, agent_id)
             continue
         if paused:
             continue  # the profile stands; only the automatic scan is withheld
@@ -310,11 +312,15 @@ async def run_bootstrap(db: Session, agent_id: int) -> BootstrapOutcome:
                 cidr,
                 exc_info=True,
             )
+            _discard_failed_step(db, agent_id)
 
     disabled: list[int] = []
     for profile in stored:
         if not profile.enabled or profile.normalized_cidr in wanted:
             continue
+        # Read before the attempt: after a failed write the row's attributes
+        # cannot be loaded until the session is rolled back.
+        profile_id = profile.id
         try:
             # the entry point, not a local `enabled = 0`: this is where the
             # in-flight dispatches for the vanished subnet are closed with
@@ -322,15 +328,16 @@ async def run_bootstrap(db: Session, agent_id: int) -> BootstrapOutcome:
             # after the commit. Once the profile is off, nothing else would
             # ever close them — `dispatch_frame`'s capability gate drops the
             # agent's own terminal summary.
-            discovery_profiles_service.disable_profile(db, profile.id, BOOTSTRAP_ACTOR)
-            disabled.append(profile.id)
+            discovery_profiles_service.disable_profile(db, profile_id, BOOTSTRAP_ACTOR)
+            disabled.append(profile_id)
         except Exception:
             logger.warning(
                 "discovery bootstrap: could not disable the system profile %s for agent %s",
-                profile.id,
+                profile_id,
                 agent_id,
                 exc_info=True,
             )
+            _discard_failed_step(db, agent_id)
 
     return BootstrapOutcome(
         agent_id=agent_id,
@@ -339,6 +346,29 @@ async def run_bootstrap(db: Session, agent_id: int) -> BootstrapOutcome:
         disabled_profile_ids=tuple(disabled),
         queued_job_ids=tuple(queued),
     )
+
+
+def _discard_failed_step(db: Session, agent_id: int) -> None:
+    """Roll back whatever a failed step left behind, so the next one starts clean.
+
+    Every step commits through a service, so a rollback here discards only the
+    failed step's own uncommitted work. Without it, a step that failed inside a
+    flush — a UnicodeEncodeError on a SQL_ASCII cluster was the case seen
+    (#162) — leaves the session needing a rollback, and the next subnet dies
+    with `PendingRollbackError` on its first lazy load: one bad subnet costs the
+    agent all the rest, which is exactly what the per-subnet handlers exist to
+    prevent.
+    """
+    try:
+        db.rollback()
+    except SQLAlchemyError:
+        # The connection itself is gone; each later step fails and logs on its
+        # own, and the agent's next report retries the whole pass.
+        logger.warning(
+            "discovery bootstrap: rollback after a failed step failed for agent %s",
+            agent_id,
+            exc_info=True,
+        )
 
 
 def _system_profiles(db: Session, agent_id: int) -> list[DiscoveryProfile]:
