@@ -19,7 +19,9 @@ from composed_rerun_guard import (  # noqa: E402
     CHECK,
     NODE_PREFIX,
     SUITE_INPUTS,
+    TEST_FILE,
     Verdict,
+    collect_node_ids,
     decide,
     deselect_args,
     failed_tests_from_junit,
@@ -348,12 +350,85 @@ def test_merge_artifact_pages_accepts_an_empty_listing():
     assert empty["artifacts"] == []
 
 
-# ── deselection really deselects ────────────────────────────────────────────
-def test_deselect_args_use_the_rootdir_relative_prefix():
-    assert deselect_args(frozenset({"test_b", "test_a"})) == [
-        f"--deselect={NODE_PREFIX}test_a",
-        f"--deselect={NODE_PREFIX}test_b",
+@pytest.mark.parametrize(
+    "page",
+    [
+        {"artifacts": []},
+        {"total_count": None, "artifacts": []},
+        {"total_count": "3", "artifacts": []},
+        {"total_count": 1.0, "artifacts": [_artifact("2026-09-25T00:00:00Z")]},
+    ],
+)
+def test_merge_artifact_pages_fails_closed_on_a_missing_or_non_int_total_count(page):
+    """A page with no usable total_count must not be read as 'nothing more to
+    check': that is exactly the shape a listing corrupted or truncated before
+    total_count was ever set would have, and treating it as complete would
+    let check() report 'no earlier verdict' on a listing it never actually
+    saw all of."""
+    with pytest.raises(ValueError):
+        merge_artifact_pages([page])
+
+
+# ── deselection really deselects, exactly ───────────────────────────────────
+def test_deselect_args_matches_by_exact_node_id_not_by_string_prefix():
+    """pytest's --deselect drops any node id that STARTS WITH the given string.
+    A register row naming `test_agent_update` must not also deselect the
+    longer, unrelated `test_agent_update_success_and_forced_rollback` just
+    because one name is a prefix of the other."""
+    node_ids = ["apps/agent/e2e/test_agent_e2e.py::test_agent_update_success_and_forced_rollback"]
+    assert deselect_args(frozenset({"test_agent_update"}), node_ids) == []
+
+
+def test_deselect_args_matches_a_parametrised_id_by_base_name():
+    node_ids = ["mod.py::test_x[a]", "mod.py::test_x[b]", "mod.py::test_y"]
+    assert deselect_args(frozenset({"test_x"}), node_ids) == [
+        "--deselect=mod.py::test_x[a]",
+        "--deselect=mod.py::test_x[b]",
     ]
+
+
+def test_deselect_args_and_decide_use_the_same_base_name_rule():
+    """decide() strips `[params]` via _base before comparing to the register;
+    deselect must normalise the same way, or a parametrised failure could be
+    judged 'addressed' by decide() while its node id still runs."""
+    assert decide(_verdict("failure", "test_x[a]"), frozenset({"test_x"}))[0]
+    assert deselect_args(frozenset({"test_x"}), ["mod.py::test_x[a]"]) == ["--deselect=mod.py::test_x[a]"]
+
+
+def test_collect_node_ids_reads_real_pytest_collection(tmp_path):
+    """A synthetic pytest project: collect_node_ids actually runs pytest
+    --collect-only and returns only the ids it reports for the named file —
+    never a guessed or constructed name."""
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (tmp_path / "test_sample.py").write_text(
+        "import pytest\n"
+        "\n"
+        "def test_agent_update_success_and_forced_rollback():\n"
+        "    assert True\n"
+        "\n"
+        "@pytest.mark.parametrize('n', [1, 2])\n"
+        "def test_x(n):\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    assert collect_node_ids(tmp_path / "test_sample.py") == [
+        "test_sample.py::test_agent_update_success_and_forced_rollback",
+        "test_sample.py::test_x[1]",
+        "test_sample.py::test_x[2]",
+    ]
+
+
+def test_a_scope_naming_a_prefix_does_not_deselect_the_longer_real_test(tmp_path):
+    """The exact defect this guards against, end to end against real pytest
+    collection: a register row naming `test_agent_update` must not deselect
+    `test_agent_update_success_and_forced_rollback`."""
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    (tmp_path / "test_sample.py").write_text(
+        "def test_agent_update_success_and_forced_rollback():\n    assert True\n",
+        encoding="utf-8",
+    )
+    ids = collect_node_ids(tmp_path / "test_sample.py")
+    assert deselect_args(frozenset({"test_agent_update"}), ids) == []
 
 
 def test_deselect_args_actually_deselect_a_real_test():
@@ -369,7 +444,17 @@ def test_deselect_args_actually_deselect_a_real_test():
         return out.strip().splitlines()[-1]
 
     real_test = "test_agent_zero_configuration_discovery_import_and_replay"
-    assert "(1 deselected)" in collected(*deselect_args(frozenset({real_test}))), collected()
+    node_ids = collect_node_ids(TEST_FILE)
+    assert "(1 deselected)" in collected(*deselect_args(frozenset({real_test}), node_ids)), collected()
+
+
+def test_deselect_args_against_the_real_suite_gets_exactly_the_register_rows():
+    """The existing real-suite deselect test still gets 3 deselected."""
+    quarantined = quarantined_tests(REPO_ROOT / "specs" / "1.0.0" / "release-control" / "quarantine-register.csv", TODAY)
+    node_ids = collect_node_ids(TEST_FILE)
+    args = deselect_args(quarantined, node_ids)
+    assert len(quarantined) == 3
+    assert len(args) == 3
 
 
 # ── workflow wiring ─────────────────────────────────────────────────────────
@@ -429,3 +514,18 @@ def test_the_journey_tests_exactly_the_tree_the_guard_fingerprinted():
         s for s in jobs["composed-journey"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout")
     ]
     assert [s["with"]["ref"] for s in checkouts] == ["${{ needs.rerun-guard.outputs.sha }}"]
+
+
+def test_the_run_manifest_records_the_tested_sha_not_only_the_triggering_one():
+    """The job checks out `needs.rerun-guard.outputs.sha`, which is the SHA the
+    guard fingerprinted and the tree the suite actually runs against — not
+    `GITHUB_SHA`, which on a scheduled or ref-redirected run (the nightly
+    passes `ref: dev`) is the commit that triggered the *workflow*, not the
+    one under test. The manifest must record both: `commit=` so nothing that
+    already reads it breaks, and `tested_commit=` so a reader can tell which
+    tree the suite actually exercised."""
+    steps = _composed()["jobs"]["composed-journey"]["steps"]
+    manifest = next(s for s in steps if s.get("name") == "Record the run manifest")["run"]
+    assert 'echo "commit=${GITHUB_SHA}"' in manifest
+    assert re.search(r'^\s*tested_commit="\$\(git rev-parse HEAD\)"\s*$', manifest, re.MULTILINE), manifest
+    assert 'echo "tested_commit=${tested_commit}"' in manifest
