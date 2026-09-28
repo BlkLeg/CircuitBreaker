@@ -27,6 +27,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
 from app.core.config import settings
+from app.db.pg_encoding import pg_connect_args
 
 _logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ def get_engine(engine_type: EngineType = "primary") -> Engine:
 
 
 def _make_primary_engine() -> Engine:
-    return create_engine(settings.database_url)
+    return create_engine(settings.database_url, connect_args=pg_connect_args())
 
 
 def _make_analytics_engine() -> Engine:

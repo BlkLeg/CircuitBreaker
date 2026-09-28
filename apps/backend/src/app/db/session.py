@@ -10,6 +10,7 @@ from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
+from app.db.pg_encoding import pg_connect_args
 
 _logger = logging.getLogger(__name__)
 
@@ -38,6 +39,8 @@ _default_overflow = "5" if _using_pgbouncer else "20"
 
 engine = create_engine(
     _pool_url,
+    # UTF8 whatever the cluster's encoding: see app.db.pg_encoding (#162).
+    connect_args=pg_connect_args(),
     pool_size=int(os.environ.get("DB_POOL_SIZE", _default_pool)),
     max_overflow=int(os.environ.get("DB_MAX_OVERFLOW", _default_overflow)),
     pool_recycle=300,
