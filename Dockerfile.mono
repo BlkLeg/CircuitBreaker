@@ -98,8 +98,13 @@ COPY --from=app-tree /out/app/share/build-info.json /build-info.json
 # trivy:ignore:DS-0002
 FROM debian:12-slim
 
+# LANG restores what the previous python:*-slim runtime base set implicitly.
+# debian:12-slim sets no locale at all, so every process here — initdb, psql,
+# the backend's own subprocesses — ran under POSIX/ASCII after the base moved.
+# C.UTF-8 is built into glibc and needs no locales package.
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    LANG=C.UTF-8
 
 WORKDIR /opt/circuitbreaker
 
