@@ -610,6 +610,21 @@ stage0_preflight() {
   cb_resolve_service_binaries
 }
 
+# The locale a new cluster is created with. initdb otherwise inherits it from the
+# installer's own environment: under cloud-init, a bare systemd unit or an SSH
+# session with no LANG that is "C", which makes a SQL_ASCII cluster, and the
+# backend then refused every non-ASCII name (#162). C.UTF-8 where the C library
+# ships it (glibc: Debian/Ubuntu libc-bin, Fedora/RHEL glibc-minimal-langpack,
+# Arch glibc); otherwise plain C, which initdb accepts with any encoding — the
+# cluster is UTF8 either way because --encoding says so.
+cb_pg_initdb_locale() {
+  if command -v locale >/dev/null 2>&1 && locale -a 2>/dev/null | grep -qiE '^c\.utf-?8$'; then
+    echo "C.UTF-8"
+  else
+    echo "C"
+  fi
+}
+
 stage3_configure_postgres() {
   cb_section "Configuring PostgreSQL 15"
 
@@ -652,7 +667,10 @@ stage3_configure_postgres() {
   # Initialize database
   if [[ ! -f "${CB_DATA_DIR}/postgres/PG_VERSION" ]]; then
     cb_step "Initializing PostgreSQL database"
-    if ! su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres" >> "$LOG_FILE" 2>&1; then
+    local pg_locale
+    pg_locale="$(cb_pg_initdb_locale)"
+    cb_detail "Cluster encoding: UTF8 (locale ${pg_locale})"
+    if ! su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --encoding=UTF8 --locale=${pg_locale} --auth-local=peer --auth-host=md5 -U postgres" >> "$LOG_FILE" 2>&1; then
       echo ""
       echo "  Last 20 lines from install log:"
       tail -20 "$LOG_FILE" | sed 's/^/  /'
