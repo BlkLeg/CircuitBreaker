@@ -186,12 +186,16 @@ jobs:
   # the image legs instead of queueing behind them. The image build and merge
   # dominate the critical path, so the release should not get longer.
   #
-  # Tier 2 gates the candidate, with the browser suite only. The composed agent
-  # journey is deliberately NOT a release gate (AGT-01, reaffirmed by the
-  # maintainer 2026-09-27): it runs nightly through tier2.yml and on tag pushes
-  # through e2e.yml, and its rerun guard keeps a known failure from being
-  # re-run until it is fixed or quarantined. `suites` must stay explicit: the
-  # tier's default includes composed.
+  # Tier 2 gates the candidate, with the browser and mono suites (maintainer
+  # decision 2, 2026-09-27 A3 plan, flagged for confirmation: the release path
+  # adds "mono" — decision 1 of A2 excluded only the composed journey from the
+  # release, and design 10.2's "the release runs the whole tier" still stands
+  # for browser and mono). The composed agent journey is deliberately NOT a
+  # release gate (AGT-01, reaffirmed by the maintainer 2026-09-27): it runs
+  # nightly through tier2.yml and on tag pushes through e2e.yml, and its rerun
+  # guard keeps a known failure from being re-run until it is fixed or
+  # quarantined. `suites` must stay explicit: the tier's default includes
+  # composed.
   #
   # Read-only on purpose: this workflow's top-level token can write releases and
   # packages, and a test suite needs neither. Check runs read
@@ -206,7 +210,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/tier2.yml
     with:
-      suites: '["browser"]'
+      suites: '["browser","mono"]'
 
   # ── Container image, built natively per architecture ─────────────────────────
   # One runner per architecture, never a single emulated

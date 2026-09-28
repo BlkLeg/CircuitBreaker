@@ -179,16 +179,39 @@ jobs:
           python-version: '3.12'
       - name: Install Checkov
         run: pip install checkov
+      # One exception, one file, one check (CHECKOV-001 in
+      # specs/1.0.0/release-control/security-suppressions.json).
+      # mono-smoke.yml deliberately declares no `permissions:` so its jobs
+      # inherit the CALLING job's GITHUB_TOKEN grant: only dev-ci's caller
+      # grants packages: write, so tier2, the release and the release dry run
+      # physically cannot push. checkov reads an absent block as `write-all`
+      # (CKV2_GHA_1), and checkov cannot honour an inline skip on a graph
+      # check, so the exception lives here: the whole tree is scanned without
+      # that one file, and that file is scanned with every check except
+      # CKV2_GHA_1. scripts/security_scan.sh runs the identical split, and
+      # tests/build/test_checkov_mono_smoke_exception.py keeps the two, the
+      # manifest and mono-smoke.yml's no-permissions shape in agreement.
       - name: Run Checkov on GitHub Actions workflows
         # Scans workflow YAML files for misconfigurations; docker/ removed as
         # native systemd is the primary install method (no Dockerfile to scan).
-        run: checkov -d .github/workflows/ --output sarif --output-file-path checkov-results.sarif --quiet
+        run: checkov -d .github/workflows/ --skip-path '(^|/)\.github/workflows/mono-smoke\.yml$' --output sarif --output-file-path checkov-results.sarif --quiet
+      - name: Run Checkov on mono-smoke.yml (all checks but CKV2_GHA_1)
+        # Runs even when the scan above failed, so one red run never hides the
+        # other's findings; either failing fails the job.
+        if: success() || failure()
+        run: checkov -f .github/workflows/mono-smoke.yml --skip-check CKV2_GHA_1 --output sarif --output-file-path checkov-mono-smoke-results.sarif --quiet
       - name: Upload Checkov results
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: checkov-results.sarif
           category: checkov
+      - name: Upload Checkov results (mono-smoke.yml)
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: checkov-mono-smoke-results.sarif
+          category: checkov-mono-smoke
 
   pip-audit:
     name: Python Dependency Audit

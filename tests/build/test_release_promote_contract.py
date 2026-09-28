@@ -69,9 +69,10 @@ def test_make_targets_dispatch_rather_than_tag() -> None:
 def test_nightly_publish_waits_for_artifact_smoke() -> None:
     """§5.1: :nightly only after artifact-smoke AND the compose smoke.
 
-    The Publish :nightly step lives in build-docker (after compose assertions);
-    needing artifact-smoke is what stops a green image + red package from
-    moving the nightly tag.
+    The Publish :nightly step moved into mono-smoke.yml's `mono-smoke` job in
+    Tier 2 slice A3 (it lived inline in build-docker before); needing
+    artifact-smoke on the calling job is still what stops a green image + red
+    package from moving the nightly tag.
     """
     dev = yaml.safe_load((ROOT / ".github" / "workflows" / "dev-ci.yml").read_text(encoding="utf-8"))
     docker = dev["jobs"]["build-docker"]
@@ -81,5 +82,14 @@ def test_nightly_publish_waits_for_artifact_smoke() -> None:
     assert "artifact-smoke" in (needs or []), (
         "build-docker must need artifact-smoke so :nightly cannot publish before the package gate"
     )
-    names = [str(step.get("name", "")) for step in docker["steps"]]
+    assert docker["uses"] == "./.github/workflows/mono-smoke.yml"
+
+    mono = yaml.safe_load((ROOT / ".github" / "workflows" / "mono-smoke.yml").read_text(encoding="utf-8"))
+    steps = mono["jobs"]["mono-smoke"]["steps"]
+    names = [str(step.get("name", "")) for step in steps]
     assert "Publish :nightly" in names
+    smoke_index = next(i for i, s in enumerate(steps) if "tier2-mono-smoke.sh" in str(s.get("run", "")))
+    publish_index = names.index("Publish :nightly")
+    assert publish_index > smoke_index, (
+        "Publish :nightly must come after the step that runs tier2-mono-smoke.sh"
+    )

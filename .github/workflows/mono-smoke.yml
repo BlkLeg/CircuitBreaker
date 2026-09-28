@@ -1,0 +1,208 @@
+name: Mono image smoke
+
+# The mono image smoke, defined once: build Dockerfile.mono, START the image
+# through docker-compose.yml via scripts/ci/tier2-mono-smoke.sh, and — only when
+# the caller asks and is allowed to — publish the exact image that was smoked.
+# It lived inline in dev-ci.yml's `build-docker` job (Tier 2 slice A3).
+#
+# ── Why this workflow declares no `permissions:` at all ─────────────────────
+# Maintainer decision 1 (2026-09-27, A3 plan):
+#
+#   "the push moves into the called workflow. The built image never leaves the
+#   runner that smoke-tested it; there is no image-as-artifact transport. Push
+#   is off by default (`publish: false`), and only `dev-ci.yml` turns it on."
+#
+# And the plan's architecture:
+#
+#   "`mono-smoke.yml` declares no `permissions:` block, so every job inherits
+#   the calling job's `GITHUB_TOKEN` grant:
+#   - `dev-ci.yml` grants `packages: write`, so it can publish.
+#   - `tier2.yml`, `release.yml` and `release-dry-run.yml` grant read only, so
+#     their mono runs *cannot* push. The capability is decided by the caller's
+#     grant, not by an `if:`."
+#
+# Declaring a block here would be wrong either way. `packages: write` would be
+# more than a read-only caller grants, and GitHub refuses to LOAD a caller whose
+# callee asks for more than it is given — the whole calling workflow fails to
+# start (the bug the #191 final review caught). `contents: read` would strip
+# dev-ci's write grant and the push could never work. Inheriting is the only
+# shape that serves both callers. tests/build/test_reusable_workflow_permissions.py
+# exempts this file from its top-level-block rule only because of the marker
+# above `jobs:`, because `workflow_call` is its only trigger, and because no job
+# declares a block; it still walks these jobs with each caller's bound.
+#
+# ── Why the push is in the same job as the smoke ────────────────────────────
+# The image that is pushed is the image that was started, migrated, reached
+# /readyz and stopped cleanly — the very same image ID in this runner's daemon.
+# A separate publish job would need the image shipped to another runner as an
+# artifact, and then the thing published would be a copy of what was tested,
+# not what was tested.
+#
+# ── A read-only caller's run cannot push ────────────────────────────────────
+# The push steps' `if:` needs `inputs.publish`, `inputs.ref == ''` AND a push
+# to `dev` (inside a called workflow `github` is the CALLER's context, so that
+# reads the caller's event). But the `if:` is the second line of defence. The
+# first is the token: a caller that grants only `contents: read` hands down a
+# GITHUB_TOKEN that GHCR rejects for a push, whatever any input says.
+#
+# `inputs.ref == ''` ties the push to the commit that triggered the run: a
+# caller passing `publish: true` together with a non-empty `ref` would build
+# and smoke a DIFFERENT commit than the one that triggered it, then push that
+# other commit's image tagged `:dev`/`:nightly` — a checkout out of step with
+# the run that requested it.
+
+on:
+  workflow_call:
+    inputs:
+      # tier2.yml's nightly loads from the default branch but tests `dev`
+      # (design D2). Empty means the ref that triggered the caller.
+      ref:
+        description: "Ref to check out. Empty means the ref that triggered the caller."
+        required: false
+        type: string
+        default: ""
+      # Off by default (maintainer decision 1). Only dev-ci.yml turns it on, and
+      # even then only a push to dev publishes — see the push steps' `if:`.
+      publish:
+        description: "Publish :nightly and :dev after a green smoke (push to dev only; needs a packages: write caller)."
+        required: false
+        type: boolean
+        default: false
+      # dev-ci.yml's runtime-parity job compares the image's build-info against
+      # the package's. Callers without that job leave this empty and skip the
+      # export entirely.
+      provenance_artifact:
+        description: "Artifact name to upload the image's build-info.json under. Empty skips the export."
+        required: false
+        type: string
+        default: ""
+
+# permissions: inherited-from-caller
+jobs:
+  mono-smoke:
+    name: Mono image smoke
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Derive version
+        id: ver
+        run: echo "version=dev-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          docker build -f Dockerfile.mono \
+            -t "circuitbreaker:${CB_VERSION}" \
+            .
+
+      - name: Export the image's provenance
+        if: inputs.provenance_artifact != ''
+        run: |
+          set -euo pipefail
+          docker buildx build -f Dockerfile.mono --target app-build-info \
+            --output type=local,dest=/tmp/image-info .
+          cat /tmp/image-info/build-info.json
+      - name: Upload the image's provenance
+        if: inputs.provenance_artifact != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.provenance_artifact }}
+          path: /tmp/image-info/build-info.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Verify agent binaries are baked into the image
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          docker run --rm --entrypoint sh "circuitbreaker:${CB_VERSION}" \
+            -c 'test -s /opt/circuitbreaker/agent-binaries/manifest.json && ls /opt/circuitbreaker/agent-binaries'
+
+      # The image must be STARTED, not just built. Every assertion — /livez,
+      # /readyz, the HTTP->HTTPS redirect, the SPA over TLS, every supervisord
+      # program RUNNING, zero restarts, a clean SIGTERM stop — lives in the
+      # script, with the comments recording why each exists. Its EXIT trap
+      # collects artifacts/diagnostics/, tears compose down and shreds the
+      # ephemeral .env, so by the time the push steps below run the containers
+      # are gone but the image is still in this runner's daemon.
+      #
+      # timeout-minutes below the job's 40: a hung smoke must die at STEP
+      # level so the `if: always()` diagnostics upload after it still runs
+      # inside the job's own timeout, instead of the whole job being killed
+      # with nothing collected.
+      - name: Smoke the image through docker-compose.yml
+        timeout-minutes: 25
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+        run: scripts/ci/tier2-mono-smoke.sh "circuitbreaker:${CB_VERSION}"
+
+      # The nightly channel (§5.1): after artifact-smoke (job needs) AND the
+      # compose smoke above, on a push to dev (never a PR). amd64 only, because
+      # this job builds one architecture; the packages are the
+      # dev-packages-amd64 artifact above.
+      #
+      # (A3: the `needs: artifact-smoke` and the dev-packages-amd64 artifact now
+      # live in the CALLING job in dev-ci.yml; `inputs.publish` is how that
+      # caller opts in. The token and actor reach `run:` through env, never by
+      # interpolation.)
+      - name: Publish :nightly
+        if: inputs.publish && inputs.ref == '' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          docker login ghcr.io -u "${ACTOR}" --password-stdin <<<"${GH_TOKEN}"
+          for tag in $(python3 scripts/release_channel.py --version "$(cat VERSION)" --channel nightly --field tags) "${CB_VERSION}"; do
+            docker tag "circuitbreaker:${CB_VERSION}" "ghcr.io/blkleg/circuitbreaker:${tag}"
+            docker push "ghcr.io/blkleg/circuitbreaker:${tag}"
+          done
+
+      # Published only after the compose smoke above has already started this
+      # exact image, migrated, reached /readyz and survived a restart — the
+      # same bar release.yml holds a candidate to, just without that
+      # pipeline's channel/draft/sign/SBOM machinery, none of which exists on
+      # dev. `:dev` always points at the newest pushed commit; `:dev-<sha>`
+      # is what a VM test can pin to and diff against later. This is the
+      # "so I can test features before merging properly" ask: `docker pull
+      # ghcr.io/blkleg/circuitbreaker:dev` from any host, no scp required.
+      #
+      # `if: github.event_name == 'push'`: a pull_request run builds and
+      # smoke-tests the same way (so a PR's Dockerfile/entrypoint changes are
+      # still caught), but only a real push to `dev` — a merged commit —
+      # publishes, matching this job's `packages: write` comment above.
+      #
+      # (A3: that `packages: write` grant is now the calling job's in
+      # dev-ci.yml — this workflow inherits it; see the header.)
+      - name: Push the dev image
+        if: inputs.publish && inputs.ref == '' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        env:
+          CB_VERSION: ${{ steps.ver.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          docker login ghcr.io -u "${ACTOR}" --password-stdin <<<"${GH_TOKEN}"
+          IMAGE="ghcr.io/blkleg/circuitbreaker"
+          docker tag "circuitbreaker:${CB_VERSION}" "${IMAGE}:${CB_VERSION}"
+          docker tag "circuitbreaker:${CB_VERSION}" "${IMAGE}:dev"
+          docker push "${IMAGE}:${CB_VERSION}"
+          docker push "${IMAGE}:dev"
+
+      # if: always() — the run that most needs its logs is the one that failed
+      # before reaching the step that would have collected them. The script's
+      # EXIT trap wrote them to artifacts/diagnostics/ whether it passed or not.
+      - name: Upload smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mono-smoke-diagnostics
+          path: artifacts/diagnostics/
+          if-no-files-found: warn
+          retention-days: 14

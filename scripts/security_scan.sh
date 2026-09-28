@@ -278,13 +278,25 @@ echo "Running Checkov..."
 if ! "$SCAN_BIN"/checkov --version > /dev/null 2>&1; then
     "$SCAN_BIN"/pip install checkov --quiet
 fi
+# The same split security.yml's checkov job runs (CHECKOV-001 in
+# specs/1.0.0/release-control/security-suppressions.json): mono-smoke.yml
+# declares no `permissions:` on purpose, so its jobs inherit the calling job's
+# grant, and checkov reads that absence as `write-all` (CKV2_GHA_1). The tree
+# is scanned without that one file, and the file with every check but that
+# one. tests/build/test_checkov_mono_smoke_exception.py keeps this in step
+# with CI and the manifest.
 if $GATE_MODE; then
-    if ! "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1; then
+    if ! "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --skip-path '(^|/)\.github/workflows/mono-smoke\.yml$' --quiet >> "$REPORT_FILE" 2>&1; then
         GATE_FAILURES=$((GATE_FAILURES + 1))
         echo "  ⚠ GATE FAILURE: Checkov findings" >> "$REPORT_FILE"
     fi
+    if ! "$SCAN_BIN"/checkov -f .github/workflows/mono-smoke.yml --skip-check CKV2_GHA_1 --quiet >> "$REPORT_FILE" 2>&1; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: Checkov findings (mono-smoke.yml)" >> "$REPORT_FILE"
+    fi
 else
-    "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1 || true
+    "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --skip-path '(^|/)\.github/workflows/mono-smoke\.yml$' --quiet >> "$REPORT_FILE" 2>&1 || true
+    "$SCAN_BIN"/checkov -f .github/workflows/mono-smoke.yml --skip-check CKV2_GHA_1 --quiet >> "$REPORT_FILE" 2>&1 || true
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 

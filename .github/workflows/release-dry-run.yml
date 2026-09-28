@@ -101,10 +101,11 @@ jobs:
     needs: version
     uses: ./.github/workflows/installer-journey.yml
 
-  # Rehearses the release's Tier 2 gate, browser suite only, the same way
-  # release.yml calls it (maintainer decision 2026-09-27: the release is not
-  # gated on the composed journey). Without this here the dry run would stop
-  # covering the promotion graph it exists to rehearse.
+  # Rehearses the release's Tier 2 gate, browser and mono suites, the same way
+  # release.yml calls it (maintainer decision 2, 2026-09-27 A3 plan, flagged
+  # for confirmation: the release path adds "mono" — decision 1 of A2 excluded
+  # only the composed journey from the release). Without this here the dry run
+  # would stop covering the promotion graph it exists to rehearse.
   tier2:
     name: Tier 2
     needs: version
@@ -113,7 +114,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/tier2.yml
     with:
-      suites: '["browser"]'
+      suites: '["browser","mono"]'
 
   # ── Container images, per architecture, exported rather than pushed ───────
   image:

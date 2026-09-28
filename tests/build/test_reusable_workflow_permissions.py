@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -38,6 +39,11 @@ LOCAL_PREFIX = "./.github/workflows/"
 
 LEVELS = {"none": 0, "read": 1, "write": 2}
 UNNAMED = "<every unnamed scope>"
+# A called-only workflow that deliberately declares no `permissions:` anywhere,
+# so its jobs inherit whatever the calling job grants (mono-smoke.yml: dev-ci's
+# `packages: write` reaches its push, a read-only caller's run cannot push).
+# See inherits_from_caller() for the three conditions the exemption needs.
+INHERITS_MARKER = "# permissions: inherited-from-caller"
 
 
 @dataclass(frozen=True)
@@ -90,9 +96,48 @@ def _load(path: Path) -> dict:
     return document
 
 
+def _workflow_paths() -> list[Path]:
+    return sorted([*WORKFLOW_DIR.glob("*.yml"), *WORKFLOW_DIR.glob("*.yaml")])
+
+
 def _workflows() -> dict[str, dict]:
-    paths = sorted([*WORKFLOW_DIR.glob("*.yml"), *WORKFLOW_DIR.glob("*.yaml")])
-    return {path.name: _load(path) for path in paths}
+    return {path.name: _load(path) for path in _workflow_paths()}
+
+
+def _trigger_names(workflow: Mapping[Any, object]) -> set[str]:
+    """The event names in `on:`, in any of its three shapes. PyYAML reads a bare `on` key as True."""
+    raw = workflow.get("on", workflow.get(True))
+    if isinstance(raw, str):
+        return {raw}
+    if isinstance(raw, list):
+        return {str(event) for event in raw}
+    if isinstance(raw, Mapping):
+        return {str(event) for event in raw}
+    return set()
+
+
+def inherits_from_caller(workflow: Mapping[Any, object], text: str) -> bool:
+    """True only for a workflow that inherits its caller's grant on purpose.
+
+    All three must hold, so the exemption cannot quietly widen:
+      1. its only trigger is `workflow_call` — anything a push, schedule or
+         dispatch can start directly would run under the repository default,
+         which this guard cannot see;
+      2. it carries INHERITS_MARKER on a line of its own — silence is
+         indistinguishable from forgetting the block;
+      3. no job in it declares `permissions:` — one that did would no longer
+         be inheriting, and would be the load-time failure this file guards.
+    It must also have no top-level block, or there is nothing to exempt.
+    """
+    if "permissions" in workflow:
+        return False
+    if _trigger_names(workflow) != {"workflow_call"}:
+        return False
+    if not any(line.strip() == INHERITS_MARKER for line in text.splitlines()):
+        return False
+    jobs = workflow.get("jobs") or {}
+    assert isinstance(jobs, Mapping)
+    return all("permissions" not in (job or {}) for job in jobs.values())
 
 
 def _effective(workflow: Mapping[str, object], job: Mapping[str, object]) -> Grant | None:
@@ -255,10 +300,91 @@ def test_a_caller_without_any_permissions_block_is_skipped_not_guessed():
     assert violations(tree) == []
 
 
+# ── the inherited-from-caller exemption, on synthetic dicts ──────────────────
+_INHERITING = {
+    "on": {"workflow_call": {"inputs": {}}},
+    "jobs": {
+        "work": {"steps": []},
+        "call": {"uses": "./.github/workflows/leaf.yml"},
+    },
+}
+_MARKED = f"on:\n  workflow_call:\n{INHERITS_MARKER}\njobs: {{}}\n"
+
+
+def test_a_marked_called_only_workflow_is_exempt_and_walked_with_its_callers_bound():
+    """The exemption rests on #195's recursion: a job with no grant is walked
+    with the caller's bound, so an inheriting workflow is still checked — both
+    for what it asks (nothing) and for what anything it calls asks."""
+    assert inherits_from_caller(_INHERITING, _MARKED)
+    tree = {
+        "top.yml": {
+            "permissions": {"contents": "read"},
+            "jobs": {"call": {"uses": "./.github/workflows/inheriting.yml"}},
+        },
+        "inheriting.yml": _INHERITING,
+        "leaf.yml": {"permissions": {"contents": "read"}, "jobs": {"guard": {}}},
+    }
+    assert violations(tree) == []
+    # Walked, not skipped: a deeper ask above the top caller's bound is caught
+    # through the inheriting workflow, and reported against `contents: read`.
+    tree["leaf.yml"]["jobs"]["guard"]["permissions"] = {"packages": "write", "contents": "read"}
+    found = violations(tree)
+    assert any(
+        line.startswith("top.yml:call") and "top.yml -> inheriting.yml -> leaf.yml" in line
+        and "leaf.yml:guard" in line and "packages: write" in line and "packages: none" in line
+        for line in found
+    ), found
+
+
+def test_a_marked_workflow_that_can_also_be_pushed_is_not_exempt():
+    workflow = {**_INHERITING, "on": {"workflow_call": {}, "push": {"branches": ["dev"]}}}
+    assert not inherits_from_caller(workflow, _MARKED)
+
+
+@pytest.mark.parametrize(
+    ("workflow", "text"),
+    [
+        # no marker: silence is not a decision
+        (_INHERITING, "on:\n  workflow_call:\njobs: {}\n"),
+        # the marker only inside another comment, not on a line of its own
+        (_INHERITING, f"# see {INHERITS_MARKER}\n"),
+        # a job declares its own block, so it no longer inherits
+        ({**_INHERITING, "jobs": {"work": {"permissions": {"contents": "read"}}}}, _MARKED),
+        # a top-level block: nothing to exempt, and it is no longer inheriting
+        ({**_INHERITING, "permissions": {"contents": "read"}}, _MARKED),
+        # dispatchable directly, in each shape `on:` can take
+        ({**_INHERITING, "on": ["workflow_call", "workflow_dispatch"]}, _MARKED),
+        ({**_INHERITING, "on": "push"}, _MARKED),
+    ],
+)
+def test_the_exemption_needs_all_three_conditions(workflow, text):
+    assert not inherits_from_caller(workflow, text)
+
+
+def test_the_exemption_accepts_every_shape_of_a_workflow_call_only_trigger():
+    for on in ("workflow_call", ["workflow_call"], {"workflow_call": None}):
+        assert inherits_from_caller({**_INHERITING, "on": on}, _MARKED), on
+    # PyYAML parses a bare `on:` key as the boolean True.
+    assert inherits_from_caller({True: {"workflow_call": None}, "jobs": _INHERITING["jobs"]}, _MARKED)
+
+
 # ── the real tree ───────────────────────────────────────────────────────────
 def test_every_workflow_declares_top_level_permissions():
-    """Keeps the 'unknown default' skip above empty for this repository."""
-    missing = [name for name, workflow in _workflows().items() if "permissions" not in workflow]
+    """Keeps the 'unknown default' skip above empty for this repository.
+
+    The one exemption is a called-only workflow that inherits its caller's
+    grant on purpose (inherits_from_caller). It never reaches that skip: the
+    skip is for the FIRST caller in a chain, and a workflow_call-only file is
+    never first — its caller's bound is what `violations` walks it with.
+    """
+    missing = []
+    for path in _workflow_paths():
+        workflow = _load(path)
+        if "permissions" in workflow:
+            continue
+        if inherits_from_caller(workflow, path.read_text(encoding="utf-8")):
+            continue
+        missing.append(path.name)
     assert not missing, f"workflows without a top-level `permissions:` block: {missing}"
 
 

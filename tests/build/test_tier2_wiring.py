@@ -118,17 +118,30 @@ def test_the_html_reporter_cannot_clear_the_junit_report():
     )
 
 
-def test_verify_composed_runs_both_suites_and_is_documented():
+def test_verify_composed_runs_all_three_suites_and_is_documented():
     text = MAKEFILE.read_text(encoding="utf-8")
     line = re.search(r"^verify-composed:([^\n]*)$", text, re.M)
     assert line, "no verify-composed target"
     deps, _, help_text = line.group(1).partition("##")
-    assert set(deps.split()) == {"verify-composed-browser", "verify-composed-agent"}
+    assert set(deps.split()) == {
+        "verify-composed-browser",
+        "verify-composed-agent",
+        "verify-composed-mono",
+    }
     assert "Tier 2" in help_text, "verify-composed must say what it is in `make help`"
 
 
 def test_verify_composed_browser_calls_the_script():
     assert BROWSER_SCRIPT in _recipe("verify-composed-browser")
+
+
+def test_verify_composed_mono_builds_and_calls_the_script():
+    """Mirrors test_mono_workflow_calls_the_script_and_inlines_nothing: the
+    laptop target and mono-smoke.yml must build the same way and call the
+    same script (design D1/P1)."""
+    recipe = _recipe("verify-composed-mono")
+    assert "docker build -f Dockerfile.mono" in recipe
+    assert MONO_SCRIPT in recipe
 
 
 def test_verify_composed_agent_honours_the_register_or_runs_the_real_suite():
@@ -261,13 +274,17 @@ def test_every_tier2_caller_passes_real_suites():
         assert suites and set(suites) <= set(KNOWN_SUITES), f"{where} passes {suites}"
 
 
-def test_the_release_does_not_gate_on_the_composed_journey():
-    """Maintainer decision 2026-09-27 (A2 plan): the release is not gated on the
-    composed journey. `suites` is passed explicitly, because the tier's default
-    includes composed, so omitting it would silently start gating."""
+def test_the_release_runs_browser_and_mono():
+    """Maintainer decision 2 (2026-09-27 A3 plan, flagged for confirmation): the
+    release path adds "mono". Decision 1 of A2 already excluded only the
+    composed journey from the release; design 10.2's "the release runs the
+    whole tier" still stands for browser and mono. `suites` is passed
+    explicitly, because the tier's default includes composed, so omitting it
+    would silently start gating on it."""
     for name in ("release.yml", "release-dry-run.yml"):
         raw = _load(name)["jobs"]["tier2"]["with"]["suites"]
-        assert json.loads(raw) == ["browser"], f"{name} passes {raw}"
+        assert json.loads(raw) == ["browser", "mono"], f"{name} passes {raw}"
+        assert "composed" not in json.loads(raw), f"{name} passes {raw}"
 
 
 def test_tier2_callers_grant_read_only():
@@ -342,3 +359,94 @@ def test_the_local_hatch_runs_every_test_and_says_so(tmp_path):
     summary, log = _collect(tmp_path, **{NO_DESELECT: "1"})
     assert "deselected" not in summary, summary
     assert NO_DESELECT in log, "the hatch must announce itself in composed-journey.log"
+
+
+# ── the mono image smoke (A3) ───────────────────────────────────────────────
+MONO_SCRIPT = "scripts/ci/tier2-mono-smoke.sh"
+
+
+def test_mono_workflow_calls_the_script_and_inlines_nothing():
+    runs = _run_blocks(_load("mono-smoke.yml"))
+    assert any(MONO_SCRIPT in r for r in runs)
+    inlined = [r for r in runs if "/api/v1/readyz" in r or "supervisorctl" in r]
+    assert not inlined, f"mono-smoke.yml re-inlines smoke assertions: {inlined}"
+
+
+def test_the_smoke_step_timeout_is_below_the_jobs_so_diagnostics_still_upload():
+    """A hung smoke must die at STEP level, inside the job's own timeout, so
+    `Upload smoke diagnostics` (if: always()) still gets a chance to run
+    rather than the whole job being killed with nothing collected."""
+    job = _load("mono-smoke.yml")["jobs"]["mono-smoke"]
+    job_timeout = job["timeout-minutes"]
+    smoke_step = next(s for s in job["steps"] if MONO_SCRIPT in str(s.get("run", "")))
+    step_timeout = smoke_step.get("timeout-minutes")
+    assert step_timeout is not None, "the smoke step has no timeout-minutes of its own"
+    assert step_timeout < job_timeout, (
+        f"the smoke step's timeout ({step_timeout}) must be below the job's ({job_timeout})"
+    )
+
+
+def test_mono_smoke_inherits_its_callers_grant():
+    """No permissions anywhere: dev-ci's packages: write reaches the push, and a
+    read-only caller's run physically cannot push (maintainer decision, A3 plan)."""
+    wf = _load("mono-smoke.yml")
+    assert "permissions" not in wf
+    assert all("permissions" not in job for job in wf["jobs"].values())
+    assert "# permissions: inherited-from-caller" in (WORKFLOWS / "mono-smoke.yml").read_text()
+
+
+def test_mono_push_is_gated_on_publish_and_a_push_to_dev():
+    """A caller that passes `publish: true` together with a non-empty `ref`
+    would push a different commit than the one that triggered the run, tagged
+    `:dev`/`:nightly` — so `inputs.ref == ''` gates the push exactly as
+    `inputs.publish` does (A3 controller ruling R1)."""
+    steps = _load("mono-smoke.yml")["jobs"]["mono-smoke"]["steps"]
+    pushes = [s for s in steps if "docker push" in str(s.get("run", ""))]
+    assert pushes, "no push step"
+    for step in pushes:
+        cond = str(step.get("if", ""))
+        for part in (
+            "inputs.publish",
+            "inputs.ref == ''",
+            "github.event_name == 'push'",
+            "github.ref == 'refs/heads/dev'",
+        ):
+            assert part in cond, f"push step {step.get('name')!r} is missing {part!r}"
+
+
+def test_dev_ci_build_docker_passes_no_ref():
+    """Pairs with test_mono_push_is_gated_on_publish_and_a_push_to_dev: the
+    gate only protects a caller that never sets `ref`, so dev-ci — the one
+    caller with `publish: true` — must be that caller (R1)."""
+    job = _load("dev-ci.yml")["jobs"]["build-docker"]
+    assert "ref" not in (job.get("with") or {}), (
+        "build-docker must not pass a ref; publish: true relies on inputs.ref == '' "
+        "to tie the push to the commit that triggered this run"
+    )
+
+
+def test_only_the_push_steps_touch_the_token():
+    for step in _load("mono-smoke.yml")["jobs"]["mono-smoke"]["steps"]:
+        text = str(step)
+        if "GITHUB_TOKEN" in text or "github.token" in text:
+            assert "docker push" in str(step.get("run", "")), step.get("name")
+
+
+def test_dev_ci_publishes_through_mono_smoke_and_keeps_the_parity_artifact():
+    """dev-ci's `build-docker` becomes a caller of mono-smoke.yml (Tier 2 slice
+    A3): the build/compose-smoke/publish steps that used to live inline moved
+    to the shared workflow, and this job's own `packages: write` is what lets
+    `publish: true` push. runtime-parity's provenance download must still find
+    an artifact under the name this job asks mono-smoke.yml to produce."""
+    dev = _load("dev-ci.yml")["jobs"]
+    job = dev["build-docker"]
+    assert job["uses"] == "./.github/workflows/mono-smoke.yml"
+    assert job["with"]["publish"] is True
+    assert job["permissions"] == {"contents": "read", "packages": "write"}
+    assert "artifact-smoke" in (job["needs"] if isinstance(job["needs"], list) else [job["needs"]])
+    name = job["with"]["provenance_artifact"]
+    downloads = [s for s in dev["runtime-parity"]["steps"]
+                 if str(s.get("uses", "")).startswith("actions/download-artifact")]
+    assert any(s.get("with", {}).get("name") == name for s in downloads), (
+        f"runtime-parity no longer downloads {name!r}"
+    )

@@ -22,7 +22,8 @@ on:
   # tests/build/test_release_paths_run_before_the_tag.py requires every release
   # dependency to be reachable from a push or a pull request. Changes to the
   # suites themselves are already exercised pre-tag by ci.yml/dev-ci.yml
-  # (browser-e2e.yml) and e2e.yml (composed-e2e.yml).
+  # (browser-e2e.yml), e2e.yml (composed-e2e.yml), and dev-ci.yml
+  # (mono-smoke.yml, exercised on every PR and push to dev).
   pull_request:
     paths:
       - '.github/workflows/tier2.yml'
@@ -124,12 +125,27 @@ jobs:
     with:
       ref: ${{ needs.plan.outputs.ref }}
 
+  # No publish: this caller grants read-only, and mono-smoke.yml inherits the
+  # caller's grant, so a Tier 2 run of the mono suite cannot push an image.
+  # contents: read is the only scope mono-smoke.yml's jobs use; unlike
+  # composed's rerun guard, mono-smoke.yml never reads earlier run artifacts,
+  # so it needs no actions: read.
+  mono:
+    name: Mono image smoke
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.suites), 'mono')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/mono-smoke.yml
+    with:
+      ref: ${{ needs.plan.outputs.ref }}
+
   # The tier's one verdict. always(), so that a failed plan or a skipped suite
   # still produces an answer. A selected suite that ended `skipped` is a failure
   # here, because everything downstream reads `skipped` as satisfied.
   result:
     name: Tier 2 result
-    needs: [plan, browser, composed]
+    needs: [plan, browser, composed, mono]
     if: always()
     runs-on: ubuntu-22.04
     timeout-minutes: 5

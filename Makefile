@@ -294,7 +294,7 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-composed verify-composed-browser verify-composed-agent verify-fleet verify-fleet-upgrade loadgen nav-wedge
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-composed verify-composed-browser verify-composed-agent verify-composed-mono verify-fleet verify-fleet-upgrade loadgen nav-wedge
 
 loadgen: ## Seed and run a non-blocking Phase-2 baseline (TIER=A, CB_LOADGEN_TOKEN required)
 	$(CURDIR)/.venv/bin/python scripts/loadgen/seed.py seed --tier "$(or $(TIER),A)" --db-url "$(CB_TEST_DB_URL)"
@@ -400,10 +400,11 @@ verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (me
 	CB_VERIFY_BACKEND=shards scripts/ci/tier1-unit.sh
 
 # T2. Not part of `verify`: the browser suite builds the production frontend and
-# drives four browsers, and the composed journey takes up to 75 minutes. Each
-# target calls the same scripts/ci script the workflow does (design D1/P1;
-# tests/build/test_tier2_wiring.py enforces it). Browsers must be installed
-# locally: `cd apps/frontend && npx playwright install --with-deps`.
+# drives four browsers, the composed journey takes up to 75 minutes, and the
+# mono smoke builds Dockerfile.mono and starts it through docker-compose.yml.
+# Each target calls the same scripts/ci script the workflow does (design
+# D1/P1; tests/build/test_tier2_wiring.py enforces it). Browsers must be
+# installed locally: `cd apps/frontend && npx playwright install --with-deps`.
 #
 # CB_COMPOSED_QUARANTINED mirrors composed-e2e.yml's `quarantined` default, and
 # the wiring test fails if they disagree. While QUAR-001 is live the agent half
@@ -412,7 +413,7 @@ verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (me
 # add CB_E2E_NO_DESELECT=1 to run those too. That second switch is local only.
 CB_COMPOSED_QUARANTINED ?= 1
 
-verify-composed: verify-composed-browser verify-composed-agent ## Tier 2 — browser E2E + composed agent journey (CB_COMPOSED_QUARANTINED=0 lifts QUAR-001)
+verify-composed: verify-composed-mono verify-composed-browser verify-composed-agent ## Tier 2 — browser E2E + composed agent journey + mono image smoke (CB_COMPOSED_QUARANTINED=0 lifts QUAR-001)
 
 verify-composed-browser: ## Tier 2 — the Playwright suite, all projects, unsharded
 	scripts/ci/tier2-browser.sh
@@ -423,6 +424,15 @@ verify-composed-agent: ## Tier 2 — the composed agent journey, or its register
 	else \
 	  $(MAKE) e2e-local; \
 	fi
+
+# scripts/ci/tier2-mono-smoke.sh refuses to start if a repo-root .env already
+# exists, or if a container named `circuitbreaker` already exists — both are
+# very likely a developer's own real stack (docker-compose.yml pins that
+# container name), and the script will not risk overwriting or recreating
+# either. Move .env aside and stop/remove that container before running this.
+verify-composed-mono: ## Tier 2 — build the mono image and run the compose smoke CI runs
+	docker build -f Dockerfile.mono -t circuitbreaker:local-smoke .
+	scripts/ci/tier2-mono-smoke.sh circuitbreaker:local-smoke
 
 # T3. Not part of `verify` and deliberately not wired into any workflow yet: it
 # boots a VM, downloads a 556MB image on first run, and takes minutes, which is

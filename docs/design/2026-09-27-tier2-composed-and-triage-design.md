@@ -1,7 +1,7 @@
 # Tier 2 (Composed) and Its Automated Triage — Design
 
 **Date:** 2026-09-27
-**Status:** Approved in design; slices A1 and A2 implemented
+**Status:** Approved in design; slices A1–A3 implemented
 **Version at writing:** 0.4.5
 **ADR:** [0005 — Verification Tiers and Platform Support](../adr/0005-verification-tiers-and-platform-support.md)
 **Programme:** [2026-08-27-verification-strategy-design.md](./2026-08-27-verification-strategy-design.md) — this is that
@@ -143,7 +143,7 @@ and a human merge.
 | File | Change |
 |---|---|
 | `.github/workflows/composed-e2e.yml` | **New.** The composed agent journey as `workflow_call`, lifted out of `e2e.yml`. |
-| `.github/workflows/mono-smoke.yml` | **New, but deferred to slice A3** (§9). The plan for A1 found that the smoke cannot be separated from its image: `dev-ci.yml:971-980` pushes to GHCR by `docker tag`-ing the image the *same job* built, in that runner's Docker daemon, and the job's own comment requires the push to happen only after the smoke has started that exact image. A reusable workflow puts the smoke on a different runner with nothing to tag, so extracting it needs either an image transported as an artifact or the publish moved inside the called workflow — a decision with its own cost, taken on its own evidence rather than folded into the first slice. Until A3 lands, the mono smoke stays inline in `dev-ci.yml` exactly as it is today. |
+| `.github/workflows/mono-smoke.yml` | **New, but deferred to slice A3** (§9). The plan for A1 found that the smoke cannot be separated from its image: `dev-ci.yml:971-980` pushes to GHCR by `docker tag`-ing the image the *same job* built, in that runner's Docker daemon, and the job's own comment requires the push to happen only after the smoke has started that exact image. A reusable workflow puts the smoke on a different runner with nothing to tag, so extracting it needs either an image transported as an artifact or the publish moved inside the called workflow — a decision with its own cost, taken on its own evidence rather than folded into the first slice. Until A3 lands, the mono smoke stays inline in `dev-ci.yml` exactly as it is today. — implemented in A3; see Implementation notes (slice A3) |
 | `.github/workflows/tier2.yml` | **New.** `name: Tier 2 (composed)`, matching `Fleet (Tier 3)`. Nightly cron, `workflow_dispatch`, `workflow_call`. Carries a `concurrency` group so a manual dispatch and the nightly cannot interleave two runs whose artifacts the triage would then read as one. |
 | `.github/workflows/e2e.yml` | Thin caller of `composed-e2e.yml`. Keeps its tag and path-filtered PR triggers; **drops its nightly schedule**, which `tier2.yml` takes over. |
 | `.github/workflows/dev-ci.yml` | `build-docker` becomes a caller of `mono-smoke.yml`. |
@@ -524,7 +524,7 @@ read-only against real nightlies.
 |---|---|---|---|
 | A1 | Extract `composed-e2e.yml`; `e2e.yml` becomes a caller (keeping its nightly, which A2 moves to `tier2.yml` — one cron cannot live in two files); QUAR-001 becomes a visible `SKIPPED` backed by the register; the `test_ci_evidence_retention.py` registry follows the move (§7.4) | No behaviour change, fewer lines, an honest skip | none |
 | A2 | `tier2.yml` aggregator, `make verify-composed`, the drift guard; `release.yml` and `release-dry-run.yml` call it with `["browser","composed"]` | Tier 2 exists, is runnable locally, and is nameable | none |
-| A3 | `mono-smoke.yml`, after deciding how the built image reaches a second runner; the release's `suites` becomes the default all-three | The tier's third suite | `packages: write` stays wherever the push ends up |
+| A3 | `mono-smoke.yml`, after deciding how the built image reaches a second runner; the release's `suites` becomes the default all-three — superseded: the release runs browser + mono (A3 decision 2) | The tier's third suite | `packages: write` stays wherever the push ends up |
 | B1 | `tier2_triage.py` + tests + `triage-decide` | Verdicts, `verdict.json`, M1–M3 | none |
 | B2 | `triage-emit`, and `review_alert.py` as the message builder it calls | M4, M5 for the bot's own PR, the issue and the row PR | first write access in the programme |
 | B3 | `maintainer_digest.py`, `maintainer-digest.yml`, `review-alert.yml` (hourly sweep) | M5 for human and Dependabot PRs, M6 nightly | read-only (digest); `pull-requests: write` for the label only (review alert) |
@@ -556,6 +556,40 @@ Rulings made during A2's execution that this document did not anticipate:
 - **`e2e.yml`'s stale comment.** The `composed:` job's inline comment said "For a tag push, a pull request or
   the nightly, `inputs` is null" — `e2e.yml` no longer has a `schedule` trigger, since the nightly moved to
   `tier2.yml` in this slice, so the comment was corrected to drop "or the nightly".
+
+### Implementation notes (slice A3)
+
+Rulings made during A3's execution that this document did not anticipate:
+
+- **`mono-smoke.yml` inherits its caller's permissions.** It declares no `permissions:` block at any level, so
+  every job runs with the calling job's `GITHUB_TOKEN` grant: `dev-ci.yml` grants `packages: write` so its
+  `build-docker` job can publish `:nightly`/`:dev`, while `tier2.yml`, `release.yml` and `release-dry-run.yml`
+  grant read only and their mono runs cannot push. A declared block would be wrong either way — `packages:
+  write` is more than a read-only caller grants (GitHub refuses to load such a callee), and `contents: read`
+  would strip `dev-ci.yml`'s write grant.
+- **Decision 2: adopted; flagged for maintainer confirmation in the A3 PR.** `release.yml` and
+  `release-dry-run.yml` pass `suites: ["browser","mono"]` to `tier2.yml` — §10.2's "the release runs the
+  whole tier" now holds for browser and mono, with only the composed journey excluded (AGT-01, decision 1
+  of A2).
+- **The check name is now compound.** `Build Docker (smoke test)` becomes `Build Docker (smoke test) / Mono
+  image smoke`, since `build-docker` now calls the reusable `mono-smoke.yml` rather than running the smoke
+  inline. It is still not a required check (`.github/branch-protection.md`, `tests/build/required_checks.py`).
+- **The inherited-permissions choice needed a scanner exception.** checkov reads `mono-smoke.yml`'s absent
+  `permissions:` block as `write-all` and fails `CKV2_GHA_1`; it cannot apply an inline `checkov:skip` to a
+  graph check, so the skip is scoped to this one file and this one check in the scanner invocation itself,
+  governed by manifest row `CHECKOV-001`
+  (`specs/1.0.0/release-control/security-suppressions.json`) and held to that scope by
+  `tests/build/test_checkov_mono_smoke_exception.py`.
+- **The push is tied to `inputs.ref == ''`.** A caller passing `publish: true` together with a non-empty
+  `ref` would build and smoke a different commit than the one that triggered the run, then push that other
+  commit's image tagged `:dev`/`:nightly` — so both push steps' `if:` require `inputs.ref == ''` alongside
+  `inputs.publish` and a push to `dev`.
+- **The smoke refuses to run over a developer's real stack, and redacts what it uploads.**
+  `scripts/ci/tier2-mono-smoke.sh` exits before doing anything if a repo-root `.env` already exists or a
+  container named `circuitbreaker` already exists (docker-compose.yml pins that name), since either is very
+  likely the developer's own stack that `up -d`/`down -v` would recreate or destroy. Its diagnostics
+  collection also strips `Config.Env` from the `docker inspect` output it uploads, because that field carries
+  the four minted smoke secrets in clear and `::add-mask::` only redacts log output, not an artifact.
 
 ---
 
