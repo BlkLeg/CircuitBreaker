@@ -1,6 +1,8 @@
 # Ports .github/workflows/security.yml. SARIF upload goes away (no GitHub code
-# scanning here); reports are artifacts. trivy is v0.70.0, the default of the
-# trivy-action@v0.36.0 GitHub used, so the two systems scan with one binary.
+# scanning here); pip-audit and npm-audit keep their JSON reports as
+# artifacts, as security.yml did, and the other scanners' findings are in the
+# job log. trivy is v0.70.0, the default of the trivy-action@v0.36.0 GitHub
+# used, so the two systems scan with one binary.
 .scanner:
   extends: .cb-docker
   stage: security
@@ -50,19 +52,30 @@
   extends: .scanner
   script:
     - pip install checkov
-    - checkov -d .github/workflows/ --skip-path '(^|/)\.github/workflows/mono-smoke\.yml$' --quiet
-    - checkov -f .github/workflows/mono-smoke.yml --skip-check CKV2_GHA_1 --quiet
+    - |
+      rc=0
+      checkov -d .github/workflows/ --skip-path '(^|/)\.github/workflows/mono-smoke\.yml$' --quiet || rc=1
+      checkov -f .github/workflows/mono-smoke.yml --skip-check CKV2_GHA_1 --quiet || rc=1
+      exit "$rc"
 
 "Python Dependency Audit":
   extends: .scanner
   script:
     - python3.12 -m venv /tmp/audit && /tmp/audit/bin/pip install --upgrade pip pip-audit
-    - /tmp/audit/bin/pip-audit -r apps/backend/requirements.txt -r apps/backend/requirements-pg.txt
+    - /tmp/audit/bin/pip-audit -r apps/backend/requirements.txt -r apps/backend/requirements-pg.txt --format=json --output pip-audit-results.json
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [pip-audit-results.json]
 
 "Frontend Dependency Audit":
   extends: .scanner
   script:
-    - cd apps/frontend && npm ci && npm audit --audit-level=high
+    - cd apps/frontend && npm ci && npm audit --audit-level=high --json > ../../npm-audit-results.json
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [npm-audit-results.json]
 
 "Go Vulnerability Scan":
   extends: .scanner
