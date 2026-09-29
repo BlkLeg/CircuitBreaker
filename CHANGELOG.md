@@ -53,6 +53,19 @@ release.
 - OAuth and OIDC rotation failures log a fixed label rather than a value read
   out of the credential blob, closing a CodeQL data-flow alert.
 - A malformed Discord mention id costs only the ping, not the notification.
+- A failed login now takes the same time whether or not the email has an
+  account. Real accounts ran one to three more bcrypt checks than a
+  nonexistent email (the most with a custom client salt and MFA or a forced
+  password change), and locked accounts ran none, so response time revealed
+  which emails were registered.
+- Re-running the installer no longer stops at "System dependencies" when a
+  package upgrade ships a new version of a config file the host has changed
+  (dpkg's conffile prompt, first seen with pgbouncer on Ubuntu).
+- An installer that stops unexpectedly now says so, with the exit code, the
+  phase, the failing file and line, the log tail and diagnostics, instead of
+  returning to a bare prompt. Ctrl-C is reported as an interruption.
+- The server no longer hangs on shutdown when the daily update check is
+  cancelled mid-fetch.
 
 ## [0.4.4] — 2026-09-27
 

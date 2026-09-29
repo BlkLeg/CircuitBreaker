@@ -184,6 +184,68 @@ class TestTimingSideChannel:
         )
 
 
+# Wall-clock timing only trips when the runner is slow enough to stretch one
+# extra bcrypt past the tolerance, so it cannot be the guard on its own. What
+# leaks a user's existence is the *amount of work*: every bcrypt check that runs
+# only for a real account adds ~250ms an attacker can measure. Count checks
+# instead — one failed login must cost the same number whatever the account
+# state, on any machine.
+_LEAK_SCENARIOS = {
+    "plain": {},
+    "mfa_enabled": {"mfa_enabled": True},
+    "force_password_change": {"force_password_change": True},
+    "locked": {"locked_until": datetime.now(UTC) + timedelta(minutes=15)},
+}
+
+
+class TestLoginWorkIsIndependentOfTheAccount:
+    @staticmethod
+    def _count_bcrypt_checks(monkeypatch):
+        import bcrypt
+
+        calls = {"n": 0}
+        real_checkpw = bcrypt.checkpw
+
+        def counting_checkpw(password: bytes, hashed: bytes) -> bool:
+            calls["n"] += 1
+            return real_checkpw(password, hashed)
+
+        monkeypatch.setattr(bcrypt, "checkpw", counting_checkpw)
+        return calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.security
+    @pytest.mark.parametrize("custom_salt", [False, True], ids=["default-salt", "custom-salt"])
+    @pytest.mark.parametrize("scenario", list(_LEAK_SCENARIOS))
+    async def test_a_failed_login_costs_the_same_bcrypt_work_as_a_nonexistent_one(
+        self, client, factories, monkeypatch, scenario, custom_salt
+    ):
+        if custom_salt:
+            # The legacy-salt migration branch only runs under a custom salt —
+            # which is the configuration the app tells operators to use.
+            monkeypatch.setenv("CB_CLIENT_SALT", "operator-chosen-salt")
+        user = factories.user(role="viewer", **_LEAK_SCENARIOS[scenario])
+        calls = self._count_bcrypt_checks(monkeypatch)
+
+        fake = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "nobody@nonexistent.invalid", "password": "WrongPassword!999"},
+        )
+        fake_checks, calls["n"] = calls["n"], 0
+        real = await client.post(
+            "/api/v1/auth/login",
+            json={"email": user.email, "password": "WrongPassword!999"},
+        )
+
+        assert fake.status_code == real.status_code == 401
+        assert fake.json() == real.json()
+        assert calls["n"] == fake_checks, (
+            f"a failed login for an existing {scenario!r} account ran {calls['n']} bcrypt "
+            f"checks, a nonexistent account ran {fake_checks}. Each extra check is ~250ms "
+            f"of response time that tells an attacker the email has an account."
+        )
+
+
 # ---------------------------------------------------------------------------
 # JWT edge cases — expired / wrong audience
 # ---------------------------------------------------------------------------

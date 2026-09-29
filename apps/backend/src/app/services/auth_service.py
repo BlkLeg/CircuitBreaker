@@ -52,6 +52,11 @@ _DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS = 24
 _DUMMY_HASH: str = _bcrypt.hashpw(b"cb-dummy-not-real", _bcrypt.gensalt(rounds=12)).decode()
 
 
+def dummy_hash() -> str:
+    """The bcrypt hash to verify against when an email has no account (L-08)."""
+    return _DUMMY_HASH
+
+
 def _profiles_dir() -> Path:
     return _uploads_dir() / "profiles"
 
@@ -1043,18 +1048,33 @@ def login(
     cfg: AppSettings,
     ip_address: str | None = None,
     request: Any = None,
+    *,
+    password_valid: bool | None = None,
 ) -> AuthResponse:
+    """Authenticate *email* and return a session, or raise a generic 401.
+
+    Every bcrypt check here runs the same number of times whether or not the
+    email has an account (L-08): each check is ~250ms of response time, so one
+    that runs only for real accounts tells an attacker which emails exist.
+
+    ``password_valid`` is for a caller that has already checked
+    ``password_or_hash`` against this same user's hash (or ``dummy_hash()``
+    when there is none), so a login does not pay for the same bcrypt twice.
+    """
     from app.services.log_service import write_log
     from app.services.user_service import record_failed_login, reset_login_attempts
 
     user = db.query(User).filter(User.email == email.strip().lower()).first()
-    # Always call verify_password — even when user is None — to ensure constant-time
-    # response and prevent timing-based email enumeration (L-08).
     _hash_to_check = user.hashed_password if user else _DUMMY_HASH
-    _password_valid = verify_password(password_or_hash, _hash_to_check)
+    if password_valid is None:
+        password_valid = verify_password(password_or_hash, _hash_to_check)
+    _password_valid = password_valid
 
-    # Migrate existing legacy tokens (on first valid login with plaintext)
-    if not _password_valid and user and not _is_client_hash(password_or_hash):
+    # Migrate existing legacy tokens (on first valid login with plaintext).
+    # Deliberately not conditioned on `user`: the legacy check runs against the
+    # dummy hash when there is no account, so this second bcrypt costs a
+    # nonexistent email exactly what it costs a real one.
+    if not _password_valid and not _is_client_hash(password_or_hash):
         from app.core.security import (
             _DEFAULT_SALT,
             client_hash_password,
@@ -1066,7 +1086,7 @@ def login(
         if current_salt != _DEFAULT_SALT:
             # Check if login succeeds with the legacy hardcoded salt (v1 SHA256 wire hash)
             legacy_client_hash = legacy_client_wire_hash_v1(password_or_hash, _DEFAULT_SALT)
-            if verify_password(legacy_client_hash, _hash_to_check):
+            if verify_password(legacy_client_hash, _hash_to_check) and user:
                 # SUCCESS with legacy salt! Migrate this user to the current dynamic salt.
                 _logger.info("Migrating user %s to new CLIENT_HASH_SALT", user.email)
                 new_client_hash = client_hash_password(password_or_hash, current_salt)
@@ -1075,8 +1095,10 @@ def login(
                 db.refresh(user)
                 _password_valid = True
 
+    locked = bool(user and user.locked_until and user.locked_until > utcnow())
     if not user or not _password_valid:
-        if user:
+        # Attempts during a lockout are not counted, so they cannot extend it.
+        if user and not locked:
             record_failed_login(db, user, cfg)
         write_log(
             db=None,
@@ -1092,7 +1114,7 @@ def login(
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     # Check lockout — return generic 401 to avoid username enumeration via 423
-    if getattr(user, "locked_until", None) and user.locked_until and user.locked_until > utcnow():
+    if locked:
         raise HTTPException(
             status_code=401,
             detail="Invalid email or password",
