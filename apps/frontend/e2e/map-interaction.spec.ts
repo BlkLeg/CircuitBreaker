@@ -30,6 +30,31 @@ const GRAPH = {
 
 const POPULATED = { hardware: HARDWARE, graph: GRAPH, 'graph/topology': GRAPH };
 
+const PROXMOX_HYPERVISORS = Array.from({ length: 8 }, (_, index) => ({
+  id: `hardware-${index + 1}`,
+  type: 'hardware',
+  label: `pve-${index + 1}`,
+  role: 'hypervisor',
+  data: { entity_id: index + 1 },
+}));
+
+const PROXMOX_GUESTS = Array.from({ length: 16 }, (_, index) => ({
+  id: `compute-${index + 1}`,
+  type: 'compute',
+  label: `guest-${index + 1}`,
+  data: { entity_id: index + 1 },
+}));
+
+const WIDE_PROXMOX_GRAPH = {
+  nodes: [...PROXMOX_HYPERVISORS, ...PROXMOX_GUESTS],
+  edges: PROXMOX_GUESTS.map((guest, index) => ({
+    id: `proxmox-edge-${index + 1}`,
+    source: PROXMOX_HYPERVISORS[index % PROXMOX_HYPERVISORS.length].id,
+    target: guest.id,
+    type: 'smart',
+  })),
+};
+
 test.describe('topology map', () => {
   test('renders a populated graph and mounts its lazy canvas', async ({ page }) => {
     await stubApi(page, POPULATED);
@@ -40,6 +65,44 @@ test.describe('topology map', () => {
     // `SigmaMap` is behind `lazyRoute`, so this also covers the chunk resolving
     // against a real build — the failure class this suite was built for.
     await expect(page.locator('.map-page')).toBeVisible();
+  });
+
+  test('fits a wide Proxmox cluster and still pans horizontally', async ({ page }) => {
+    await stubApi(page, {
+      graph: WIDE_PROXMOX_GRAPH,
+      'graph/topology': WIDE_PROXMOX_GRAPH,
+    });
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    const canvas = page.locator('.react-flow');
+    const nodes = page.locator('.react-flow__node');
+    await expect(canvas).toBeVisible();
+    await expect(nodes).toHaveCount(WIDE_PROXMOX_GRAPH.nodes.length);
+
+    const canvasBox = await canvas.boundingBox();
+    expect(canvasBox).not.toBeNull();
+    const nodeBoxes = await nodes.evaluateAll((elements) =>
+      elements.map((element) => {
+        const box = element.getBoundingClientRect();
+        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+      })
+    );
+    for (const box of nodeBoxes) {
+      expect(box.left).toBeGreaterThanOrEqual(canvasBox!.x - 1);
+      expect(box.right).toBeLessThanOrEqual(canvasBox!.x + canvasBox!.width + 1);
+      expect(box.top).toBeGreaterThanOrEqual(canvasBox!.y - 1);
+      expect(box.bottom).toBeLessThanOrEqual(canvasBox!.y + canvasBox!.height + 1);
+    }
+
+    const viewport = page.locator('.react-flow__viewport');
+    const transformBeforePan = await viewport.getAttribute('style');
+    await page.mouse.move(
+      canvasBox!.x + canvasBox!.width / 2,
+      canvasBox!.y + canvasBox!.height / 2
+    );
+    await page.mouse.wheel(300, 0);
+    await expect.poll(() => viewport.getAttribute('style')).not.toBe(transformBeforePan);
   });
 
   test('has no serious or critical WCAG violations with nodes on the canvas', async ({ page }) => {

@@ -11,6 +11,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { useMapDataLoad } from '../features/map/hooks/useMapDataLoad';
 import { graphApi } from '../api/client';
 import { groupNodesIntoCloud } from '../utils/cloudView';
+import { MAP_MIN_ZOOM } from '../utils/viewportFit';
 
 vi.mock('../utils/cloudView', () => ({
   groupNodesIntoCloud: vi.fn((nodes) => nodes),
@@ -194,6 +195,35 @@ describe('useMapDataLoad Cloud View', () => {
 });
 
 describe('useMapDataLoad viewport timer cleanup', () => {
+  it('fits every node once without a Proxmox-only follow-up', async () => {
+    graphApi.topology.mockResolvedValue({
+      data: {
+        nodes: Array.from({ length: 8 }, (_, index) => ({
+          id: `hypervisor-${index}`,
+          label: `Hypervisor ${index}`,
+          type: 'hardware',
+          role: 'hypervisor',
+          tags: [],
+          ref_id: index + 1,
+        })),
+        edges: [],
+      },
+    });
+    const fitView = vi.fn();
+    const { args } = makeArgs({ fitView });
+    const { result } = renderHook(() => useMapDataLoad(args));
+
+    await act(async () => {
+      await result.current.fetchData();
+    });
+    await waitFor(() => expect(fitView).toHaveBeenCalledTimes(1));
+
+    expect(fitView).toHaveBeenCalledWith(
+      expect.objectContaining({ minZoom: MAP_MIN_ZOOM, padding: 0.15 })
+    );
+    expect(fitView.mock.calls[0][0]).not.toHaveProperty('nodes');
+  });
+
   it('does not touch the viewport after the hook unmounts', async () => {
     graphApi.topology.mockResolvedValue(topologyOf('n1'));
     const fitView = vi.fn();

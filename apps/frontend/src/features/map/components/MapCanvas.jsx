@@ -5,6 +5,11 @@ import LegendPanel from './LegendPanel';
 import PrivacyScoreWidget from '../../../components/security/PrivacyScoreWidget';
 import HostileNetworkBanner from '../../../components/security/HostileNetworkBanner';
 import { CONNECTION_LINE_STYLE, DEFAULT_EDGE_OPTIONS } from '../../../lib/constants';
+import {
+  getMapViewportStorageKey,
+  MAP_MIN_ZOOM,
+  VIEWPORT_FIT_DEFAULTS,
+} from '../../../utils/viewportFit';
 
 /**
  * The map's renderer. Picks between the Sigma canvas and React Flow and wires
@@ -19,6 +24,7 @@ import { CONNECTION_LINE_STYLE, DEFAULT_EDGE_OPTIONS } from '../../../lib/consta
  */
 export default function MapCanvas({
   SigmaMap,
+  mapId,
   nodes,
   edges,
   nodeTypes,
@@ -75,14 +81,6 @@ export default function MapCanvas({
       edges={edges}
       onNodesChange={handleNodesChange}
       onEdgesChange={onEdgesChange}
-      nodeExtent={[
-        [-4000, -4000],
-        [4000, 4000],
-      ]}
-      translateExtent={[
-        [-4000, -4000],
-        [4000, 4000],
-      ]}
       onNodeDragStart={handleNodeDragStart}
       onNodeDragStop={handleNodeDragStop}
       onNodeMouseEnter={handleNodeMouseEnter}
@@ -95,7 +93,11 @@ export default function MapCanvas({
       onConnectStart={onConnectStart}
       onConnectEnd={onConnectEnd}
       onEdgeUpdate={handleEdgeUpdate}
-      onMoveEnd={(_, vp) => localStorage.setItem('cb_map_viewport', JSON.stringify(vp))}
+      onMoveEnd={(event, vp) => {
+        if (event) {
+          localStorage.setItem(getMapViewportStorageKey(mapId), JSON.stringify(vp));
+        }
+      }}
       onPaneMouseMove={handlePanePointerMove}
       connectionLineType="smoothstep"
       connectionMode="loose"
@@ -108,7 +110,8 @@ export default function MapCanvas({
         handlePaneClick();
       }}
       fitView
-      minZoom={0.1}
+      fitViewOptions={VIEWPORT_FIT_DEFAULTS}
+      minZoom={MAP_MIN_ZOOM}
       maxZoom={2.5}
       panOnDrag={!boundaryDrawMode && !lineDrawMode}
       panOnScroll={!boundaryDrawMode && !lineDrawMode}
@@ -164,6 +167,7 @@ export default function MapCanvas({
 
 MapCanvas.propTypes = {
   SigmaMap: PropTypes.elementType.isRequired,
+  mapId: PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
   nodes: PropTypes.array.isRequired,
   edges: PropTypes.array.isRequired,
   nodeTypes: PropTypes.object.isRequired,

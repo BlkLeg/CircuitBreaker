@@ -2,6 +2,7 @@ import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { CONNECTION_LINE_STYLE } from '../lib/constants';
+import { MAP_MIN_ZOOM, VIEWPORT_FIT_DEFAULTS } from '../utils/viewportFit';
 
 const mockSnapEdgesToNearestHandles = vi.fn((_movedNodeIds, _nodes, edges) => edges);
 let latestReactFlowProps = null;
@@ -272,7 +273,8 @@ vi.mock('../utils/mapHandleHelpers', async () => {
   };
 });
 
-vi.mock('../utils/viewportFit', () => ({
+vi.mock('../utils/viewportFit', async (importOriginal) => ({
+  ...(await importOriginal()),
   viewportFit: vi.fn(),
 }));
 
@@ -408,6 +410,37 @@ describe('MapPage', () => {
         latestReactFlowProps.onConnectEnd?.({});
       });
     }).not.toThrow();
+  });
+
+  it('keeps the canvas unbounded and automatic fits able to show the complete map', async () => {
+    render(<MapPage />);
+
+    await waitFor(() => {
+      expect(latestReactFlowProps).toBeTruthy();
+    });
+
+    expect(latestReactFlowProps.nodeExtent).toBeUndefined();
+    expect(latestReactFlowProps.translateExtent).toBeUndefined();
+    expect(latestReactFlowProps.minZoom).toBe(MAP_MIN_ZOOM);
+    expect(latestReactFlowProps.fitViewOptions).toEqual(VIEWPORT_FIT_DEFAULTS);
+  });
+
+  it('persists only user-driven viewport changes for the active map', async () => {
+    render(<MapPage />);
+
+    await waitFor(() => {
+      expect(latestReactFlowProps).toBeTruthy();
+    });
+
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    const viewport = { x: -120, y: 40, zoom: 0.75 };
+
+    act(() => latestReactFlowProps.onMoveEnd?.(null, viewport));
+    expect(setItem).not.toHaveBeenCalled();
+
+    act(() => latestReactFlowProps.onMoveEnd?.({ type: 'pointerup' }, viewport));
+    expect(setItem).toHaveBeenCalledWith('cb_map_viewport_1', JSON.stringify(viewport));
+    setItem.mockRestore();
   });
 
   it('filters out structural edge changes from React Flow', async () => {

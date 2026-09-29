@@ -1,13 +1,20 @@
 /**
  * Viewport-aware fit options for the topology map.
- * Used so large graphs fill the viewport at a readable zoom (no ant-sized view).
+ * Automatic fits must keep the complete topology visible. Users can zoom in
+ * afterward when they want to focus on a node or group.
  */
+export const MAP_MIN_ZOOM = 0.01;
+
 export const VIEWPORT_FIT_DEFAULTS = {
   padding: 0.15,
-  minZoom: 0.4,
+  minZoom: MAP_MIN_ZOOM,
   maxZoom: 2.5,
   duration: 800,
 };
+
+export function getMapViewportStorageKey(mapId) {
+  return `cb_map_viewport_${mapId}`;
+}
 
 /**
  * Call ReactFlow fitView with viewport-aware defaults.

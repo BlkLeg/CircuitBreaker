@@ -1320,6 +1320,7 @@ export default function MapWorkspace({
             />
             <MapCanvas
               SigmaMap={SigmaMap}
+              mapId={mapId}
               nodes={nodes}
               edges={edges}
               nodeTypes={NODE_TYPES}
