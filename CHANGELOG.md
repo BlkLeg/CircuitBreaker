@@ -15,7 +15,9 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
-## [0.4.5] — unreleased
+## [0.4.6] — unreleased
+
+## [0.4.5] — 2026-09-29
 
 Fixes a vault key rotation that cut off every enrolled agent, and adds
 `cb resources` alongside the automation that now cuts and maintains each
