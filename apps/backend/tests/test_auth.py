@@ -246,6 +246,74 @@ class TestLoginWorkIsIndependentOfTheAccount:
         )
 
 
+class TestLegacySaltMigrationKeepsTheSecondFactor:
+    """An account whose stored hash predates the configurable client salt is
+    migrated on its first plaintext login. That login is still a login: an MFA
+    account must get the MFA challenge, and a force-change account the change
+    token, exactly as it would with a current hash — never a full session."""
+
+    @staticmethod
+    def _legacy_user(factories, monkeypatch, **kwargs):
+        from app.core.security import _DEFAULT_SALT, hash_password, legacy_client_wire_hash_v1
+
+        monkeypatch.setenv("CB_CLIENT_SALT", "operator-chosen-salt")
+        return factories.user(
+            role="viewer",
+            hashed_password=hash_password(
+                legacy_client_wire_hash_v1("LegacyPassword!1", _DEFAULT_SALT)
+            ),
+            **kwargs,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.security
+    async def test_an_mfa_account_is_challenged_on_its_migrating_login(
+        self, client, factories, monkeypatch
+    ):
+        user = self._legacy_user(factories, monkeypatch, mfa_enabled=True)
+        resp = await client.post(
+            "/api/v1/auth/login", json={"email": user.email, "password": "LegacyPassword!1"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("requires_mfa") is True, (
+            f"a legacy-hash MFA account got {sorted(body)} instead of an MFA challenge: "
+            f"the migrating login skipped the second factor"
+        )
+        assert "token" not in body
+
+    @pytest.mark.asyncio
+    @pytest.mark.security
+    async def test_a_force_change_account_gets_the_change_token_on_its_migrating_login(
+        self, client, factories, monkeypatch
+    ):
+        user = self._legacy_user(factories, monkeypatch, force_password_change=True)
+        resp = await client.post(
+            "/api/v1/auth/login", json={"email": user.email, "password": "LegacyPassword!1"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("requires_change") is True, (
+            f"a legacy-hash force-change account got {sorted(body)} instead of a "
+            f"change token: the migrating login skipped the forced password change"
+        )
+        assert "token" not in body
+
+    @pytest.mark.asyncio
+    async def test_a_plain_account_is_still_migrated_and_logged_in(
+        self, client, factories, monkeypatch, db_session
+    ):
+        user = self._legacy_user(factories, monkeypatch)
+        legacy_hash = user.hashed_password
+        resp = await client.post(
+            "/api/v1/auth/login", json={"email": user.email, "password": "LegacyPassword!1"}
+        )
+        assert resp.status_code == 200
+        assert "token" in resp.json()
+        db_session.refresh(user)
+        assert user.hashed_password != legacy_hash, "the legacy hash was not migrated"
+
+
 # ---------------------------------------------------------------------------
 # JWT edge cases — expired / wrong audience
 # ---------------------------------------------------------------------------
