@@ -1,8 +1,12 @@
 # Circuit Breaker
 
-![Circuit Breaker](docs/assets/screenshots/cb_night-full.webp)
+[![Circuit Breaker](docs/assets/screenshots/cb_night-full.webp)](https://circuitbreaker.blkleg.app)
 
 **Circuit Breaker** is a self-hosted homelab visualization platform that maps your infrastructure—hardware, services, networks, and clusters—with interactive topology, live telemetry, and auto-discovery.
+
+> 🌐 **See it before you install it: [circuitbreaker.blkleg.app](https://circuitbreaker.blkleg.app)**
+> A guided walkthrough of what Circuit Breaker does, plus a [live interactive demo](https://circuitbreaker.blkleg.app/demo)
+> of the topology map that runs right in your browser. No install, no account.
 
 > **⚠️ Release Candidate Security Notice**
 > 0.4.5. Not fully audited; several 1.0 security acceptance rows are still unevidenced. Run on a
@@ -10,7 +14,7 @@
 > boundary, which is tracked in
 > [docs/release/1.0.0-support-contract.md](docs/release/1.0.0-support-contract.md).
 
-📖 **[User Guide](https://blkleg.github.io/CircuitBreaker/)** | 🗣️ **[Discord](https://discord.gg/SBdBRfmD)** | 🐦 **[X/Twitter](https://x.com/TryHostingCB)**
+🌐 **[Website & Live Demo](https://circuitbreaker.blkleg.app)** | 📖 **[User Guide](https://blkleg.github.io/CircuitBreaker/)** | 🗣️ **[Discord](https://discord.gg/SBdBRfmD)** | 🐦 **[X/Twitter](https://x.com/TryHostingCB)**
 
 ---
 
