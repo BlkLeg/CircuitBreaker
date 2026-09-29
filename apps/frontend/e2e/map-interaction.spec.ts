@@ -318,3 +318,61 @@ test.describe('topology map hover telemetry card', () => {
     await expect(close).toBeVisible();
   });
 });
+
+test.describe('topology map node panels', () => {
+  test('the node details panel closes on the first click of its close button', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    await page.locator('.react-flow__node', { hasText: 'edge-router' }).click();
+    const close = page.getByRole('button', { name: 'Close details' });
+    await expect(close).toBeVisible();
+    // Let the panel's open animation settle so the button is where it stays.
+    await page.waitForTimeout(400);
+
+    // A real click wobbles a pixel or two between press and release. The
+    // header is a drag handle, and that wobble used to jump the panel away
+    // from the pointer so the release missed the button and no click fired.
+    const box = (await close.boundingBox())!;
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 1, y + 1);
+    await page.mouse.move(x + 2, y + 1);
+    await page.mouse.up();
+
+    await expect(close).toBeHidden();
+  });
+
+  test('dragging the node details panel moves it with the pointer', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    await page.locator('.react-flow__node', { hasText: 'edge-router' }).click();
+    const close = page.getByRole('button', { name: 'Close details' });
+    await expect(close).toBeVisible();
+    await page.waitForTimeout(400);
+
+    // The header is the drag handle; grab it away from the close button.
+    const header = (await close.locator('..').boundingBox())!;
+    const x = header.x + 40;
+    const y = header.y + header.height / 2;
+    const before = (await close.boundingBox())!;
+    // Sideways only: the panel is taller than the room below it, so a
+    // downward drag is (correctly) clamped at the map's bottom edge.
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - 30, y, { steps: 5 });
+    await page.mouse.move(x - 60, y, { steps: 5 });
+    await page.mouse.up();
+
+    const after = (await close.boundingBox())!;
+    expect(Math.round(after.x - before.x)).toBe(-60);
+    // Dragging in viewport coordinates used to drop the panel by the map
+    // container's offset from the top of the page.
+    expect(Math.round(after.y - before.y)).toBe(0);
+  });
+});

@@ -790,12 +790,16 @@ export default function MapWorkspace({
     if (selectedNode) setSelectedNode(null);
   }, [contextMenuOpenRef, selectedNode, setBoundaryMenu, setContextMenu, setVisualLineMenu]);
 
+  // Keep the open panel's node in step with fresh node data. This reads the
+  // selection through the updater, not the closure: a closure copy could be
+  // stale by the time the effect ran and re-select a node the user had just
+  // closed, so the close button took several clicks.
   useEffect(() => {
-    if (!selectedNode) return;
-    const refreshed = nodes.find((node) => node.id === selectedNode.id);
-    if (!refreshed) return;
-    setSelectedNode(refreshed);
-  }, [nodes, selectedNode]);
+    setSelectedNode((current) => {
+      if (!current) return current;
+      return nodes.find((node) => node.id === current.id) ?? current;
+    });
+  }, [nodes]);
 
   const handleUplinkChange = useCallback(
     (nodeId, uplinkMbps) => {

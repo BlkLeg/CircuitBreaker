@@ -5,6 +5,10 @@ import { CONNECTION_LINE_STYLE } from '../lib/constants';
 import { MAP_MIN_ZOOM, VIEWPORT_FIT_DEFAULTS } from '../utils/viewportFit';
 
 const mockSnapEdgesToNearestHandles = vi.fn((_movedNodeIds, _nodes, edges) => edges);
+// One instance, like React Flow's own onEdgesChange. A fresh vi.fn per render
+// meant "latest" could belong to a render React discarded (a lazy child
+// suspending), not the one whose handlers the test then invokes.
+const mockOnEdgesChangeBase = vi.fn();
 let latestReactFlowProps = null;
 let latestBaseOnEdgesChange = null;
 
@@ -27,9 +31,8 @@ vi.mock('reactflow', () => {
         current = typeof updater === 'function' ? updater(current) : updater;
         return current;
       });
-      const onEdgesChangeBase = vi.fn();
-      latestBaseOnEdgesChange = onEdgesChangeBase;
-      return [current, setEdges, onEdgesChangeBase];
+      latestBaseOnEdgesChange = mockOnEdgesChangeBase;
+      return [current, setEdges, mockOnEdgesChangeBase];
     },
     ReactFlowProvider: ({ children }) => React.createElement('div', null, children),
     useReactFlow: () => ({
