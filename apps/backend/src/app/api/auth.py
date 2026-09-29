@@ -292,9 +292,9 @@ def login_compat(
     {"requires_change": true, "change_token": "<jwt>"} instead of a full
     session token.  The client must POST that token to /auth/force-change-password.
     """
-    from app.core.security import verify_password
     from app.core.time import utcnow
     from app.services.auth_service import login as svc_login
+    from app.services.auth_service import verify_login_password
     from app.services.user_service import reset_login_attempts
 
     cfg = get_or_create_settings(db)
@@ -306,16 +306,19 @@ def login_compat(
     if password_or_hash is None:
         raise HTTPException(status_code=422, detail="password or password_hash is required")
 
-    # Early check for force_password_change before creating a full session.
     email_norm = payload.email.strip().lower()
     user = db.query(User).filter(User.email == email_norm).first()
-    if user and user.locked_until and user.locked_until > utcnow():
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    if (
-        user
-        and verify_password(password_or_hash, user.hashed_password)
-        and getattr(user, "force_password_change", False)
-    ):
+    # The whole credential check — including a legacy-salt hash, which it
+    # migrates — runs once, for every request, before anything branches on the
+    # account. Branching first let a locked account skip bcrypt and a real one
+    # run extra checks, each a ~250ms tell that the email exists (L-08), and let
+    # a legacy-hash MFA or force-change account fall through to a full session.
+    # svc_login reuses this result rather than checking again.
+    password_valid = verify_login_password(db, user, password_or_hash)
+    # A locked account is refused by svc_login below, after the same work every
+    # other failed login does; here it only must not be handed a change or MFA token.
+    locked = bool(user and user.locked_until and user.locked_until > utcnow())
+    if user and password_valid and not locked and getattr(user, "force_password_change", False):
         reset_login_attempts(db, user)
         change_token = _jwt.encode(
             {
@@ -330,25 +333,22 @@ def login_compat(
 
     # MFA challenge: if credentials are valid and MFA is enabled, issue
     # a short-lived mfa_token rather than a full session JWT.
-    if user and getattr(user, "mfa_enabled", False):
-        from app.core.security import verify_password as _vp
+    if user and password_valid and not locked and getattr(user, "mfa_enabled", False):
+        reset_login_attempts(db, user)
+        mfa_token = _jwt.encode(
+            {
+                "user_id": user.id,
+                "aud": "cb:mfa-challenge",
+                "exp": utcnow() + timedelta(minutes=5),
+            },
+            cfg.jwt_secret or "",
+            algorithm="HS256",
+        )
+        return {"requires_mfa": True, "mfa_token": mfa_token}
 
-        if _vp(password_or_hash, user.hashed_password):
-            from app.services.user_service import reset_login_attempts as _rla
-
-            _rla(db, user)
-            mfa_token = _jwt.encode(
-                {
-                    "user_id": user.id,
-                    "aud": "cb:mfa-challenge",
-                    "exp": utcnow() + timedelta(minutes=5),
-                },
-                cfg.jwt_secret or "",
-                algorithm="HS256",
-            )
-            return {"requires_mfa": True, "mfa_token": mfa_token}
-
-    result = svc_login(db, payload.email, password_or_hash, cfg, ip, request=request)
+    result = svc_login(
+        db, payload.email, password_or_hash, cfg, ip, request=request, password_valid=password_valid
+    )
     body = result.model_dump()
     return auth_response_with_cookie(request, result.token, body, cfg.session_timeout_hours)
 

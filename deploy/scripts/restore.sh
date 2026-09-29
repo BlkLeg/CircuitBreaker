@@ -67,7 +67,7 @@
 # ⚠  WARNING: The snapshot contains the vault key in plaintext.
 #    Treat this machine and the snapshot file as sensitive after restore.
 #
-# Requires: tar, gzip, psql, rsync, jq, sed, sha256sum
+# Requires: tar, gzip, psql, rsync, jq, sed, sha256sum, awk (df is used when present)
 
 set -euo pipefail
 
@@ -139,7 +139,7 @@ PG_DROPDB="$(_pg_bin dropdb)"
 PG_CREATEDB="$(_pg_bin createdb)"
 
 if [[ "$RESTORE_KIND" == "snapshot" ]]; then
-    REQUIRED_TOOLS=(tar gzip "$PG_PSQL" "$PG_DROPDB" "$PG_CREATEDB" rsync jq sed sha256sum)
+    REQUIRED_TOOLS=(tar gzip "$PG_PSQL" "$PG_DROPDB" "$PG_CREATEDB" rsync jq sed sha256sum awk)
 else
     REQUIRED_TOOLS=(gzip "$PG_PSQL" "$PG_DROPDB" "$PG_CREATEDB" sed)
 fi
@@ -175,68 +175,301 @@ fi
 
 CB_DATA_DIR="${CB_DATA_DIR:-/var/lib/circuitbreaker}"
 
-# ── 4. Validate structure ──────────────────────────────────────────────────
+# ── 4. Validate — everything below runs before anything is stopped or dropped ─
 #
-# Steps 4-6 are the snapshot's structure, manifest and recorded checksum; the else
-# branch is everything a bare dump can be checked for. Both bodies are left at their
-# own indentation rather than shifted one level in, so that what this script does to a
-# snapshot stays line-for-line comparable with what it always did.
+# ACC-15: a restore must refuse, while the service is still up and the database still
+# intact, every input it cannot apply whole — a corrupt or truncated archive, a checksum
+# mismatch, a missing or wrong vault key, an unreadable or partial snapshot, a snapshot
+# format this script does not know, and a host with no room or no permission to take it.
+# Steps 4-6 are that validation phase. Each refusal says "Nothing has been changed",
+# and it is true: until step 8 this script has written only under its own $TMPDIR.
+#
+# The snapshot is unpacked here too, in full, rather than after the service has been
+# stopped. A full disk or a corrupt member used to surface from `tar -x` at step 9 —
+# after step 8 had taken the service down — and the operator had an outage for an
+# archive that could never have been restored.
+#
+# Both bodies are left at their own indentation rather than shifted one level in, so
+# that what this script does to a snapshot stays line-for-line comparable with what it
+# always did.
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
+
+# Snapshot layout version this script reads. Must equal SNAPSHOT_FORMAT_VERSION in
+# apps/backend/src/app/services/backup/snapshot.py; tests/build/test_restore_fault_matrix.py
+# asserts the two agree.
+SUPPORTED_FORMAT_VERSION=1
+
+_refuse() {
+    local line
+    for line in "$@"; do
+        echo "ERROR: ${line}" >&2
+    done
+    echo "       Nothing has been changed." >&2
+    exit 1
+}
+
+# Free KiB on the filesystem that would hold PATH, or nothing when it cannot be measured.
+# PATH need not exist yet: the nearest existing ancestor is what the write lands on.
+_nearest_existing() {
+    local path="$1"
+    while [[ ! -e "$path" && "$path" != "/" ]]; do
+        path=$(dirname -- "$path")
+    done
+    printf '%s' "$path"
+}
+_free_kb() {
+    df -Pk "$(_nearest_existing "$1")" 2>/dev/null | awk 'NR==2 && $4 ~ /^[0-9]+$/ {print $4}' || true
+}
+
+# A disk-full refusal, before anything is written. An unmeasurable filesystem is not a
+# reason to block a recovery on a measurement: say so and carry on, which is what `cb`'s
+# container path does with the same check.
+_require_space() {
+    local path="$1" need_kb="$2" what="$3" free_kb
+    free_kb=$(_free_kb "$path")
+    if [[ -z "$free_kb" ]]; then
+        echo "    WARNING: could not measure free space for ${path}; continuing." >&2
+        return
+    fi
+    if (( free_kb < need_kb )); then
+        _refuse "not enough free space for ${what}." \
+            "  ${path}: $(( free_kb / 1024 )) MiB free, at least $(( need_kb / 1024 + 1 )) MiB needed." \
+            "  Free space (or set TMPDIR to a larger filesystem) and re-run."
+    fi
+}
+
+# A permission refusal, before anything is written: the restore must be able to write
+# every place it is about to replace. `[[ -w ]]` is access(2), so it also reports a
+# read-only filesystem to root.
+_require_writable() {
+    local path="$1" what="$2" anchor
+    if [[ -e "$path" ]]; then
+        [[ -w "$path" ]] && return
+        _refuse "${what} ${path} is not writable by $(id -un) — the restore could not replace it." \
+            "  Run the restore as root (or the owner), or fix its permissions."
+    fi
+    anchor=$(_nearest_existing "$path")
+    if [[ ! -d "$anchor" || ! -w "$anchor" ]]; then
+        _refuse "${what} ${path} cannot be created: ${anchor} is not a writable directory." \
+            "  Run the restore as root (or the owner), or fix the path."
+    fi
+}
+
+# pg_dump's plain format opens with its header and closes with
+# "-- PostgreSQL database dump complete". A dump with the first and not the second was
+# cut short while it was written — by a full disk or a killed process — and replaying it
+# loads a partial database that psql reports as a success: truncation between two
+# statements is not an error to it. pg_dump 16.10+/17.6+ writes `\unrestrict <key>` after
+# the trailer, so the trailer is looked for near the end rather than on the last line.
+# The head and tail are captured before they are matched rather than piped into grep:
+# this script runs under `pipefail`, and `grep -q` closing the pipe early makes the
+# producer exit 141.
+_require_complete_dump() {
+    local dump="$1" head tail
+    head=$(zcat -f "$dump" 2>/dev/null | head -c 1024) || true
+    tail=$(zcat -f "$dump" 2>/dev/null | tail -c 4096) || true
+    if grep -q "PostgreSQL database dump" <<<"$head" \
+        && ! grep -q "PostgreSQL database dump complete" <<<"$tail"; then
+        _refuse "the database dump in ${SNAPSHOT} is incomplete: it opens with pg_dump's" \
+            "  header but never reaches '-- PostgreSQL database dump complete'. pg_dump was" \
+            "  interrupted when it was taken; replaying it would load a partial database."
+    fi
+}
+
+# app_settings.vault_key_hash from a plain dump on stdin, or nothing — the SHA-256 of the
+# key the database was encrypted with. Same reading as services/backup/verify.py: the
+# COPY header names the columns, the first row is the singleton.
+_dump_vault_key_hash() {
+    awk -F'\t' '
+        !incopy && /^COPY ([A-Za-z0-9_"]+\.)?"?app_settings"? \(/ {
+            header = $0
+            sub(/^[^(]*\(/, "", header)
+            sub(/\).*$/, "", header)
+            n = split(header, cols, /, */)
+            for (i = 1; i <= n; i++) {
+                gsub(/"/, "", cols[i])
+                if (cols[i] == "vault_key_hash") idx = i
+            }
+            if (!idx) exit
+            incopy = 1
+            next
+        }
+        incopy {
+            if ($0 != "\\." && $idx != "\\N") print $idx
+            exit
+        }'
+}
 
 if [[ "$RESTORE_KIND" == "snapshot" ]]; then
 
 echo "==> Validating snapshot: $SNAPSHOT"
 
-# Check required entries exist in tarball
-TARBALL_CONTENTS=$(tar -tzf "$SNAPSHOT" 2>&1) || {
-    echo "ERROR: Cannot read tarball: $SNAPSHOT" >&2
-    exit 1
+# The whole compressed stream, CRC and length trailer included. `tar -t` stops at the
+# end-of-archive marker and never reads the trailer, so a corrupt or truncated archive
+# listed cleanly here and failed at extraction, after the service was down.
+if ! gzip -t "$SNAPSHOT" 2>/dev/null; then
+    _refuse "${SNAPSHOT} is corrupt or truncated: its gzip stream does not verify." \
+        "  It was damaged in transit or cut short while it was written, and cannot be restored."
+fi
+
+# Listed with --absolute-names so a member's name is printed exactly as stored: GNU tar
+# otherwise strips a leading `/` from the listing (with a warning on stderr), and the
+# absolute-path check below would be looking at a name that is not the one in the
+# archive. A tar without the option (busybox) falls back to a plain listing; `cb
+# restore` runs the backend verifier, which reads raw member names, before this script
+# on every install mode. stderr is kept out of the listing either way.
+_tar_list() {
+    tar --absolute-names "$@" 2>/dev/null || tar "$@" 2>>"$TMPDIR/tar-list.err"
 }
+TARBALL_CONTENTS=$(_tar_list -tzf "$SNAPSHOT") \
+    || _refuse "Cannot read tarball: $SNAPSHOT"
+TARBALL_LISTING=$(_tar_list -tvzf "$SNAPSHOT") \
+    || _refuse "Cannot read tarball: $SNAPSHOT"
+
+# Every member must be a regular file or a directory, at a relative path, under one
+# top-level directory. A symlink or hard link is how an archive makes `tar -x` and the
+# rsync at step 11 read or write outside the restore tree, and an absolute path or a
+# `..` component is how it writes outside it directly; a snapshot never contains any.
+SPECIAL_MEMBERS=$(awk 'substr($0, 1, 1) != "-" && substr($0, 1, 1) != "d"' <<<"$TARBALL_LISTING")
+if [[ -n "$SPECIAL_MEMBERS" ]]; then
+    _refuse "${SNAPSHOT} contains links or special files, which a snapshot never does:" \
+        "$(head -n 5 <<<"$SPECIAL_MEMBERS")"
+fi
+UNSAFE_MEMBERS=$(grep -E '^/|(^|/)\.\.(/|$)' <<<"$TARBALL_CONTENTS" || true)
+if [[ -n "$UNSAFE_MEMBERS" ]]; then
+    _refuse "${SNAPSHOT} contains members that would unpack outside the restore directory:" \
+        "$(head -n 5 <<<"$UNSAFE_MEMBERS")"
+fi
+MEMBER_NAMES=$(sed -e 's|^\./||' -e 's|/$||' <<<"$TARBALL_CONTENTS" | grep -v '^\.\?$' || true)
+SNAP_TOP=$(sed 's|/.*$||' <<<"$MEMBER_NAMES" | sort -u)
+if [[ -z "$SNAP_TOP" || "$(wc -l <<<"$SNAP_TOP")" -ne 1 ]]; then
+    _refuse "${SNAPSHOT} must hold exactly one top-level snapshot directory; it holds:" \
+        "$(head -n 5 <<<"$SNAP_TOP")"
+fi
+DUPLICATE_MEMBERS=$(sort <<<"$MEMBER_NAMES" | uniq -d)
+if [[ -n "$DUPLICATE_MEMBERS" ]]; then
+    # tar -x keeps the last copy of a repeated name, so what is checked below would not
+    # be what is restored.
+    _refuse "${SNAPSHOT} contains the same member more than once:" \
+        "$(head -n 5 <<<"$DUPLICATE_MEMBERS")"
+fi
 
 for required_file in "db.sql.gz" "vault.key" "manifest.json"; do
-    if ! echo "$TARBALL_CONTENTS" | grep -q "$required_file"; then
-        echo "ERROR: Snapshot is missing required file: $required_file" >&2
-        exit 1
+    if ! grep -qxF "${SNAP_TOP}/${required_file}" <<<"$MEMBER_NAMES"; then
+        _refuse "Snapshot is missing required file: $required_file"
     fi
 done
 
-# Verify vault.key is non-empty
-VAULT_KEY_BYTES=$(tar -xOf "$SNAPSHOT" "$(echo "$TARBALL_CONTENTS" | grep 'vault\.key$' | head -1)" 2>/dev/null | wc -c)
-if [[ "$VAULT_KEY_BYTES" -lt 1 ]]; then
-    echo "ERROR: vault.key inside snapshot is empty — this snapshot cannot restore credentials." >&2
-    exit 1
+# Unpacked here, before step 8, into this script's own scratch directory. Sized first:
+# the members' total is what tar is about to write.
+EXTRACT_KB=$(awk '$3 ~ /^[0-9]+$/ {total += $3} END {printf "%d", total / 1024 + 1}' <<<"$TARBALL_LISTING")
+_require_space "$TMPDIR" "$EXTRACT_KB" "unpacking the snapshot"
+mkdir -p "$TMPDIR/extract"
+if ! tar -xzf "$SNAPSHOT" -C "$TMPDIR/extract" 2>"$TMPDIR/tar.err"; then
+    _refuse "could not unpack ${SNAPSHOT}: $(tail -n 3 "$TMPDIR/tar.err")"
+fi
+SNAP_DIR="$TMPDIR/extract/$SNAP_TOP"
+
+# Verify vault.key is present, non-empty and shaped like a vault key: 32 url-safe
+# base64-encoded bytes. Anything else decrypts nothing, and step 12 would write it over
+# the working key.
+VAULT_KEY_VALUE=$(tr -d '[:space:]' <"$SNAP_DIR/vault.key")
+if [[ -z "$VAULT_KEY_VALUE" ]]; then
+    _refuse "vault.key inside snapshot is empty — this snapshot cannot restore credentials."
+fi
+if [[ ! "$VAULT_KEY_VALUE" =~ ^[A-Za-z0-9_-]{43}=$ ]]; then
+    _refuse "vault.key inside snapshot is not a vault key (32 url-safe base64-encoded bytes)." \
+        "  Restoring it would replace the working key with one that decrypts nothing."
 fi
 
-# ── 5. Extract and display manifest ───────────────────────────────────────
+# ── 5. Display and check the manifest ─────────────────────────────────────
 
-MANIFEST_PATH=$(echo "$TARBALL_CONTENTS" | grep 'manifest\.json$' | head -1)
-tar -xOf "$SNAPSHOT" "$MANIFEST_PATH" > "$TMPDIR/manifest.json"
+cp "$SNAP_DIR/manifest.json" "$TMPDIR/manifest.json"
 
 echo ""
 echo "Snapshot details:"
-jq '.' "$TMPDIR/manifest.json"
+jq '.' "$TMPDIR/manifest.json" || _refuse "manifest.json in ${SNAPSHOT} is not valid JSON."
 echo ""
 
-# ── 6. Verify db.sql.gz SHA-256 checksum ──────────────────────────────────
+# Archives predating the field read as format 0.
+FORMAT_VERSION=$(jq -r '.format_version // 0' "$TMPDIR/manifest.json" 2>/dev/null) || FORMAT_VERSION=""
+FORMAT_VERSION="${FORMAT_VERSION:-0}"
+if [[ ! "$FORMAT_VERSION" =~ ^[0-9]+$ ]]; then
+    _refuse "manifest.json declares format_version '${FORMAT_VERSION}', which is not a snapshot format."
+fi
+if (( FORMAT_VERSION > SUPPORTED_FORMAT_VERSION )); then
+    _refuse "this snapshot uses format ${FORMAT_VERSION}; this script reads format ${SUPPORTED_FORMAT_VERSION} and older." \
+        "  It was taken by a newer Circuit Breaker. Restore it with that version's restore.sh."
+fi
+
+# ── 6. Verify db.sql.gz SHA-256 checksum and the snapshot's completeness ─
 
 echo "==> Verifying database checksum..."
 
-DB_MEMBER=$(echo "$TARBALL_CONTENTS" | grep 'db\.sql\.gz$' | head -1)
-tar -xOf "$SNAPSHOT" "$DB_MEMBER" > "$TMPDIR/db.sql.gz"
-
-ACTUAL_SHA=$(sha256sum "$TMPDIR/db.sql.gz" | awk '{print $1}')
+ACTUAL_SHA=$(sha256sum "$SNAP_DIR/db.sql.gz" | awk '{print $1}')
 EXPECTED_SHA=$(jq -r '.db_checksum_sha256' "$TMPDIR/manifest.json")
 
 if [[ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]]; then
     echo "ERROR: Database checksum mismatch!" >&2
     echo "  Expected: $EXPECTED_SHA" >&2
     echo "  Actual:   $ACTUAL_SHA" >&2
+    echo "       The archive is corrupt or was modified. Nothing has been changed." >&2
     exit 1
 fi
 
 echo "    Checksum OK: $ACTUAL_SHA"
+
+# A partial snapshot: a dump cut short before its checksum was recorded, or fewer
+# uploads or config files than the manifest the builder wrote from the tree it packed.
+if ! gzip -t "$SNAP_DIR/db.sql.gz" 2>/dev/null; then
+    _refuse "db.sql.gz inside ${SNAPSHOT} is not a complete gzip stream — a partial snapshot."
+fi
+_require_complete_dump "$SNAP_DIR/db.sql.gz"
+
+EXPECTED_UPLOADS=$(jq -r '.uploads_count // empty' "$TMPDIR/manifest.json" 2>/dev/null) || EXPECTED_UPLOADS=""
+if [[ "$EXPECTED_UPLOADS" =~ ^[0-9]+$ ]]; then
+    ACTUAL_UPLOADS=0
+    if [[ -d "$SNAP_DIR/uploads" ]]; then
+        ACTUAL_UPLOADS=$(find "$SNAP_DIR/uploads" -type f | wc -l)
+    fi
+    if (( ACTUAL_UPLOADS != EXPECTED_UPLOADS )); then
+        _refuse "${SNAPSHOT} is a partial snapshot: its manifest records ${EXPECTED_UPLOADS}" \
+            "  uploaded file(s) and the archive holds ${ACTUAL_UPLOADS}. Restoring it would" \
+            "  replace this host's uploads with an incomplete set."
+    fi
+fi
+while IFS= read -r listed_config; do
+    [[ -n "$listed_config" ]] || continue
+    if [[ ! -f "$SNAP_DIR/$listed_config" ]]; then
+        _refuse "${SNAPSHOT} is a partial snapshot: its manifest lists ${listed_config}," \
+            "  which the archive does not contain."
+    fi
+done < <(jq -r '(.config_files // [])[]' "$TMPDIR/manifest.json" 2>/dev/null || true)
+
+# The pairing check: vault.key must be the key this database was encrypted with. A
+# restore that accepted a mismatched pair wrote a key that opens nothing over the only
+# copy of the one that does. A dump that records no hash has nothing to check against.
+RECORDED_KEY_HASH=$(zcat -f "$SNAP_DIR/db.sql.gz" 2>/dev/null | _dump_vault_key_hash) || true
+if [[ -n "$RECORDED_KEY_HASH" ]]; then
+    ARCHIVED_KEY_HASH=$(printf '%s' "$VAULT_KEY_VALUE" | sha256sum | awk '{print $1}')
+    if [[ "$ARCHIVED_KEY_HASH" != "$RECORDED_KEY_HASH" ]]; then
+        _refuse "vault.key inside ${SNAPSHOT} does not match the database it was taken with" \
+            "  (app_settings.vault_key_hash disagrees). Restoring it would leave every" \
+            "  encrypted column unreadable. Take a fresh snapshot on the source install."
+    fi
+fi
+
+# Room and permission for everything steps 11-13 write, checked now rather than
+# discovered after the database has been replaced.
+UPLOADS_KB=1
+if [[ -d "$SNAP_DIR/uploads" ]]; then
+    UPLOADS_KB=$(du -sk "$SNAP_DIR/uploads" | awk '{print $1 + 1}')
+fi
+_require_writable "$CB_DATA_DIR/uploads" "The uploads directory"
+_require_space "$CB_DATA_DIR/uploads" "$UPLOADS_KB" "restoring uploads"
+_require_writable "$ENV_FILE" "The environment file"
 
 else
 
@@ -245,11 +478,11 @@ echo "==> Validating database dump: $SNAPSHOT"
 # A bare dump carries no manifest and no recorded checksum, so there is nothing to
 # verify it against — which is worth saying out loud rather than leaving the operator to
 # infer it from a step that did not print. What can be checked is that the file is not
-# empty and is what it claims to be. `pg_dump`'s plain format — the only format psql can
-# replay, and so the only one that can arrive here — always opens with that header, and
-# a dump truncated by a full disk or a killed process is exactly what this catches while
-# the service is still up and the database still intact. `zcat -f` reads .sql and .sql.gz
-# through the same pipe.
+# empty, is what it claims to be, and is whole. `pg_dump`'s plain format — the only
+# format psql can replay, and so the only one that can arrive here — always opens with
+# its header and closes with its trailer, and a dump truncated by a full disk or a killed
+# process is exactly what this catches while the service is still up and the database
+# still intact. `zcat -f` reads .sql and .sql.gz through the same pipe.
 #
 # The head is captured before it is matched rather than piped straight into grep: this
 # script runs under `pipefail`, and `grep -q` closing the pipe early makes the producer
@@ -257,6 +490,9 @@ echo "==> Validating database dump: $SNAPSHOT"
 if [[ ! -s "$SNAPSHOT" ]]; then
     echo "ERROR: ${SNAPSHOT} is empty — there is nothing in it to restore." >&2
     exit 1
+fi
+if [[ "$SNAPSHOT" == *.gz ]] && ! gzip -t "$SNAPSHOT" 2>/dev/null; then
+    _refuse "${SNAPSHOT} is corrupt or truncated: its gzip stream does not verify."
 fi
 DUMP_HEAD=$(zcat -f "$SNAPSHOT" 2>/dev/null | head -n 40) || true
 if ! grep -q "PostgreSQL database dump" <<<"$DUMP_HEAD"; then
@@ -266,7 +502,8 @@ if ! grep -q "PostgreSQL database dump" <<<"$DUMP_HEAD"; then
     echo "       tarball from 'cb backup'. Nothing has been changed." >&2
     exit 1
 fi
-echo "    Dump header OK — no manifest and no recorded checksum to verify (a bare dump carries neither)"
+_require_complete_dump "$SNAPSHOT"
+echo "    Dump header and trailer OK — no manifest and no recorded checksum to verify (a bare dump carries neither)"
 
 fi
 
@@ -338,23 +575,14 @@ if ! systemctl stop "$CB_SERVICE_UNIT"; then
     exit 1
 fi
 
-# ── 9. Extract full tarball ────────────────────────────────────────────────
+# ── 9. Locate the dump ─────────────────────────────────────────────────────
 
 # The dump this replays, whichever artifact it came from. `zcat -f` at step 10 reads
 # a gzipped member and a plain .sql through the same pipe, so the two kinds differ
-# here in one variable rather than in a second copy of the replay.
+# here in one variable rather than in a second copy of the replay. The snapshot was
+# unpacked and checked at step 4, before the service was stopped.
 DUMP_SOURCE="$SNAPSHOT"
-
 if [[ "$RESTORE_KIND" == "snapshot" ]]; then
-    echo "==> Extracting snapshot..."
-    tar -xzf "$SNAPSHOT" -C "$TMPDIR"
-
-    # Find the top-level snapshot directory inside the tarball
-    SNAP_DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name "cb-snapshot-*" | head -1)
-    if [[ -z "$SNAP_DIR" ]]; then
-        echo "ERROR: Could not find snapshot directory inside tarball." >&2
-        exit 1
-    fi
     DUMP_SOURCE="$SNAP_DIR/db.sql.gz"
 fi
 

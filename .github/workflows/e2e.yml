@@ -1,9 +1,21 @@
 name: Composed Agent E2E
 
-# AGT-01: the composed journey runs per RC (tag push) and nightly. It is
-# deliberately NOT a release gate — the agent has open development, and gating
-# would hold every artifact of an otherwise-green release. `workflow_call`
-# exists so re-gating is one job in release.yml when that changes.
+# AGT-01: the composed journey runs per RC (tag push) and nightly (through
+# tier2.yml since slice A2). It is deliberately NOT a release gate — the agent
+# has open development, and gating would hold every artifact of an otherwise-
+# green release.
+#
+# The suite itself lives in composed-e2e.yml, and its nightly lives in
+# tier2.yml (slice A2 of
+# docs/design/2026-09-27-tier2-composed-and-triage-design.md). This file keeps
+# the triggers that belong to the agent specifically: a tag push, and pull
+# requests that touch the agent. The release calls tier2.yml with the browser
+# suite only; the composed journey is not a release gate.
+#
+# `workflow_call` is gone from this file on purpose: the reason it existed —
+# "so re-gating is one job in release.yml when that changes" — is now served by
+# calling composed-e2e.yml directly, and a thin caller that can itself be
+# called only adds a level of check-name nesting for nothing.
 on:
   push:
     tags:
@@ -26,117 +38,32 @@ on:
       - 'Dockerfile.mono'
       - 'docker/supervisord.mono.conf'
       - '.github/workflows/e2e.yml'
-  schedule:
-    - cron: "0 3 * * *"
+      - '.github/workflows/composed-e2e.yml'
+  # checkov:skip=CKV_GHA_7: the input selects nothing about what is built — it
+  # only decides whether the operator wants to pay 75 minutes for a lifted run,
+  # which executes the suite minus the tests that have live register rows. The
+  # default is the safe value.
   workflow_dispatch:
-  workflow_call:
+    inputs:
+      quarantined:
+        description: "Leave true to report QUAR-001 and skip. Set false to run the suite minus tests with live register rows."
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
-  composed-journey:
-    name: Composed agent journey
-    runs-on: ubuntu-22.04
-    timeout-minutes: 75
-    # QUAR-001 (specs/1.0.0/release-control/quarantine-register.csv): three of
-    # the sixteen tests — the zero-configuration discovery bootstrap slice —
-    # fail identically on a clean `dev` checkout with no code from any
-    # in-flight branch involved, so this job has not gone green regardless of
-    # what it is testing. Burning a 75-minute budget on every push/PR/nightly
-    # for a result that is already known is the "waste of resources" this
-    # line stops; `workflow_dispatch` and `workflow_call` still work for
-    # anyone who wants to run it on purpose. Remove this line, not the job,
-    # once QUAR-001's tracking item lands a fix.
-    if: false
-    steps:
-      # `schedule` only fires on the default branch, and `main` trails the
-      # integration branch, so the nightly would otherwise test frozen code.
-      # Only the scheduled run is redirected: tag pushes, `workflow_dispatch`
-      # and `workflow_call` must keep testing the ref that triggered them.
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
-
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      # httpx (all HTTP), websockets (presence and discovery streams) and
-      # cryptography (Ed25519 signing in the tampered-binary test) are all
-      # imported by the suite. A missing one fails deep into a test that has
-      # already built containers, so it reads as a product defect.
-      - name: Install test deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-timeout httpx websockets cryptography
-
-      # `.env` is untracked but every compose call interpolates its
-      # ${VAR:?...} guards, so without it even `config` exits 1. conftest.py
-      # does the same for a local pytest; doing it here too covers this job's
-      # non-pytest steps and fails on a step that names itself. `config` is
-      # the smoke check that the materialised file satisfies every guard.
-      - name: Materialise the e2e env file
-        run: |
-          cd apps/agent/e2e
-          python ensure_env.py
-          docker compose -f docker-compose.yml config >/dev/null
-
-      # REL-20: seed and PYTHONHASHSEED are constants, not derived from the
-      # run id, so a green run can be used to characterise a red one. Both are
-      # recorded below, making a change to them visible.
-      - name: Record the run manifest
-        env:
-          CB_E2E_SEED: "20260826"
-        run: |
-          mkdir -p diagnostics
-          {
-            echo "commit=${GITHUB_SHA}"
-            echo "workflow=${GITHUB_WORKFLOW}"
-            echo "job=composed-journey"
-            echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
-            echo "python=$(python -V 2>&1)"
-            echo "PYTHONHASHSEED=0"
-            echo "CB_E2E_SEED=${CB_E2E_SEED}"
-            echo "docker=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unavailable)"
-            echo "compose=$(docker compose version 2>&1)"
-          } | tee diagnostics/run-manifest.txt
-
-      - name: Run the composed journey
-        shell: bash
-        env:
-          CB_E2E_SEED: "20260826"
-          PYTHONHASHSEED: "0"
-          # Each test tears its own stack down in a `finally`, so a later
-          # workflow step has nothing left to collect. `_dump_compose_logs`
-          # writes here from inside `_down()`, while containers still exist.
-          CB_E2E_DIAGNOSTICS_DIR: ${{ github.workspace }}/diagnostics
-        run: |
-          cd apps/agent/e2e
-          python -m pytest test_agent_e2e.py -v \
-            --junitxml=junit-agent-e2e.xml \
-            --timeout=3600 \
-            2>&1 | tee "${GITHUB_WORKSPACE}/diagnostics/composed-journey.log"
-
-      # Backstop only, for a run killed before any `_down()`. The logs that
-      # explain a failure come from CB_E2E_DIAGNOSTICS_DIR above.
-      - name: Collect surviving container diagnostics
-        if: always()
-        run: |
-          mkdir -p diagnostics
-          docker ps -a > diagnostics/containers.txt 2>&1 || true
-          docker version > diagnostics/docker-version.txt 2>&1 || true
-          for c in $(docker ps -aq); do
-            docker logs "$c" > "diagnostics/surviving-${c}.log" 2>&1 || true
-            docker inspect "$c" > "diagnostics/surviving-${c}.json" 2>&1 || true
-          done
-
-      - name: Upload diagnostics
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: composed-agent-e2e
-          path: |
-            apps/agent/e2e/junit-agent-e2e.xml
-            diagnostics/
-          retention-days: 30
+  composed:
+    permissions:
+      actions: read      # the rerun guard in composed-e2e.yml reads earlier verdict artifacts
+      contents: read
+    # Only a deliberate dispatch can lift the quarantine. For a tag push or a
+    # pull request, `inputs` is null, so the first clause is
+    # true and the suite stays skipped — written as `!=` plus `or` rather than
+    # `&&` plus `or` because `false && x || true` evaluates to true and would
+    # silently ignore an operator who asked for the real run.
+    uses: ./.github/workflows/composed-e2e.yml
+    with:
+      quarantined: ${{ github.event_name != 'workflow_dispatch' || inputs.quarantined }}

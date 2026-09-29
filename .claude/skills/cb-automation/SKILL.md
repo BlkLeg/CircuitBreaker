@@ -21,7 +21,7 @@ babysitting). Everything that needs a human reaches them through **Discord**.
 | `dependabot-lockfile-sync.yml` | Dependabot pip PR into dev/main | Regenerates `requirements.txt` from `poetry.lock` with the **base** branch's generator, pushes, then dispatches required checks | Via notify.yml on failure |
 | `dependabot-automerge.yml` | Dependabot PR opened/updated | Queues `gh pr merge --auto` for patch/minor updates into `dev` (the ruleset's 21 checks still decide); labels majors `major-update` and comments; never touches PRs into `main` | — |
 | `security.yml`, `codeql.yml` | Weekly + push/PR + dispatch | Scanners | Via notify.yml on failure |
-| `e2e.yml` | Disabled (`if: false`, QUAR-001, issue #162) | Composed agent journey | — |
+| `e2e.yml` | RC tag, agent-path PR, nightly | Calls `composed-e2e.yml`, quarantined (`quarantined: true`, QUAR-001, issue #162) — reports the register row instead of running | Via notify.yml on failure |
 
 Squash-merged branches are never cleaned up (their commits are not contained
 in main), by design of the containment rule.
@@ -78,8 +78,19 @@ in main), by design of the containment rule.
 ## Adding an automation — checklist
 
 - [ ] Logic in a typed, docstringed stdlib script under `scripts/ci/` with
-      unit tests in `tests/build/` (fixtures, no network); add it to the
-      ruff/mypy lines of `make lint`.
+      unit tests in `tests/build/` (fixtures, no network). Nothing to register:
+      `make lint` and `scripts/ci/tier0-static.sh` both glob
+      `scripts/*.py scripts/ci/*.py`, so a new script is linted and
+      type-checked the moment it lands. The enumeration these replaced had
+      quietly lost 14 files, and only `make lint` — never CI — ran it.
+- [ ] **If the job that runs it has no `actions/setup-python` step, the script
+      must run on Python 3.10** — `ubuntu-22.04`'s system `python3`. The dev
+      venv's 3.12 hides the difference, which is how `datetime.UTC` reached
+      `quarantine_notice.py`.
+      `tests/build/test_ci_scripts_match_runner_python.py` fails the build on a
+      newer stdlib name (an `ast` scan plus `vermin`), and `ruff.toml` pins the
+      lint target to `py310` so ruff cannot ask for a 3.11+ alias back. Either
+      stay portable, or add `actions/setup-python`.
 - [ ] Top-level `permissions: {}` or read-only; grant per job, minimum needed.
 - [ ] Every `${{ }}` through `env:` and quoted; actions pinned by tag like the
       rest of the repo (`actions/checkout@v5`), `persist-credentials: false`

@@ -61,6 +61,22 @@ def _curl(url: str, *, headers: dict[str, str] | None = None) -> bytes:
     return subprocess.run(cmd, capture_output=True, check=True).stdout
 
 
+def _field(pattern: str, block: str, field: str) -> str:
+    """One capture group out of an @font-face block, or a failure that names it.
+
+    A bare `re.search(...).group(1)` raises AttributeError several frames deep
+    the day Google changes the stylesheet it serves, which reads as a bug in
+    this script rather than as the upstream format change it actually is.
+    """
+    match = re.search(pattern, block)
+    if match is None:
+        raise SystemExit(
+            f"No {field} in the @font-face block Google returned — the CSS "
+            f"format has changed. The block was:\n{block}"
+        )
+    return match.group(1)
+
+
 def fetch_family(label: str, prefix: str, slug: str, weights: list[int]) -> list[dict]:
     """Downloads one family's woff2 files and returns its @font-face records."""
     query = label.replace(" ", "+")
@@ -76,10 +92,12 @@ def fetch_family(label: str, prefix: str, slug: str, weights: list[int]) -> list
     ):
         if subset not in KEEP_SUBSETS:
             continue
-        weight = re.search(r"font-weight:\s*(\d+)", block).group(1)
-        style = re.search(r"font-style:\s*(\w+)", block).group(1)
-        source = re.search(r"url\((https://[^)]+\.woff2)\)", block).group(1)
-        unicode_range = re.search(r"unicode-range:\s*([^;]+);", block).group(1).strip()
+        weight = _field(r"font-weight:\s*(\d+)", block, "font-weight")
+        style = _field(r"font-style:\s*(\w+)", block, "font-style")
+        source = _field(r"url\((https://[^)]+\.woff2)\)", block, "woff2 url")
+        unicode_range = _field(
+            r"unicode-range:\s*([^;]+);", block, "unicode-range"
+        ).strip()
 
         filename = f"{prefix}-{weight}-{subset}.woff2"
         (FONT_DIR / filename).write_bytes(_curl(source))

@@ -20,6 +20,7 @@ Three v0.4.0 failures were all this one assumption:
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -107,4 +108,66 @@ def test_failure_diagnostics_run_at_failure_time_not_when_they_are_armed():
                 f"it. Escape it as `\\$` so the eval sees it, or move the value "
                 f"into ${{BRACED}} form if the installer really is meant to "
                 f"substitute it up front."
+            )
+
+
+def _apt_wrapper(script: Path) -> str:
+    """The `apt-get()` shell function a script defines and its export, verbatim."""
+    match = re.search(
+        r"^apt-get\(\) \{\n.*?^\}\nexport -f apt-get\n",
+        script.read_text(encoding="utf-8"),
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, (
+        f"{script.relative_to(REPO_ROOT).as_posix()} no longer defines and exports "
+        f"an apt-get() wrapper, so its package commands can stop at a dpkg "
+        f"conffile prompt. Child bash processes (deploy/scripts, `bash -c` "
+        f"diagnostics) only inherit it through `export -f apt-get`."
+    )
+    return match.group(0)
+
+
+def test_package_upgrades_cannot_stop_at_a_dpkg_conffile_prompt(tmp_path: Path) -> None:
+    """dpkg's "Configuration file ... Modified since installation" question is
+    asked by dpkg itself, not debconf, so DEBIAN_FRONTEND does not suppress it.
+
+    A re-run upgraded pgbouncer over the pgbouncer.ini a previous install had
+    rendered; dpkg read EOF from the `curl | sudo bash` pipe, failed with "end of
+    file on stdin at conffile prompt", and `set -e` ended the install at "System
+    dependencies" with nothing on screen. Every apt-get call must pre-answer the
+    question (keep the local file — the installer re-renders its own configs
+    anyway) and must never read the operator's stdin.
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    record = tmp_path / "argv"
+    fake = fake_bin / "apt-get"
+    fake.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$@" >> "$RECORD"\n'
+        'if [ -t 0 ] || read -r _; then echo stdin-open >> "$RECORD"; fi\n'
+        'echo --- >> "$RECORD"\n',
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    for script in (INSTALLER, SETUP):
+        rel = script.relative_to(REPO_ROOT).as_posix()
+        record.unlink(missing_ok=True)
+        subprocess.run(
+            ["bash", "-c", _apt_wrapper(script) + 'apt-get install -y -q pgbouncer\nbash -c "apt-get update"'],
+            input="answer\n",
+            text=True,
+            check=True,
+            env={"PATH": f"{fake_bin}:/usr/bin:/bin", "RECORD": str(record)},
+        )
+        calls = [c.split("\n") for c in record.read_text(encoding="utf-8").strip("-\n").split("\n---\n")]
+        assert len(calls) == 2, f"{rel}: expected an in-shell and a child-shell apt-get call, got {calls}"
+        for argv in calls:
+            assert "Dpkg::Options::=--force-confdef" in argv and "Dpkg::Options::=--force-confold" in argv, (
+                f"{rel}: apt-get runs without --force-confdef/--force-confold ({argv}); a "
+                f"package upgrade over a modified config file stops at a prompt nobody can answer."
+            )
+            assert "stdin-open" not in argv, (
+                f"{rel}: apt-get can read the installer's stdin. Under `curl | bash` that "
+                f"is the script itself, and any prompt consumes or hits EOF on it."
             )

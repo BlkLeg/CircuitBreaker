@@ -16,12 +16,12 @@ name: Browser E2E
 # blocks no merge; gating the candidate on it is what makes the suite load
 # bearing for a release.
 #
-# What this does NOT cover: the composed agent journey. e2e.yml is disabled
-# (`if: false`) under QUAR-001, issue #162, expiring 2026-12-21 — the discovery
-# bootstrap never creates its system-managed profiles, so all three tests time
-# out. Wiring it in here would make every release red. When that quarantine
-# clears, e2e.yml becomes the second caller-shaped gap to close, the same way
-# this one was.
+# What this does NOT cover: the composed agent journey. e2e.yml calls
+# composed-e2e.yml but is quarantined (QUAR-001, issue #162, expiring
+# 2026-12-21) — the discovery bootstrap never creates its system-managed
+# profiles, so all three tests time out. Wiring it in here would make every
+# release red. When that quarantine clears, flipping `quarantined: false` on
+# e2e.yml's call is the remaining gap to close, the same way this one was.
 #
 # The aggregate that branch protection can require deliberately stays in the
 # CALLING workflow. A reusable workflow's jobs are reported as
@@ -31,6 +31,15 @@ name: Browser E2E
 
 on:
   workflow_call:
+    inputs:
+      # tier2.yml's nightly loads from the default branch but tests `dev`
+      # (design D2). Empty means the ref that triggered the caller, which is
+      # what ci.yml, dev-ci.yml and the release get, unchanged.
+      ref:
+        description: "Ref to check out. Empty means the ref that triggered the caller."
+        required: false
+        type: string
+        default: ""
 
 # Pinned at the workflow level for the same reason ci.yml and dev-ci.yml pin
 # them: PYTHONHASHSEED unset lets CPython salt str hashing per process, and a
@@ -72,6 +81,9 @@ jobs:
         shard: [1, 2]
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       # No `cache: npm` here, unlike every other job: this one runs inside the
       # Playwright container with HOME forced to /root, so the directory the
@@ -85,10 +97,13 @@ jobs:
         run: cd apps/frontend && npm ci
 
       - name: Record the run manifest
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
         run: |
           mkdir -p artifacts
           {
             echo "commit=${GITHUB_SHA}"
+            echo "requested_ref=${REQUESTED_REF:-<triggering ref>}"
             echo "workflow=${GITHUB_WORKFLOW}"
             echo "job=browser-e2e"
             echo "shard=${{ matrix.shard }}/${{ strategy.job-total }}"
@@ -104,17 +119,9 @@ jobs:
       # playwright.config.ts keeps visual.spec.ts out of the other four.
       - name: Run Playwright suite
         shell: bash
-        run: |
-          cd apps/frontend
-          npx playwright test \
-            --shard="${{ matrix.shard }}/${{ strategy.job-total }}" \
-            --project=chromium \
-            --project=firefox \
-            --project=webkit \
-            --project=mobile-chrome \
-            --project=visual-desktop \
-            --project=visual-mobile \
-            2>&1 | tee "${GITHUB_WORKSPACE}/artifacts/playwright.log"
+        env:
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+        run: scripts/ci/tier2-browser.sh "${SHARD}"
 
       # REL-20: a failed job must be diagnosable from retained artifacts alone.
       # playwright.config.ts already writes the JUnit report and keeps traces,

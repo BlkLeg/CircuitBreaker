@@ -19,7 +19,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 
@@ -46,7 +46,7 @@ def _changelog_entry(version: str, repo_root: Path) -> ChecklistRow:
     text = changelog.read_text(encoding="utf-8")
     # A bare substring test lets "0.4.2" match "0.4.20" or a URL containing the
     # digits. Require the version to head its own "## [x.y.z]" entry instead.
-    heading = re.compile(rf"^##\s*\[{re.escape(version)}\]", re.M)
+    heading = re.compile(rf"^##\s*\[{re.escape(version)}\]", re.MULTILINE)
     if heading.search(text):
         return ChecklistRow(
             "changelog_entry", True, f"CHANGELOG.md has a heading for {version}"
@@ -65,7 +65,11 @@ def _quarantine_register_current(repo_root: Path) -> ChecklistRow:
         return ChecklistRow(
             "quarantine_register_current", False, f"{register} is missing"
         )
-    today = date.today()
+    # UTC, not local. The register's expiry column is a UTC date and
+    # scripts/ci/quarantine_notice.py compares against UTC in CI, so judging the
+    # same row by a local date makes the release-time check and the CI check
+    # disagree for most of the day in any timezone behind UTC.
+    today = datetime.now(timezone.utc).date()
     expired: list[str] = []
     with register.open(encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
@@ -101,7 +105,7 @@ def _tier_table_matches_evidence(repo_root: Path) -> ChecklistRow:
     if not adr.exists():
         return ChecklistRow("tier_table_matches_evidence", False, f"{adr} is missing")
     text = adr.read_text(encoding="utf-8")
-    states = re.findall(r"^\|\s*([123])\s*\|.*\|\s*(\*\*.+?\*\*.*?)\s*\|\s*$", text, re.M)
+    states = re.findall(r"^\|\s*([123])\s*\|.*\|\s*(\*\*.+?\*\*.*?)\s*\|\s*$", text, re.MULTILINE)
     if len(states) != 3:
         return ChecklistRow(
             "tier_table_matches_evidence",
@@ -143,11 +147,11 @@ def _pbs_pin_is_current(repo_root: Path) -> ChecklistRow:
     pin = repo_root / "packaging" / "python-build-standalone.pin"
     if not pin.exists():
         return ChecklistRow("pbs_pin_current", False, f"{pin} is missing")
-    match = re.search(r"^PBS_RELEASE=(\d{8})", pin.read_text(encoding="utf-8"), re.M)
+    match = re.search(r"^PBS_RELEASE=(\d{8})", pin.read_text(encoding="utf-8"), re.MULTILINE)
     if not match:
         return ChecklistRow("pbs_pin_current", False, "PBS_RELEASE is not a YYYYMMDD tag")
     released = date(int(match.group(1)[:4]), int(match.group(1)[4:6]), int(match.group(1)[6:]))
-    age = (date.today() - released).days
+    age = (datetime.now(timezone.utc).date() - released).days
     if age > 120:
         return ChecklistRow(
             "pbs_pin_current",

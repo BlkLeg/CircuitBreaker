@@ -88,6 +88,14 @@ Two files look like a split stack and are not one:
 If another document tells you split Compose is a supported 1.0 channel, that
 document is wrong — please open an issue.
 
+### npm is not an installation channel
+
+No Circuit Breaker package is published to npm, and none is planned for the
+1.0 line: [ADR 0004](../adr/0004-npm-out-of-scope-for-1.0.md) records the
+decision. Native and mono are the only supported installation methods;
+`install.sh` is the scripted entry point. The frontend's `package.json` exists
+to build the bundled UI and is marked private, so it cannot be published.
+
 ### Single-node, and what that costs
 
 Native and mono are two ways of laying out **one node**. The mono image is a

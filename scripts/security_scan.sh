@@ -36,6 +36,99 @@ gate_unavailable() {
     echo "  ⚠ GATE FAILURE: $tool unavailable — cannot attest $what" >> "$REPORT_FILE"
 }
 
+docker_available() {
+    command -v docker > /dev/null 2>&1 && docker ps > /dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# Trivy: pinned image, retrying pull, and finding-vs-unavailable exit code
+# classification. Factored out (rather than left inline in the fs/config
+# sections below) so tests/build/test_security_scan_trivy.py can `source`
+# this file with CB_SECURITY_SCAN_SOURCE_ONLY=1 set and exercise these
+# functions against a stub PATH, without needing bandit/semgrep/gitleaks/
+# eslint/hadolint/pip-audit/govulncheck installed just to reach them.
+#
+# Root cause (dev-ci run 36386697012, 2026-09-28): a transient Docker Hub
+# pull failure ("Unable to find image 'aquasec/trivy:latest' locally ...
+# connection reset by peer") was neither retried nor distinguished from a
+# real HIGH/CRIT finding — trivy never ran, but the gate reported "Trivy
+# HIGH/CRIT findings" anyway. The very next section (Trivy Config) pulled the
+# same image successfully, confirming the outage was transient. Failing
+# closed on an unavailable tool is correct; mislabelling it as a finding is
+# the #106 defect class ("did not run" spelled like "found something").
+# ---------------------------------------------------------------------------
+
+# Pinned to the native `trivy` binary's version on the reference dev host
+# (0.74.0; see `trivy --version`). CI's Security Gate job (dev-ci.yml)
+# installs no native trivy — only bandit and semgrep go into the scanner venv
+# — so it always takes the docker path below, and an unpinned `aquasec/trivy`
+# (`:latest`) is exactly what let an unannounced upstream release, or a
+# registry hiccup while resolving the always-changing `latest` manifest,
+# reach the gate unreviewed. Pinning to the version already proven to work
+# natively here keeps the two paths attesting the same tool.
+TRIVY_IMAGE="${TRIVY_IMAGE:-aquasec/trivy:0.74.0}"
+
+# The exit code trivy is told to use for "findings present" (`--exit-code`).
+# Deliberately not trivy's own default (1), so a plain `trivy fs .` run by
+# hand is never confused with this gate's classification, and so "clean" (0),
+# "HIGH/CRIT findings" (10) and "the tool did not run to completion" (every
+# other exit code — a crash, a missing image, a killed process) are three
+# outcomes a caller can tell apart instead of two.
+TRIVY_EXIT_FINDINGS=10
+
+# Pull $1 with 3 attempts and backoff (5s, 15s) before trivy ever runs against
+# it. A transient registry failure must fail closed as "unavailable", not
+# silently retry forever nor be swallowed into "clean".
+trivy_pull_with_retry() {
+    local image="$1" attempt delay
+    for attempt in 1 2 3; do
+        if docker pull "$image" > /dev/null 2>&1; then
+            return 0
+        fi
+        if [ "$attempt" -eq 1 ]; then
+            delay=5
+        elif [ "$attempt" -eq 2 ]; then
+            delay=15
+        else
+            delay=0
+        fi
+        [ "$delay" -gt 0 ] && sleep "$delay"
+    done
+    return 1
+}
+
+# Run a trivy invocation (native argv or a full `docker run ...` argv,
+# already carrying --exit-code "$TRIVY_EXIT_FINDINGS") and classify its exit
+# code into exactly one of the three gate outcomes above. $1 is the label
+# used in report/gate messages ("Trivy" for the filesystem scan, "Trivy
+# config" for the IaC scan); $2 is the "what" passed through to
+# gate_unavailable; the remaining args are the command to run, appended to
+# "$REPORT_FILE".
+trivy_run_and_classify() {
+    local label="$1" what="$2"
+    shift 2
+    local rc=0
+    "$@" >> "$REPORT_FILE" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    elif [ "$rc" -eq "$TRIVY_EXIT_FINDINGS" ]; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: $label HIGH/CRIT findings" >> "$REPORT_FILE"
+        return 1
+    else
+        gate_unavailable "$label" "$what" \
+            "trivy exited ${rc} without completing a scan — read its section above; this is not a finding in your tree"
+        return 1
+    fi
+}
+
+# Test-only early exit: tests/build/test_security_scan_trivy.py sources this
+# file (after stubbing REPORT_FILE, GATE_* state and PATH) to reach the
+# functions above without running the rest of the scan pipeline.
+if [ -n "${CB_SECURITY_SCAN_SOURCE_ONLY:-}" ]; then
+    return 0 2> /dev/null || exit 0
+fi
+
 REPORT_FILE="security_scan_report.md"
 echo "# Security Scan Report - $(date)" > "$REPORT_FILE"
 echo "" >> "$REPORT_FILE"
@@ -95,10 +188,6 @@ run_gated() {
     else
         "$@" || true
     fi
-}
-
-docker_available() {
-    command -v docker > /dev/null 2>&1 && docker ps > /dev/null 2>&1
 }
 
 # ── 1. Bandit (Python SAST) ─────────────────────────────────────────────────
@@ -278,13 +367,25 @@ echo "Running Checkov..."
 if ! "$SCAN_BIN"/checkov --version > /dev/null 2>&1; then
     "$SCAN_BIN"/pip install checkov --quiet
 fi
+# The same split security.yml's checkov job runs (CHECKOV-001 in
+# specs/1.0.0/release-control/security-suppressions.json): mono-smoke.yml
+# declares no `permissions:` on purpose, so its jobs inherit the calling job's
+# grant, and checkov reads that absence as `write-all` (CKV2_GHA_1). The tree
+# is scanned without that one file, and the file with every check but that
+# one. tests/build/test_checkov_mono_smoke_exception.py keeps this in step
+# with CI and the manifest.
 if $GATE_MODE; then
-    if ! "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1; then
+    if ! "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --skip-path '(^|/)\.github/workflows/mono-smoke\.yml$' --quiet >> "$REPORT_FILE" 2>&1; then
         GATE_FAILURES=$((GATE_FAILURES + 1))
         echo "  ⚠ GATE FAILURE: Checkov findings" >> "$REPORT_FILE"
     fi
+    if ! "$SCAN_BIN"/checkov -f .github/workflows/mono-smoke.yml --skip-check CKV2_GHA_1 --quiet >> "$REPORT_FILE" 2>&1; then
+        GATE_FAILURES=$((GATE_FAILURES + 1))
+        echo "  ⚠ GATE FAILURE: Checkov findings (mono-smoke.yml)" >> "$REPORT_FILE"
+    fi
 else
-    "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --quiet >> "$REPORT_FILE" 2>&1 || true
+    "$SCAN_BIN"/checkov -d docker/ -d .github/workflows/ --skip-path '(^|/)\.github/workflows/mono-smoke\.yml$' --quiet >> "$REPORT_FILE" 2>&1 || true
+    "$SCAN_BIN"/checkov -f .github/workflows/mono-smoke.yml --skip-check CKV2_GHA_1 --quiet >> "$REPORT_FILE" 2>&1 || true
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
 
@@ -352,36 +453,50 @@ fi
 TRIVY_CACHE="${TRIVY_CACHE:-$XDG_CACHE_HOME/trivy}"
 mkdir -p "$TRIVY_CACHE"
 TRIVY_CACHE_MOUNT=(-v "$TRIVY_CACHE:/root/.cache/trivy")
-# Native-first: prefer local trivy binary over Docker
+
+# Native-first: prefer the local trivy binary over Docker. Determined once,
+# here, and reused by the config section below — a pull, if one is needed at
+# all, happens exactly once, with its own retries; a transient failure must
+# not silently re-attempt per section, and a genuine outage must mark both
+# sections unavailable rather than only the one that happened to run first.
+TRIVY_NATIVE=false
+TRIVY_DOCKER_READY=false
+TRIVY_RAN=false
+TRIVY_UNAVAILABLE_HINT="https://trivy.dev/latest/getting-started/installation/"
 if command -v trivy > /dev/null 2>&1; then
+    TRIVY_NATIVE=true
     TRIVY_RAN=true
+elif docker_available; then
+    if trivy_pull_with_retry "$TRIVY_IMAGE"; then
+        TRIVY_DOCKER_READY=true
+        TRIVY_RAN=true
+    else
+        TRIVY_UNAVAILABLE_HINT="docker pull $TRIVY_IMAGE failed after 3 attempts — check network/Docker Hub access, or install trivy natively"
+    fi
+fi
+
+if $TRIVY_NATIVE; then
     if $GATE_MODE; then
-        if ! trivy fs --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1; then
-            GATE_FAILURES=$((GATE_FAILURES + 1))
-            echo "  ⚠ GATE FAILURE: Trivy HIGH/CRIT findings" >> "$REPORT_FILE"
-        fi
+        trivy_run_and_classify Trivy "filesystem scanning" \
+            trivy fs --exit-code "$TRIVY_EXIT_FINDINGS" --severity HIGH,CRITICAL $TRIVY_IGNORE $TRIVY_SKIP_DIRS .
     else
         trivy fs --severity HIGH,CRITICAL,MEDIUM $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1 || true
     fi
-elif docker_available; then
-    TRIVY_RAN=true
+elif $TRIVY_DOCKER_READY; then
     if $GATE_MODE; then
-        if ! docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace aquasec/trivy fs \
-            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1; then
-            GATE_FAILURES=$((GATE_FAILURES + 1))
-            echo "  ⚠ GATE FAILURE: Trivy HIGH/CRIT findings" >> "$REPORT_FILE"
-        fi
+        trivy_run_and_classify Trivy "filesystem scanning" \
+            docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace "$TRIVY_IMAGE" fs \
+            --exit-code "$TRIVY_EXIT_FINDINGS" --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS .
     else
-        docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace aquasec/trivy fs \
+        docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace "$TRIVY_IMAGE" fs \
             --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1 || true
     fi
 fi
 if ! $TRIVY_RAN; then
-    echo "Trivy not found (install: https://aquasecurity.github.io/trivy/latest/getting-started/installation/), skipping." >> "$REPORT_FILE"
+    echo "Trivy not found or unavailable ($TRIVY_UNAVAILABLE_HINT), skipping." >> "$REPORT_FILE"
     # Fail closed — see the Gitleaks note above.
     if $GATE_MODE; then
-        gate_unavailable Trivy "filesystem scanning" \
-            "https://trivy.dev/latest/getting-started/installation/"
+        gate_unavailable Trivy "filesystem scanning" "$TRIVY_UNAVAILABLE_HINT"
     fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"
@@ -390,32 +505,27 @@ echo "\`\`\`" >> "$REPORT_FILE"
 echo "## 8. Trivy (Config / IaC)" >> "$REPORT_FILE"
 echo "\`\`\`" >> "$REPORT_FILE"
 echo "Running Trivy config..."
-if command -v trivy > /dev/null 2>&1; then
+if $TRIVY_NATIVE; then
     if $GATE_MODE; then
-        if ! trivy config --exit-code 1 --severity HIGH,CRITICAL $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1; then
-            GATE_FAILURES=$((GATE_FAILURES + 1))
-            echo "  ⚠ GATE FAILURE: Trivy config HIGH/CRIT" >> "$REPORT_FILE"
-        fi
+        trivy_run_and_classify "Trivy config" "config/IaC scanning" \
+            trivy config --exit-code "$TRIVY_EXIT_FINDINGS" --severity HIGH,CRITICAL $TRIVY_IGNORE $TRIVY_SKIP_DIRS .
     else
         trivy config $TRIVY_IGNORE $TRIVY_SKIP_DIRS . >> "$REPORT_FILE" 2>&1 || true
     fi
-elif docker_available; then
+elif $TRIVY_DOCKER_READY; then
     if $GATE_MODE; then
-        if ! docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace aquasec/trivy config \
-            --exit-code 1 --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS /workspace >> "$REPORT_FILE" 2>&1; then
-            GATE_FAILURES=$((GATE_FAILURES + 1))
-            echo "  ⚠ GATE FAILURE: Trivy config HIGH/CRIT" >> "$REPORT_FILE"
-        fi
+        trivy_run_and_classify "Trivy config" "config/IaC scanning" \
+            docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace "$TRIVY_IMAGE" config \
+            --exit-code "$TRIVY_EXIT_FINDINGS" --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS /workspace
     else
-        docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace aquasec/trivy config \
+        docker run --rm -v "$(pwd):/workspace" "${TRIVY_CACHE_MOUNT[@]}" -w /workspace "$TRIVY_IMAGE" config \
             --ignorefile /workspace/.trivyignore $TRIVY_SKIP_DIRS /workspace >> "$REPORT_FILE" 2>&1 || true
     fi
 else
-    echo "Trivy not found, skipping config scan." >> "$REPORT_FILE"
+    echo "Trivy not found or unavailable ($TRIVY_UNAVAILABLE_HINT), skipping config scan." >> "$REPORT_FILE"
     # Fail closed — see the Gitleaks note above.
     if $GATE_MODE; then
-        gate_unavailable Trivy "config/IaC scanning" \
-            "https://trivy.dev/latest/getting-started/installation/"
+        gate_unavailable "Trivy config" "config/IaC scanning" "$TRIVY_UNAVAILABLE_HINT"
     fi
 fi
 echo "\`\`\`" >> "$REPORT_FILE"

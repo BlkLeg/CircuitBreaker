@@ -17,6 +17,12 @@ carries a status column.
 - **Superseded** — a later plan replaced it.
 - **Reference** — never a work item; a review, an index, or a deferred-item list.
 
+## CI/CD split — Forgejo verifies, GitHub publishes (2026-09-28)
+
+| Plan | Date | Status |
+|---|---|---|
+| [Split CI/CD across Forgejo and GitHub](./2026-09-28-split-ci-forgejo-github.md) | 2026-09-28 | **Active** — proposed; no task started. Moves every verification workflow to the self-hosted Forgejo runner, gates GitHub `dev`/`main` behind a Forgejo promote job and a `forgejo/verify` commit status, and keeps Release, GHCR, cosign, Pages and CodeQL on GitHub. Four open questions at the end of the plan block Task 4 and Task 7. |
+
 ## Installer revamp and release verification (2026-09-20)
 
 Eight-step programme implementing the install experience and release verification design ([`docs/design/2026-09-20-install-experience-and-release-verification.md`](../docs/design/2026-09-20-install-experience-and-release-verification.md)).

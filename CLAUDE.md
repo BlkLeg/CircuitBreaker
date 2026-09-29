@@ -72,6 +72,7 @@ binary itself.** Five whole suites sit outside them:
 
 | Suite | Covers | How to run it |
 |---|---|---|
+| Tier 2 (composed) | browser E2E, the composed journey and the mono smoke, as CI runs them (not a separate suite) | `make verify-composed` (nightly: `tier2.yml`) |
 | Browser E2E (Playwright) | the real frontend in a real browser | `cd apps/frontend && npx playwright test` |
 | Composed Agent E2E | the agent against the mono image | `make e2e-local` |
 | Installer journey | `install.sh` end to end on a real host | `bash install.sh --local-bundle <tarball> --unattended --no-tls` |

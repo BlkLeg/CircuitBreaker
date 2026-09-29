@@ -8,6 +8,16 @@ FRONTEND_PORT ?= 5173
 BACKEND_DIR   ?= apps/backend
 FRONTEND_DIR  ?= apps/frontend
 
+# Every standalone Python script in the repo, for the lint/type gate. A glob,
+# not a list: the enumeration this replaced had silently lost 14 files —
+# including build_native_release.py, check_version_parity.py and
+# release_channel.py, which build and gate the release — because adding a
+# script and adding it to the gate were two separate acts. scripts/loadgen is
+# a package with its own lines in `lint`, so it is not matched here.
+# scripts/ci/tier0-static.sh runs the same two commands; that is the gate of
+# record, and `make lint` is its fast local mirror.
+CB_SCRIPTS    := $(wildcard scripts/*.py scripts/ci/*.py)
+
 CB_DATA_DIR   ?= ./circuitbreaker-data
 
 # Local services for development
@@ -284,7 +294,7 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-fleet verify-fleet-upgrade loadgen nav-wedge
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-composed verify-composed-browser verify-composed-agent verify-composed-mono verify-fleet verify-fleet-upgrade loadgen nav-wedge
 
 loadgen: ## Seed and run a non-blocking Phase-2 baseline (TIER=A, CB_LOADGEN_TOKEN required)
 	$(CURDIR)/.venv/bin/python scripts/loadgen/seed.py seed --tier "$(or $(TIER),A)" --db-url "$(CB_TEST_DB_URL)"
@@ -314,16 +324,24 @@ lint: ## Run backend and frontend linters (fast subset for pre-commit; see comme
 # by eye.
 	$(CURDIR)/.venv/bin/ruff check scripts/loadgen
 	MYPYPATH=$(CURDIR):$(BACKEND_DIR)/src $(CURDIR)/.venv/bin/mypy --explicit-package-bases scripts/loadgen
-# scripts/pbs_tree.py is the only code that assembles the hermetic runtime
-# tree (native build, Dockerfile.mono's builder stage, the installer
-# journey); scripts/ci/assert_runtime_parity.py is what proves the native
-# and image artifacts are identical. scripts/ci/ledger_watch.py drives the
-# nightly release-control expiry issue; notify_discord.py, workflow_alert.py,
-# branch_cleanup.py and post_release_bump.py run unattended in workflows
-# (see the cb-automation skill). All are stdlib-only and outside
-# src/app, so they need naming here too or they lint on nobody's path.
-	$(CURDIR)/.venv/bin/ruff check scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/post_release_bump.py
-	$(CURDIR)/.venv/bin/mypy scripts/pbs_tree.py scripts/ci/assert_runtime_parity.py scripts/ci/ledger_watch.py scripts/ci/notify_discord.py scripts/ci/workflow_alert.py scripts/ci/branch_cleanup.py scripts/post_release_bump.py
+# Everything else under scripts/: pbs_tree.py assembles the hermetic runtime
+# tree, assert_runtime_parity.py proves the native and image artifacts are
+# identical, build_native_release.py builds what users download, and the
+# scripts/ci automation runs unattended in workflows (see the cb-automation
+# skill). All are outside src/app, so they are gated here or nowhere.
+#
+# MYPYPATH plus --explicit-package-bases is the same invocation the loadgen
+# lines use above, and it is what lets the few scripts that import `app.*`
+# resolve it from source instead of reporting the installed package as
+# untyped.
+	$(CURDIR)/.venv/bin/ruff check $(CB_SCRIPTS)
+# scripts and scripts/ci join MYPYPATH so the two sibling imports that follow a
+# sys.path insert at runtime — build_native_release.py's `pbs_tree` and
+# workflow_alert.py's `notify_discord` — resolve for mypy the same way. Kept a
+# separate invocation from loadgen above: with scripts/ on MYPYPATH, loadgen
+# resolves as both `loadgen.x` and `scripts.loadgen.x` and mypy refuses.
+	MYPYPATH=$(CURDIR):$(BACKEND_DIR)/src:$(CURDIR)/scripts:$(CURDIR)/scripts/ci \
+	    $(CURDIR)/.venv/bin/mypy --explicit-package-bases $(CB_SCRIPTS)
 	cd $(FRONTEND_DIR) && npm run lint
 
 format: ## Format backend and frontend code
@@ -380,6 +398,41 @@ verify: verify-fast ## Tier 0 + Tier 1 minus the backend suite — the pre-push 
 
 verify-full: verify-fast ## Tier 0 + full Tier 1 including the backend suite (measured 6m43s)
 	CB_VERIFY_BACKEND=shards scripts/ci/tier1-unit.sh
+
+# T2. Not part of `verify`: the browser suite builds the production frontend and
+# drives four browsers, the composed journey takes up to 75 minutes, and the
+# mono smoke builds Dockerfile.mono and starts it through docker-compose.yml.
+# Each target calls the same scripts/ci script the workflow does (design
+# D1/P1; tests/build/test_tier2_wiring.py enforces it). Browsers must be
+# installed locally: `cd apps/frontend && npx playwright install --with-deps`.
+#
+# CB_COMPOSED_QUARANTINED mirrors composed-e2e.yml's `quarantined` default, and
+# the wiring test fails if they disagree. While QUAR-001 is live the agent half
+# prints the register row and exits 0, as CI does. Set it to 0 to run the suite,
+# with the tests that have live register rows deselected (as CI deselects them);
+# add CB_E2E_NO_DESELECT=1 to run those too. That second switch is local only.
+CB_COMPOSED_QUARANTINED ?= 1
+
+verify-composed: verify-composed-mono verify-composed-browser verify-composed-agent ## Tier 2 — browser E2E + composed agent journey + mono image smoke (CB_COMPOSED_QUARANTINED=0 lifts QUAR-001)
+
+verify-composed-browser: ## Tier 2 — the Playwright suite, all projects, unsharded
+	scripts/ci/tier2-browser.sh
+
+verify-composed-agent: ## Tier 2 — the composed agent journey, or its register row while quarantined
+	@if [ "$(CB_COMPOSED_QUARANTINED)" = "1" ]; then \
+	  python3 scripts/ci/quarantine_notice.py --check "Composed Agent E2E / composed-journey"; \
+	else \
+	  $(MAKE) e2e-local; \
+	fi
+
+# scripts/ci/tier2-mono-smoke.sh refuses to start if a repo-root .env already
+# exists, or if a container named `circuitbreaker` already exists — both are
+# very likely a developer's own real stack (docker-compose.yml pins that
+# container name), and the script will not risk overwriting or recreating
+# either. Move .env aside and stop/remove that container before running this.
+verify-composed-mono: ## Tier 2 — build the mono image and run the compose smoke CI runs
+	docker build -f Dockerfile.mono -t circuitbreaker:local-smoke .
+	scripts/ci/tier2-mono-smoke.sh circuitbreaker:local-smoke
 
 # T3. Not part of `verify` and deliberately not wired into any workflow yet: it
 # boots a VM, downloads a 556MB image on first run, and takes minutes, which is
@@ -494,6 +547,7 @@ e2e-local-prep: ## Make the worktree writable by the uid-1001 runner
 	    sh -c 'find /agent-etc /e2e-data -mindepth 1 -delete'; \
 	fi
 
+# The pytest flags, -p no:cacheprovider included, live in scripts/ci/tier2-agent-journey.sh.
 e2e-local: e2e-local-image ## Run the composed agent E2E here as uid 1001 (E2E_ARGS='-k name' to filter)
 	@test -n "$(E2E_DOCKER_GID)" || { \
 	  echo "ERROR: no 'docker' group on this host — cannot grant the runner access"; \
@@ -515,13 +569,6 @@ e2e-local: e2e-local-image ## Run the composed agent E2E here as uid 1001 (E2E_A
 	  -e GIT_CONFIG_COUNT=1 \
 	  -e GIT_CONFIG_KEY_0=safe.directory \
 	  -e GIT_CONFIG_VALUE_0=$(CURDIR) \
-	  -e CB_E2E_SEED=20260826 \
-	  -e PYTHONHASHSEED=0 \
-	  -e CB_E2E_DIAGNOSTICS_DIR=$(CURDIR)/diagnostics \
+	  -e CB_E2E_NO_DESELECT \
 	  $(E2E_RUNNER_IMAGE) \
-	  sh -c 'mkdir -p "$$HOME" && exec pytest test_agent_e2e.py -v --timeout=3600 \
-	    -p no:cacheprovider $(E2E_ARGS)'
-# -p no:cacheprovider: the runner is uid 1001 and .pytest_cache in the worktree
-# belongs to the developer, so pytest's end-of-session cache write dies with
-# EACCES *after* every test has already run — turning a completed run into a
-# traceback and a non-zero exit. Nothing here wants a cross-run cache anyway.
+	  sh -c 'mkdir -p "$$HOME" && exec bash $(CURDIR)/scripts/ci/tier2-agent-journey.sh $(E2E_ARGS)'

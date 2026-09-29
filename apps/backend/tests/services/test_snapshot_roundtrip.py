@@ -111,7 +111,8 @@ async def test_snapshot_restores_into_a_scratch_database(setup_db: None, tmp_pat
         archive = await build_snapshot(
             backup_dir=tmp_path / "out",
             db_url=db_url,
-            vault_key="a-vault-key",
+            # conftest exports a real Fernet key; the verifier refuses one that is not.
+            vault_key=os.environ["CB_VAULT_KEY"],
             uploads_dir=uploads,
             cb_version="1.0.0",
         )

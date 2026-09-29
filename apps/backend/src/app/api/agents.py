@@ -53,6 +53,7 @@ from app.schemas.agents import (
     EnrollmentTokenRead,
     HardwareSummary,
     InstallCommandResponse,
+    NetlinkBlockedAgentRead,
     PairingLookupRequest,
     PairingLookupResponse,
     RevokeRequest,
@@ -81,6 +82,7 @@ from app.services import (
     agent_capabilities,
     agent_discovery,
     agent_enrollment,
+    agent_netlink,
     agent_registry,
     agent_tls_pin,
     agent_update,
@@ -704,6 +706,34 @@ def get_tls_pin_pending_agents(
         if len(pending) >= _PENDING_AGENT_LIMIT:
             break
     return pending
+
+
+@router.get("/netlink-blocked", response_model=list[NetlinkBlockedAgentRead])
+def get_netlink_blocked_agents(
+    db: Annotated[Session, Depends(get_db)],
+    _user: Annotated[User, require_role("admin")],
+) -> Any:
+    """Active agents whose systemd unit (or other sandbox) refuses AF_NETLINK.
+
+    The fleet half of RISK-011: hosts installed before the unit template
+    granted AF_NETLINK keep the old unit, and on them discovery and probing
+    are silently dead. Each needs its unit rewritten; a host leaves this list
+    once it reports `discovery.neighbor` as anything but the refused socket.
+    Empty (not an error) when every reporting agent is fine.
+    """
+    return [
+        NetlinkBlockedAgentRead(
+            id=item.agent.id,
+            hostname=item.agent.hostname,
+            name=item.agent.name,
+            last_seen_at=item.agent.last_seen_at,
+            reported_at=item.reported_at,
+            reason=item.reason,
+            remediation=item.remediation,
+            legacy_report=item.legacy_report,
+        )
+        for item in agent_netlink.list_netlink_blocked_agents(db)
+    ]
 
 
 def _latest_samples(db: Session, agent_ids: list[int]) -> dict[int, AgentLatestSample]:

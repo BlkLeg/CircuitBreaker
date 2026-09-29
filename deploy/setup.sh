@@ -11,6 +11,23 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
+# DEBIAN_FRONTEND does not cover dpkg's own conffile question ("Configuration
+# file ... Modified since installation ... [default=N] ?"), which it asks when a
+# package upgrade ships a new version of a config file the host has changed. A
+# re-run hits exactly that: the previous install rendered pgbouncer.ini, the
+# re-run upgraded pgbouncer, dpkg read EOF from the `curl | sudo bash` pipe and
+# failed with "end of file on stdin at conffile prompt". Keep the local file —
+# the installer renders its own configs after installing anyway — and never let
+# a package command read the installer's stdin. Exported so child bash
+# processes get the same guarantee.
+apt-get() {
+  command apt-get \
+    -o Dpkg::Options::=--force-confdef \
+    -o Dpkg::Options::=--force-confold \
+    "$@" </dev/null
+}
+export -f apt-get
+
 # install.sh already sourced this, but setup.sh is also sourced directly by the
 # upgrade path. The library guards against double-sourcing with _CB_UI_LOADED.
 if [[ -r /opt/circuitbreaker/deploy/lib/ui.sh ]]; then
@@ -652,7 +669,7 @@ stage3_configure_postgres() {
   # Initialize database
   if [[ ! -f "${CB_DATA_DIR}/postgres/PG_VERSION" ]]; then
     cb_step "Initializing PostgreSQL database"
-    if ! su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres" >> "$LOG_FILE" 2>&1; then
+    if ! su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres --encoding=UTF8 --locale=C" >> "$LOG_FILE" 2>&1; then
       echo ""
       echo "  Last 20 lines from install log:"
       tail -20 "$LOG_FILE" | sed 's/^/  /'

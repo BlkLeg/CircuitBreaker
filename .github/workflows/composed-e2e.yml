@@ -1,0 +1,280 @@
+name: Composed Agent E2E (suite)
+
+# The composed agent journey, defined once. It lived inline in e2e.yml; Tier 2
+# needs a second caller (docs/design/2026-09-27-tier2-composed-and-triage-design.md,
+# slice A1), and a 75-minute suite is not a thing to copy.
+#
+# Two inputs, and both exist because a called workflow cannot read the caller's
+# situation for itself:
+#
+#   ref — `schedule` fires only from the default branch's copy of a workflow
+#     file, and `main` trails the integration branch, so a nightly that checked
+#     out its own ref would test frozen code. e2e.yml redirected the scheduled
+#     run to `dev` with an inline expression; inside a called workflow
+#     `github.event_name` is the CALLER's event, so that expression cannot live
+#     here. The caller decides and passes a ref.
+#
+#   quarantined — defaults to TRUE, which is deliberate. QUAR-001 is a property
+#     of this suite, not of any caller, so the safe value has to be the default:
+#     a new caller that forgets the input inherits the quarantine rather than
+#     running a suite that is known red. Flipping the default to false is the
+#     one-line change that ends the quarantine, and
+#     tests/build/test_quarantine_notice.py fails if the register row goes away
+#     while the default still says true.
+#
+# The aggregate that branch protection could require stays in the CALLING
+# workflow, as it does in browser-e2e.yml: a called workflow's jobs report as
+# `<caller job> / <called job>`, so an aggregate here would be renamed by every
+# caller and stop being the stable name it exists to be.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Ref to check out. Empty means the ref that triggered the caller."
+        required: false
+        type: string
+        default: ""
+      quarantined:
+        description: "When true, skip the suite and report the register row instead."
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── The rerun guard ────────────────────────────────────────────────────────
+  # The journey may not run again on the same inputs while the previous run's
+  # failures are unaddressed: neither fixed (which changes the fingerprint)
+  # nor quarantined (register rows, which tier2-agent-journey.sh deselects).
+  # See scripts/ci/composed_rerun_guard.py. There is no force switch.
+  rerun-guard:
+    name: Composed agent journey — rerun guard
+    if: ${{ !inputs.quarantined }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: read      # list and download earlier verdict artifacts
+      contents: read
+    outputs:
+      fingerprint: ${{ steps.fingerprint.outputs.fingerprint }}
+      # The commit the fingerprint describes. `inputs.ref` can be a moving
+      # branch (the nightly passes `dev`), so the journey checks out this SHA
+      # rather than the ref: otherwise a push between the two checkouts would
+      # record tree B's result under tree A's fingerprint.
+      sha: ${{ steps.fingerprint.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      # Assignments on their own lines: `echo "x=$(cmd)"` would swallow a failing cmd.
+      - id: fingerprint
+        shell: bash
+        run: |
+          fp="$(python3 scripts/ci/composed_rerun_guard.py fingerprint)"
+          sha="$(git rev-parse HEAD)"
+          echo "fingerprint=${fp}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+      - name: Refuse to repeat an unaddressed failure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REPO_ID: ${{ github.repository_id }}
+        run: python3 scripts/ci/composed_rerun_guard.py check
+
+  # ── The suite ───────────────────────────────────────────────────────────────
+  composed-journey:
+    name: Composed agent journey
+    if: ${{ !inputs.quarantined }}
+    needs: rerun-guard
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      # The guard's SHA, not `inputs.ref`: the tree tested must be the tree
+      # fingerprinted (see rerun-guard's `sha` output).
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.rerun-guard.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # httpx (all HTTP), websockets (presence and discovery streams) and
+      # cryptography (Ed25519 signing in the tampered-binary test) are all
+      # imported by the suite. A missing one fails deep into a test that has
+      # already built containers, so it reads as a product defect.
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-timeout httpx websockets cryptography
+
+      # `.env` is untracked but every compose call interpolates its
+      # ${VAR:?...} guards, so without it even `config` exits 1. conftest.py
+      # does the same for a local pytest; doing it here too covers this job's
+      # non-pytest steps and fails on a step that names itself. `config` is
+      # the smoke check that the materialised file satisfies every guard.
+      - name: Materialise the e2e env file
+        run: |
+          cd apps/agent/e2e
+          python ensure_env.py
+          docker compose -f docker-compose.yml config >/dev/null
+
+      # REL-20: seed and PYTHONHASHSEED are constants, not derived from the
+      # run id, so a green run can be used to characterise a red one. Both are
+      # recorded below, making a change to them visible.
+      #
+      # `commit` and `tested_commit` differ on purpose. `commit` is
+      # `GITHUB_SHA`, the commit that triggered THIS run — on a `schedule` or
+      # `workflow_dispatch` with `ref:` set, that is the default branch's copy
+      # of this workflow file, not necessarily the tree the journey actually
+      # exercises. `tested_commit` is `git rev-parse HEAD` after this job
+      # checked out `needs.rerun-guard.outputs.sha` above — the same SHA the
+      # rerun guard fingerprinted and the one this job's suite really ran
+      # against. Keeping both means nothing that already reads `commit=`
+      # breaks, while a reader who wants the tested tree has a field for it.
+      - name: Record the run manifest
+        env:
+          CB_E2E_SEED: "20260826"
+        run: |
+          mkdir -p diagnostics
+          tested_commit="$(git rev-parse HEAD)"
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "tested_commit=${tested_commit}"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "job=composed-journey"
+            echo "runner=${RUNNER_OS}/${RUNNER_ARCH}"
+            echo "python=$(python -V 2>&1)"
+            echo "PYTHONHASHSEED=0"
+            echo "CB_E2E_SEED=${CB_E2E_SEED}"
+            echo "docker=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unavailable)"
+            echo "compose=$(docker compose version 2>&1)"
+          } | tee diagnostics/run-manifest.txt
+
+      - name: Run the composed journey
+        id: journey
+        timeout-minutes: 65
+        shell: bash
+        env:
+          CB_E2E_SEED: "20260826"
+          PYTHONHASHSEED: "0"
+          # Each test tears its own stack down in a `finally`, so a later
+          # workflow step has nothing left to collect. `_dump_compose_logs`
+          # writes here from inside `_down()`, while containers still exist.
+          CB_E2E_DIAGNOSTICS_DIR: ${{ github.workspace }}/diagnostics
+        run: scripts/ci/tier2-agent-journey.sh
+
+      # Backstop only, for a run killed before any `_down()`. The logs that
+      # explain a failure come from CB_E2E_DIAGNOSTICS_DIR above.
+      - name: Collect surviving container diagnostics
+        if: always()
+        run: |
+          mkdir -p diagnostics
+          docker ps -a > diagnostics/containers.txt 2>&1 || true
+          docker version > diagnostics/docker-version.txt 2>&1 || true
+          for c in $(docker ps -aq); do
+            docker logs "$c" > "diagnostics/surviving-${c}.log" 2>&1 || true
+            docker inspect "$c" > "diagnostics/surviving-${c}.json" 2>&1 || true
+          done
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: composed-agent-e2e
+          path: |
+            apps/agent/e2e/junit-agent-e2e.xml
+            diagnostics/
+          retention-days: 30
+
+      # The verdict the next run's guard reads. Recorded only when the journey
+      # actually ran: an install step failing before it is an infrastructure
+      # problem, not a verdict on these inputs.
+      - name: Record the verdict for these inputs
+        if: ${{ !cancelled() && steps.journey.outcome != 'skipped' }}
+        shell: bash
+        env:
+          FINGERPRINT: ${{ needs.rerun-guard.outputs.fingerprint }}
+          OUTCOME: ${{ steps.journey.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 scripts/ci/composed_rerun_guard.py record \
+            --junit apps/agent/e2e/junit-agent-e2e.xml --out verdict/verdict.json
+
+      - name: Upload the verdict
+        if: ${{ !cancelled() && steps.journey.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: composed-journey-verdict-${{ needs.rerun-guard.outputs.fingerprint }}
+          path: verdict/verdict.json
+          if-no-files-found: error
+          retention-days: 90
+
+  # ── The quarantine, said out loud ───────────────────────────────────────────
+  # This job is why the `if: false` could be removed. It is cheap (a checkout
+  # and one Python call), and it fails when the register stops justifying the
+  # skip, so the quarantine cannot outlive its row unnoticed.
+  quarantine-notice:
+    name: Composed agent journey — quarantined
+    if: ${{ inputs.quarantined }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      # Pinned to the `ref` the caller passed in, for the same reason
+      # `composed-journey` above pins one (the guard's SHA of it): on
+      # `schedule`, this file is loaded from the default branch, but the
+      # caller redirects a scheduled run to `dev`. Without `ref:` here, a
+      # nightly would read `main`'s copy of the register and this script
+      # while speaking for a suite run against `dev` — announcing `main`'s
+      # stale quarantine (or silence) for a suite that may no longer be
+      # quarantined on the branch under test.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      # The register's `check` column is a stable identifier, not a live check
+      # run name: after this extraction the real check run for this job
+      # renders as `composed / Composed agent journey — quarantined` (e2e.yml's
+      # caller job id, since it sets no `name:`, followed by this job's own
+      # `name:`), a name that varies per caller, while the register still
+      # spells the pre-extraction name `Composed Agent E2E / composed-journey`.
+      # That is deliberate — the register is a governance ledger and this
+      # refactor is not the place to rewrite its row — so do not "fix" this
+      # string to match a current check run name.
+      #
+      # `shell: bash` matters here: a default `run:` on Linux is `bash -e`
+      # without `-o pipefail`, so `python3 ... | tee ...` would report the
+      # exit status of `tee`, not of the script, and a missing or expired
+      # register row would be silently swallowed — the job would report
+      # success for the exact silent pass this slice exists to remove.
+      #
+      # The script's stdout and stderr are both folded into the summary,
+      # fenced so the scope:/owner:/tracking: lines keep their line breaks
+      # instead of collapsing into one Markdown paragraph, and so the
+      # ::error:: reason on a missing or expired row (stderr-only from the
+      # script) reaches the summary rather than living only in the job log.
+      # `set +e`/`set -e` around the call is what lets the closing fence and
+      # the real exit code both survive a failure under `-e`: without them,
+      # `-e` would abort the group the instant python3 returned non-zero and
+      # the fence would never close. `status` is what `pipefail` then carries
+      # out of the pipe as the step's own exit code.
+      - name: Report the register row that permits the skip
+        shell: bash
+        run: |
+          {
+            echo '```'
+            set +e
+            python3 scripts/ci/quarantine_notice.py \
+              --check "Composed Agent E2E / composed-journey" 2>&1
+            status=$?
+            set -e
+            echo '```'
+            exit "${status}"
+          } | tee -a "${GITHUB_STEP_SUMMARY}"

@@ -438,9 +438,11 @@ def _read_app_settings(url: str) -> tuple[str | None, str | None, str | None] | 
     """
     from sqlalchemy import create_engine, text
 
+    from app.db.encoding import libpq_connect_args
+
     engine = create_engine(
         url,
-        connect_args={"connect_timeout": _DATABASE_TIER_TIMEOUT_SECONDS},
+        connect_args=libpq_connect_args(connect_timeout=_DATABASE_TIER_TIMEOUT_SECONDS),
         pool_pre_ping=False,
     )
     try:
@@ -898,10 +900,42 @@ def _version_below_floor(archive_version: str, floor: str) -> bool:
     return bool(parts) and parts < _version_tuple(floor)
 
 
+def _known_schema_revisions() -> frozenset[str] | None:
+    """Every Alembic revision this build ships, or None when they cannot be listed.
+
+    The verifier refuses a dump whose ``alembic_version`` names a revision outside this
+    set (ACC-15, incompatible schema): this build's migrations cannot start from it, so
+    the restored install would not boot. None skips that check rather than failing it —
+    a build that cannot find its own migrations has a packaging fault ``cb migrate
+    status`` reports, and refusing a recovery over it would turn a measurement failure
+    into a failed restore. The skip is printed, never silent.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from alembic.util import CommandError
+
+    from app.scripts.cli_admin import AdminError, alembic_ini_path
+
+    try:
+        script = ScriptDirectory.from_config(Config(str(alembic_ini_path())))
+        return frozenset(revision.revision for revision in script.walk_revisions())
+    except (AdminError, CommandError, OSError) as exc:
+        print(
+            f"warning: could not list this build's schema revisions ({exc}); the "
+            "snapshot's schema revision was not checked against them.",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _cmd_snapshot_verify(archive: str) -> int:
     installed_version = os.environ.get("CB_VERSION")
     try:
-        manifest = verify_archive(Path(archive), installed_version=installed_version)
+        manifest = verify_archive(
+            Path(archive),
+            installed_version=installed_version,
+            known_revisions=_known_schema_revisions(),
+        )
     except SnapshotProblem as problem:
         print(str(problem), file=sys.stderr)
         return 1

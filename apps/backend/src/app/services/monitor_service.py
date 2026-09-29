@@ -107,14 +107,45 @@ def _publish_soon(what: str, factory: Callable[[], Coroutine[Any, Any, Any]]) ->
     instead (`_dispatch_probe_run`): there the run is live and unannounced until
     the frame lands, so silently publishing nothing wedges the monitor rather
     than costing it a wasted check.
+
+    The task is held in `_BACKGROUND_TASKS` until it finishes. The event loop
+    keeps only a weak reference to a task, so a bare `create_task` whose result
+    is dropped can be garbage-collected before it ever runs — the asyncio
+    documentation calls this out explicitly. Both the cancellation publishers
+    and the discovery bootstrap go through here, and a bootstrap that silently
+    never ran is indistinguishable from one that ran and found nothing. The
+    done-callback releases the reference and logs an escaped exception, which
+    otherwise surfaces only as asyncio's "Task exception was never retrieved"
+    at garbage-collection time, if at all.
     """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         logger.warning("No running async loop to publish %s.", what)
         return False
-    loop.create_task(factory())
+    task = loop.create_task(factory(), name=f"publish_soon:{what}")
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_background_task_done)
     return True
+
+
+# Strong references to every task `_publish_soon` has started and not yet seen
+# finish. See that function's docstring for why this set must exist.
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _background_task_done(task: asyncio.Task[Any]) -> None:
+    """Release a finished `_publish_soon` task and report anything it raised."""
+    _BACKGROUND_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Deferred %s failed.",
+            task.get_name().removeprefix("publish_soon:"),
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
 
 
 def _close_active_runs(

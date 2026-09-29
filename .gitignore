@@ -56,6 +56,10 @@ frontend/.env.*.local
 # container) and unlinked again in each test's `finally`. Never a source file.
 apps/agent/e2e/agent.toml
 apps/agent/e2e/agent-etc/
+# Written by tier2-agent-journey.sh's --junitxml flag (composed-e2e.yml
+# uploads it as evidence from its own checkout); a laptop run under
+# `make e2e-local` leaves it behind untracked in the working tree.
+apps/agent/e2e/junit-agent-e2e.xml
 
 # GOV-12: `go build ./cmd/cb-agent` with no -o writes the binary here, named
 # after the package directory. A 12.6 MB ELF was tracked this way. The
@@ -115,6 +119,10 @@ htmlcov/
 
 # CI artifacts: written by `make verify` (local CI scripts) — never committed
 artifacts/
+
+# scripts/ci/tier2-mono-smoke.sh's compose data dir when RUNNER_TEMP is unset
+# (a local `make verify-composed-mono` run)
+.smoke-tmp/
 
 # Generated security scan reports (keep STANDING reports untracked naturally)
 SECURITY_REPORTS/security_scan_report*.md

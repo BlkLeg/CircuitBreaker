@@ -53,13 +53,15 @@ EVIDENCE_OWING_JOBS = {
     "ci.yml": ("lint", "backend-tests", "fresh-install-migrations", "test"),
     "dev-ci.yml": ("lint", "backend-tests", "fresh-install-migrations", "test"),
     "browser-e2e.yml": ("browser-e2e",),
+    "mono-smoke.yml": ("mono-smoke",),
 }
 
-# Where the artifact classes below are allowed to live. e2e.yml carries the
-# composed journey's diagnostics; browser-e2e.yml carries Playwright's traces,
+# Where the artifact classes below are allowed to live. composed-e2e.yml carries
+# the composed journey's diagnostics (it held them inline as e2e.yml until slice
+# A1 moved the suite out); browser-e2e.yml carries Playwright's traces,
 # screenshots and video, which is why scanning ci.yml alone stopped being
 # enough once the suite moved out of it.
-ARTIFACT_SOURCE_WORKFLOWS = ("ci.yml", "e2e.yml", "browser-e2e.yml")
+ARTIFACT_SOURCE_WORKFLOWS = ("ci.yml", "composed-e2e.yml", "browser-e2e.yml", "mono-smoke.yml")
 
 
 def _load(name: str) -> dict:
@@ -113,7 +115,11 @@ def test_the_seed_is_fixed_rather_than_derived_from_the_run(name: str):
 
 
 def test_the_composed_journey_seed_is_fixed_too():
-    workflow = _load("e2e.yml")
+    """The seed lives with the suite, which is composed-e2e.yml since slice A1.
+    e2e.yml is a thin caller with no steps of its own, so asserting against it
+    would pass vacuously — `seeds` would simply be empty, and the `assert seeds`
+    below is what catches that."""
+    workflow = _load("composed-e2e.yml")
     seeds = [
         str(value)
         for job in workflow["jobs"].values()
@@ -121,9 +127,9 @@ def test_the_composed_journey_seed_is_fixed_too():
         for key, value in (step.get("env") or {}).items()
         if key == "CB_E2E_SEED"
     ]
-    assert seeds, "e2e.yml sets no CB_E2E_SEED"
+    assert seeds, "composed-e2e.yml sets no CB_E2E_SEED"
     assert all("${{" not in seed for seed in seeds), (
-        f"e2e.yml derives CB_E2E_SEED per run: {seeds}"
+        f"composed-e2e.yml derives CB_E2E_SEED per run: {seeds}"
     )
 
 

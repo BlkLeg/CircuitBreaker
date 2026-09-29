@@ -98,16 +98,22 @@ Apply the following settings via GitHub Settings > Branch protection rules:
       so requiring either one would hang every backend or frontend change
       indefinitely. Path-filtered workflows cannot be required checks; this is
       the same failure mode as a misnamed check, reached by a different route.
-    - `Build Native (amd64)` and `Build Docker (smoke test)` are `dev-ci.yml`
-      only, so they cannot be required on `main`. The second builds the mono
-      image and then starts it through `docker-compose.yml` — `/livez`,
-      `/readyz`, the served frontend, every supervisord program, restart count
-      and SIGTERM shutdown. `main`'s equivalent coverage is `release.yml` at tag
-      time, which builds the image per-architecture and calls
-      `artifact-smoke.yml` for the packages. They are **not** currently required
-      on `dev` either: one identical required set on both branches is one list to
-      re-verify instead of two that drift apart, which is the failure this file
-      keeps having. Adding them to the `dev` ruleset alone is a safe follow-up.
+    - `Build Native (amd64)` and `Build Docker (smoke test) / Mono image
+      smoke` are `dev-ci.yml` only, so they cannot be required on `main`. The
+      second builds the mono image and then starts it through
+      `docker-compose.yml` — `/livez`, `/readyz`, the served frontend, every
+      supervisord program, restart count and SIGTERM shutdown — but that smoke
+      no longer lives inline in `dev-ci.yml`'s `build-docker` job. It moved to
+      the reusable `mono-smoke.yml` (job `mono-smoke`) and its one definition,
+      `scripts/ci/tier2-mono-smoke.sh` (Tier 2 slice A3), so `build-docker`
+      calls it and the reported check name is the compound
+      `Build Docker (smoke test) / Mono image smoke`. `main`'s equivalent
+      coverage is `release.yml` at tag time, which builds the image
+      per-architecture and calls `artifact-smoke.yml` for the packages. It is
+      **not** currently required on `dev` either: one identical required set
+      on both branches is one list to re-verify instead of two that drift
+      apart, which is the failure this file keeps having. Adding it to the
+      `dev` ruleset alone is a safe follow-up.
 
   - **Require branches to be up to date before merging**: ✓ Enabled
 
