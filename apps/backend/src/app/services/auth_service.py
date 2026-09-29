@@ -52,11 +52,6 @@ _DEFAULT_BOOTSTRAP_TOKEN_TTL_HOURS = 24
 _DUMMY_HASH: str = _bcrypt.hashpw(b"cb-dummy-not-real", _bcrypt.gensalt(rounds=12)).decode()
 
 
-def dummy_hash() -> str:
-    """The bcrypt hash to verify against when an email has no account (L-08)."""
-    return _DUMMY_HASH
-
-
 def _profiles_dir() -> Path:
     return _uploads_dir() / "profiles"
 
@@ -1041,6 +1036,47 @@ def _set_onboarding_step(db: Session, step: str) -> None:
         db.rollback()
 
 
+def verify_login_password(db: Session, user: User | None, password_or_hash: str) -> bool:
+    """Check a login credential, migrating a legacy-salt hash that matches.
+
+    This is the whole credential check for a login, so callers branch on the
+    account (MFA, forced password change) only after it: an account still
+    stored under the v1 wire hash is *valid* here once it matches, and must get
+    the same MFA challenge or change token as any other valid login rather
+    than falling through to a full session.
+
+    The bcrypt work does not depend on whether *user* exists (L-08): with no
+    account every check runs against the dummy hash, so a nonexistent email
+    costs exactly what a real one does.
+    """
+    hash_to_check = user.hashed_password if user else _DUMMY_HASH
+    if verify_password(password_or_hash, hash_to_check):
+        return True
+    if _is_client_hash(password_or_hash):
+        return False
+
+    from app.core.security import (
+        _DEFAULT_SALT,
+        client_hash_password,
+        get_client_salt,
+        legacy_client_wire_hash_v1,
+    )
+
+    current_salt = get_client_salt(db)
+    if current_salt == _DEFAULT_SALT:
+        return False
+    # The stored hash may still derive from the v1 SHA256 wire hash under the
+    # old hardcoded salt; if so, re-hash it under the current salt.
+    legacy_client_hash = legacy_client_wire_hash_v1(password_or_hash, _DEFAULT_SALT)
+    if not verify_password(legacy_client_hash, hash_to_check) or user is None:
+        return False
+    _logger.info("Migrating user %s to new CLIENT_HASH_SALT", user.email)
+    user.hashed_password = hash_password(client_hash_password(password_or_hash, current_salt))
+    db.commit()
+    db.refresh(user)
+    return True
+
+
 def login(
     db: Session,
     email: str,
@@ -1057,43 +1093,17 @@ def login(
     email has an account (L-08): each check is ~250ms of response time, so one
     that runs only for real accounts tells an attacker which emails exist.
 
-    ``password_valid`` is for a caller that has already checked
-    ``password_or_hash`` against this same user's hash (or ``dummy_hash()``
-    when there is none), so a login does not pay for the same bcrypt twice.
+    ``password_valid`` is for a caller that has already run
+    :func:`verify_login_password` for this same user, so a login does not pay
+    for the same bcrypt checks twice.
     """
     from app.services.log_service import write_log
     from app.services.user_service import record_failed_login, reset_login_attempts
 
     user = db.query(User).filter(User.email == email.strip().lower()).first()
-    _hash_to_check = user.hashed_password if user else _DUMMY_HASH
     if password_valid is None:
-        password_valid = verify_password(password_or_hash, _hash_to_check)
+        password_valid = verify_login_password(db, user, password_or_hash)
     _password_valid = password_valid
-
-    # Migrate existing legacy tokens (on first valid login with plaintext).
-    # Deliberately not conditioned on `user`: the legacy check runs against the
-    # dummy hash when there is no account, so this second bcrypt costs a
-    # nonexistent email exactly what it costs a real one.
-    if not _password_valid and not _is_client_hash(password_or_hash):
-        from app.core.security import (
-            _DEFAULT_SALT,
-            client_hash_password,
-            get_client_salt,
-            legacy_client_wire_hash_v1,
-        )
-
-        current_salt = get_client_salt(db)
-        if current_salt != _DEFAULT_SALT:
-            # Check if login succeeds with the legacy hardcoded salt (v1 SHA256 wire hash)
-            legacy_client_hash = legacy_client_wire_hash_v1(password_or_hash, _DEFAULT_SALT)
-            if verify_password(legacy_client_hash, _hash_to_check) and user:
-                # SUCCESS with legacy salt! Migrate this user to the current dynamic salt.
-                _logger.info("Migrating user %s to new CLIENT_HASH_SALT", user.email)
-                new_client_hash = client_hash_password(password_or_hash, current_salt)
-                user.hashed_password = hash_password(new_client_hash)
-                db.commit()
-                db.refresh(user)
-                _password_valid = True
 
     locked = bool(user and user.locked_until and user.locked_until > utcnow())
     if not user or not _password_valid:

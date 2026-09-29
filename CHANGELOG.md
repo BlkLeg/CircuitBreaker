@@ -58,6 +58,9 @@ release.
   nonexistent email (the most with a custom client salt and MFA or a forced
   password change), and locked accounts ran none, so response time revealed
   which emails were registered.
+- An account whose stored password hash predates the configurable client salt
+  now gets its MFA challenge, or its forced password change, on the login that
+  migrates it. That login previously issued a full session without either.
 - Re-running the installer no longer stops at "System dependencies" when a
   package upgrade ships a new version of a config file the host has changed
   (dpkg's conffile prompt, first seen with pgbouncer on Ubuntu).

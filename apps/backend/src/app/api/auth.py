@@ -292,10 +292,9 @@ def login_compat(
     {"requires_change": true, "change_token": "<jwt>"} instead of a full
     session token.  The client must POST that token to /auth/force-change-password.
     """
-    from app.core.security import verify_password
     from app.core.time import utcnow
-    from app.services.auth_service import dummy_hash
     from app.services.auth_service import login as svc_login
+    from app.services.auth_service import verify_login_password
     from app.services.user_service import reset_login_attempts
 
     cfg = get_or_create_settings(db)
@@ -309,14 +308,13 @@ def login_compat(
 
     email_norm = payload.email.strip().lower()
     user = db.query(User).filter(User.email == email_norm).first()
-    # Exactly one bcrypt check here, for every request, before anything branches
-    # on the account (L-08). The lockout, force-change and MFA branches below
-    # used to answer a locked account with no bcrypt at all and give a real one
-    # extra checks — each a ~250ms difference that tells an attacker the email
-    # has an account. svc_login reuses this result rather than checking again.
-    password_valid = verify_password(
-        password_or_hash, user.hashed_password if user else dummy_hash()
-    )
+    # The whole credential check — including a legacy-salt hash, which it
+    # migrates — runs once, for every request, before anything branches on the
+    # account. Branching first let a locked account skip bcrypt and a real one
+    # run extra checks, each a ~250ms tell that the email exists (L-08), and let
+    # a legacy-hash MFA or force-change account fall through to a full session.
+    # svc_login reuses this result rather than checking again.
+    password_valid = verify_login_password(db, user, password_or_hash)
     # A locked account is refused by svc_login below, after the same work every
     # other failed login does; here it only must not be handed a change or MFA token.
     locked = bool(user and user.locked_until and user.locked_until > utcnow())
