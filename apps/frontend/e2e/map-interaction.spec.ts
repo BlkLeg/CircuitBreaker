@@ -194,3 +194,127 @@ test.describe('topology map', () => {
     expect(topologyCalls.length).toBe(beforeToggle);
   });
 });
+
+test.describe('topology map hover telemetry card', () => {
+  const CHILDREN = Array.from({ length: 6 }, (_, index) => ({
+    id: `hardware-${index + 2}`,
+    type: 'hardware',
+    label: `child-${index + 2}`,
+    data: { entity_id: index + 2 },
+  }));
+  const FAN_OUT = {
+    nodes: [
+      { id: 'hardware-1', type: 'hardware', label: 'root', data: { entity_id: 1 } },
+      ...CHILDREN,
+    ],
+    edges: CHILDREN.map((child, index) => ({
+      id: `fan-${index}`,
+      source: 'hardware-1',
+      target: child.id,
+      type: 'smart',
+    })),
+  };
+
+  test('opens beside the pointer', async ({ page }) => {
+    await stubApi(page, { graph: FAN_OUT, 'graph/topology': FAN_OUT });
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    const node = page.locator('.react-flow__node', { hasText: 'root' });
+    await node.hover();
+    const nodeBox = (await node.boundingBox())!;
+    const pointerX = nodeBox.x + nodeBox.width / 2;
+    const pointerY = nodeBox.y + nodeBox.height / 2;
+
+    const close = page.getByRole('button', { name: 'Close telemetry' });
+    await expect(close).toBeVisible();
+    const card = close.locator('xpath=ancestor::div[contains(@style, "z-index: 9999")][1]');
+    const cardBox = (await card.boundingBox())!;
+
+    // Requested at pointer + (20, -30). Absolute positioning measured that
+    // from the map container, which dropped the card ~260px lower.
+    expect(Math.abs(cardBox.x - (pointerX + 20))).toBeLessThan(2);
+    expect(Math.abs(cardBox.y - (pointerY - 30))).toBeLessThan(2);
+  });
+
+  test('stays closed when its close button sits on top of another node', async ({ page }) => {
+    await stubApi(page, { graph: FAN_OUT, 'graph/topology': FAN_OUT });
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+    await expect(page.locator('.react-flow__node')).toHaveCount(FAN_OUT.nodes.length);
+
+    // The card opens just right of the pointer, so on a row of nodes its close
+    // button can land on a neighbour. Closing it uncovers that node, and the
+    // browser's synthetic mouseenter on it used to re-arm the 400 ms timer.
+    // Whether the button lands on a node depends on spacing and zoom, so find
+    // a hover target (zooming in if needed) where it does.
+    const close = page.getByRole('button', { name: 'Close telemetry' });
+    // Topmost node at a point, or (throughCard) the first node in the stack
+    // beneath whatever covers it.
+    const nodeAt = (px: number, py: number, throughCard = false) =>
+      page.evaluate(
+        ([ex, ey, through]) => {
+          const stack = through
+            ? document.elementsFromPoint(ex, ey)
+            : [document.elementFromPoint(ex, ey)];
+          return (
+            stack
+              .map((el) => el?.closest('.react-flow__node'))
+              .find(Boolean)
+              ?.getAttribute('data-id') ?? null
+          );
+        },
+        [px, py, throughCard] as const
+      );
+    let x = 0;
+    let y = 0;
+    let covered: string | null = null;
+    for (let zoomStep = 0; zoomStep < 4 && !covered; zoomStep += 1) {
+      for (const child of CHILDREN) {
+        const target = page.locator(`.react-flow__node[data-id="${child.id}"]`);
+        if (await close.isVisible()) {
+          // The open card can cover the next node; leaving the card closes it.
+          await close.hover();
+          await page.mouse.move(5, 5);
+          await expect(close).toBeHidden();
+        }
+        // Skip nodes that are off screen or under an overlay such as the legend.
+        const targetBox = await target.boundingBox();
+        if (!targetBox) continue;
+        const cx = targetBox.x + targetBox.width / 2;
+        const cy = targetBox.y + targetBox.height / 2;
+        if ((await nodeAt(cx, cy)) !== child.id) continue;
+        await page.mouse.move(cx, cy);
+        await expect(close.locator('xpath=../..')).toContainText(child.label);
+        const box = (await close.boundingBox())!;
+        x = box.x + box.width / 2;
+        y = box.y + box.height / 2;
+        const under = await nodeAt(x, y, true);
+        if (under && under !== child.id) {
+          covered = under;
+          break;
+        }
+      }
+      if (!covered) {
+        await page.mouse.move(5, 5);
+        await page.getByRole('button', { name: 'zoom in' }).click();
+      }
+    }
+    expect(covered, 'no hover target put the close button over another node').not.toBeNull();
+
+    await page.mouse.move(x, y, { steps: 10 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(close).toBeHidden();
+
+    // Jiggle in place, past the hover delay: the uncovered node must not reopen it.
+    await page.mouse.move(x + 2, y + 1);
+    await page.waitForTimeout(1000);
+    await expect(close).toBeHidden();
+
+    // Hover still works once the pointer genuinely leaves and comes back.
+    await page.mouse.move(5, 5, { steps: 5 });
+    await page.locator(`.react-flow__node[data-id="${covered}"]`).hover();
+    await expect(close).toBeVisible();
+  });
+});

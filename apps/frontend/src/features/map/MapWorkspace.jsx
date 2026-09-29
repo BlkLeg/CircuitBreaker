@@ -375,6 +375,20 @@ export default function MapWorkspace({
   // Telemetry sidebar state (hover card)
   const [telemetrySidebarNode, setTelemetrySidebarNode] = useState(null);
   const [telemetrySidebarPos, setTelemetrySidebarPos] = useState({ x: 0, y: 0 });
+  // Node the hover card was dismissed on top of. Unmounting the card uncovers
+  // that node, and the browser then fires mouseenter on it without the pointer
+  // having moved there — which re-armed the hover timer and reopened the card
+  // 400 ms after its close button was clicked. Hover-open stays suppressed for
+  // this node until the pointer actually leaves it.
+  const hoverSuppressedNodeIdRef = useRef(null);
+  const dismissTelemetrySidebar = useCallback((event) => {
+    const underneath = document
+      .elementsFromPoint(event.clientX, event.clientY)
+      .map((el) => el.closest('.react-flow__node'))
+      .find(Boolean);
+    hoverSuppressedNodeIdRef.current = underneath?.dataset.id ?? null;
+    setTelemetrySidebarNode(null);
+  }, []);
 
   // Sidebar bounding rect — kept in a ref (not state) so updates don't trigger re-renders.
   // The ContextMenu reads this ref on each position recalculation to avoid overlapping the panel.
@@ -692,14 +706,19 @@ export default function MapWorkspace({
       if (contextMenuOpenRef.current) return;
       // Don't show hover telemetry when the main (click) Sidebar is open — avoids overlap
       if (selectedNodeRef.current) return;
+      if (hoverSuppressedNodeIdRef.current === node.id) return;
       scheduleTelemetrySidebar(node, { x: event.clientX + 20, y: event.clientY - 30 });
     },
     [contextMenuOpenRef, scheduleTelemetrySidebar]
   );
 
-  const handleNodeMouseLeave = useCallback(() => {
-    cancelTelemetrySidebar();
-  }, [cancelTelemetrySidebar]);
+  const handleNodeMouseLeave = useCallback(
+    (event, node) => {
+      if (hoverSuppressedNodeIdRef.current === node?.id) hoverSuppressedNodeIdRef.current = null;
+      cancelTelemetrySidebar();
+    },
+    [cancelTelemetrySidebar]
+  );
 
   const handlePaneContextMenu = useCallback(
     (event) => {
@@ -1373,6 +1392,7 @@ export default function MapWorkspace({
                 node={telemetrySidebarNode}
                 position={telemetrySidebarPos}
                 onClose={() => setTelemetrySidebarNode(null)}
+                onDismiss={dismissTelemetrySidebar}
                 onBoundsChange={handleTelemetrySidebarBoundsChange}
               />
             )}
