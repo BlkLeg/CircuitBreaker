@@ -23,6 +23,23 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
+# DEBIAN_FRONTEND does not cover dpkg's own conffile question ("Configuration
+# file ... Modified since installation ... [default=N] ?"), which it asks when a
+# package upgrade ships a new version of a config file the host has changed. A
+# re-run hits exactly that: the previous install rendered pgbouncer.ini, the
+# re-run upgraded pgbouncer, dpkg read EOF from the `curl | sudo bash` pipe and
+# failed with "end of file on stdin at conffile prompt". Keep the local file —
+# the installer renders its own configs after installing anyway — and never let
+# a package command read the installer's stdin. Exported so child bash
+# processes get the same guarantee.
+apt-get() {
+  command apt-get \
+    -o Dpkg::Options::=--force-confdef \
+    -o Dpkg::Options::=--force-confold \
+    "$@" </dev/null
+}
+export -f apt-get
+
 # Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
