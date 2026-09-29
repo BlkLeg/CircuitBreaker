@@ -807,6 +807,10 @@ cb_run_diagnostics() {
 }
 
 cb_fail() {
+  # Claimed before anything else prints, so the exit hook below does not report
+  # this failure a second time when the `exit` at the end fires it.
+  _CB_EXIT_REPORTED=true
+
   # Tear the live region down FIRST. Diagnostics interleaved with a redrawing
   # bar are unreadable, and this is the one moment the output has to be perfect.
   if declare -f cb_ui_teardown >/dev/null 2>&1; then
@@ -846,7 +850,83 @@ cb_fail() {
   echo -e "  ${BOLD}Re-run with full output:${RESET}  bash install.sh --verbose"
   echo -e "  ${BOLD}Collect everything for an issue:${RESET}  cb diag bundle"
   echo ""
-  exit 1
+  exit "${_CB_FAIL_STATUS:-1}"
+}
+
+# `set -e` ends the run on any unchecked failure, and cb_fail only reports the
+# failures somebody anticipated. Everything else used to reach an EXIT trap
+# whose one job was to erase the progress bar, so the operator got a clean
+# prompt after "▸ System dependencies" and no word that anything had gone
+# wrong: that is how a dpkg conffile prompt ending a re-run on Ubuntu looked.
+#
+# The ERR trap records where the failure happened, because by the time EXIT
+# runs, BASH_COMMAND is only the last simple command bash executed — for a
+# failing function call, that function's `return` — and LINENO means nothing.
+# FUNCNAME, BASH_SOURCE and LINENO are read inside the trap string so they
+# describe the failing frame rather than this function's.
+_CB_EXIT_REPORTED=false
+_CB_ERR_AT=""
+
+_cb_note_err() {
+  local status="$1" command="$2" file="$3" line="$4" func="$5" text=""
+  # The source line itself is what an operator can act on; BASH_COMMAND is the
+  # fallback for install.sh under `curl | bash`, which has no file to read.
+  if [[ -n "${file}" ]] && [[ -f "${file}" ]] && [[ -r "${file}" ]]; then
+    text="$(sed -n "${line}p" "${file}" 2>/dev/null | sed 's/^[[:space:]]*//')" || text=""
+  fi
+  _CB_ERR_AT="${file:-install.sh}:${line} in ${func}(): ${text:-${command}} (exit ${status})"
+}
+
+_cb_on_exit() {
+  local status=$?
+  trap - ERR
+
+  if [[ "${status}" -eq 0 ]] || [[ "${_CB_EXIT_REPORTED:-false}" == "true" ]]; then
+    if declare -f cb_ui_teardown >/dev/null 2>&1; then
+      cb_ui_teardown
+    fi
+    return 0
+  fi
+  _CB_EXIT_REPORTED=true
+
+  local during=""
+  if [[ -n "${_CB_OPEN_PHASE:-}" ]]; then
+    during=" during \"${_CB_OPEN_HEADLINE}\""
+  fi
+
+  # Killed by a signal (Ctrl-C is 130): the operator left on purpose. Say so and
+  # where the log is, without making them sit through the diagnostics.
+  if [[ "${status}" -gt 128 ]]; then
+    if declare -f cb_ui_teardown >/dev/null 2>&1; then
+      cb_ui_teardown
+    fi
+    echo -e "\n  ${YELLOW}✗  Installer interrupted (signal $((status - 128)))${during}${RESET}"
+    echo -e "  ${BOLD}Full log:${RESET}  ${LOG_FILE:-/tmp/cb-bootstrap.log}"
+    echo ""
+    exit "${status}"
+  fi
+
+  # cb_fail's hint line goes through `echo -e`; double any backslash in the
+  # quoted source line so it prints as written.
+  local at="${_CB_ERR_AT:-unknown location (no command failed before exit ${status})}"
+  _CB_FAIL_STATUS="${status}"
+  cb_fail "Installer stopped unexpectedly (exit ${status})${during}" "At ${at//\\/\\\\}"
+}
+
+# Armed by main() after cb_ui_init, whose tty-only `trap cb_ui_teardown EXIT`
+# this replaces: _cb_on_exit tears the live region down itself, in every mode.
+# errtrace (-E) lets the ERR trap see failures inside functions, which is where
+# every stage runs. The signal traps are not optional: bash does run the EXIT
+# trap when a signal kills it, but with $? still holding the last command's
+# status — usually 0 — so without them Ctrl-C would read as a clean exit.
+# Turning each into an ordinary `exit 128+N` gives _cb_on_exit the real status.
+cb_arm_exit_report() {
+  set -E
+  trap '_cb_note_err "$?" "${BASH_COMMAND}" "${BASH_SOURCE[0]:-}" "${LINENO}" "${FUNCNAME[0]:-main}"' ERR
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap '_cb_on_exit' EXIT
 }
 
 # Hint array populated before each major stage; cleared on success
@@ -1893,6 +1973,7 @@ main() {
   echo "=== Bootstrap Log ===" > "$LOG_FILE"
 
   cb_ui_init
+  cb_arm_exit_report
 
   if [[ "${UPGRADE_MODE}" == "true" ]]; then
     cb_ui_use_weights CB_PHASE_WEIGHTS_UPGRADE
