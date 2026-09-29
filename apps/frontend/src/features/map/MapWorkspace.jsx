@@ -1159,6 +1159,11 @@ export default function MapWorkspace({
   };
 
   const flow = {
+    // Pane clicks clear these. They live here, not on editorUi: reading them
+    // from editorUi got undefined, so every pane click threw before it could
+    // close the node context menu or anything else.
+    setEdgeMenu,
+    setPendingConnection,
     handleNodesChange,
     onEdgesChange,
     handleConnect,

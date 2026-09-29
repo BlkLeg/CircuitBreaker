@@ -54,8 +54,10 @@ export default function MapCanvas({
     handlePanePointerMove,
     handleEdgeContextMenu,
     handleEdgeUpdate,
+    setEdgeMenu,
+    setPendingConnection,
   } = flow;
-  const { boundaryDrawMode, lineDrawMode, setEdgeMenu, setPendingConnection } = editorUi;
+  const { boundaryDrawMode, lineDrawMode } = editorUi;
   const { useSigma, bgGridColor } = view;
   const { includeTypes } = filters;
   const { loading } = persistence;

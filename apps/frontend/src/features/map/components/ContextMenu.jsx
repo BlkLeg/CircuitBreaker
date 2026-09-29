@@ -148,7 +148,7 @@ function SubMenu({ title, items, type, nodeId, onAction, onClose, direction }) {
 
   return (
     <div
-      className={`${submenuSideClass} tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}
+      className={`${submenuSideClass} tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden`}
     >
       <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider">
         Select {title}
@@ -335,14 +335,17 @@ function ContextMenu({
     };
   }, [node, position.x, position.y, avoidRectRef, avoidRectRef2]);
 
+  // pointerdown in the capture phase: React Flow's pan/zoom (d3-zoom) stops
+  // mousedown from propagating off the canvas and its nodes, so a bubbling
+  // mousedown listener never heard a left click there.
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (menuRef.current && !menuRef.current.contains(event.target)) {
         onClose();
       }
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('pointerdown', handleClickOutside, true);
+    return () => document.removeEventListener('pointerdown', handleClickOutside, true);
   }, [onClose]);
 
   if (!node) return null;
@@ -406,7 +409,7 @@ function ContextMenu({
     <div
       ref={menuRef}
       style={{ top: menuPosition.y, left: menuPosition.x, zIndex: 10000 }}
-      className="context-menu tw-fixed tw-w-64 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-visible tw-animate-in tw-fade-in tw-zoom-in-95 tw-duration-100"
+      className="context-menu tw-fixed tw-w-64 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-visible"
     >
       <div className="tw-px-4 tw-py-3 tw-border-b tw-border-cb-border tw-bg-cb-secondary tw-rounded-t-lg">
         <div className="tw-font-mono tw-font-bold tw-text-cb-text tw-text-sm">
@@ -769,7 +772,7 @@ function ContextMenu({
                   <ChevronRight className="tw-w-3 tw-h-3 tw-ml-auto tw-text-cb-text-muted" />
                   {activeSubmenu === 'move_map' && (
                     <div
-                      className={`tw-absolute ${submenuDirection === 'left' ? 'tw-right-full tw-mr-1' : 'tw-left-full tw-ml-1'} tw-top-0 tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}
+                      className={`tw-absolute ${submenuDirection === 'left' ? 'tw-right-full tw-mr-1' : 'tw-left-full tw-ml-1'} tw-top-0 tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden`}
                     >
                       <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider">
                         Select Map
@@ -842,7 +845,7 @@ function ContextMenu({
               </button>
               {activeSubmenu === 'shape' && (
                 <div
-                  className={`${submenuDirection === 'left' ? 'tw-absolute tw-right-full tw-mr-1' : 'tw-absolute tw-left-full tw-ml-1'} ${iconPickerVDir === 'up' ? 'tw-bottom-0' : 'tw-top-0'} tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}
+                  className={`${submenuDirection === 'left' ? 'tw-absolute tw-right-full tw-mr-1' : 'tw-absolute tw-left-full tw-ml-1'} ${iconPickerVDir === 'up' ? 'tw-bottom-0' : 'tw-top-0'} tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl`}
                   style={{ width: 220 }}
                 >
                   <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider tw-rounded-t-xl">

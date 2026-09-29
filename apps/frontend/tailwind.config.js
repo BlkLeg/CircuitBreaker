@@ -1,10 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: [
-    './src/components/**/*.{js,jsx}',
-    './src/pages/**/*.{js,jsx}',
-    './src/lib/**/*.{js,jsx}',
-  ],
+  // All of src/: a directory-by-directory list silently dropped every class in
+  // src/features/ when the map moved there, which unstyled its context menus.
+  content: ['./src/**/*.{js,jsx}', '!./src/__tests__/**'],
   // Restrict Tailwind to discovery bulk-actions components only.
   // This prevents Tailwind's reset/base from affecting existing CSS.
   prefix: 'tw-',

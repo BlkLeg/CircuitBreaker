@@ -375,4 +375,67 @@ test.describe('topology map node panels', () => {
     // container's offset from the top of the page.
     expect(Math.round(after.y - before.y)).toBe(0);
   });
+
+  for (const [where, clickOutside] of [
+    [
+      'empty canvas',
+      (page) => page.locator('.react-flow__pane').click({ position: { x: 900, y: 150 } }),
+    ],
+    ['another node', (page) => page.locator('.react-flow__node', { hasText: 'nas-01' }).click()],
+    ['the page header', (page) => page.getByText('Topology', { exact: true }).click()],
+  ] as const) {
+    test(`a left click on ${where} closes the node context menu`, async ({ page }) => {
+      await stubApi(page, POPULATED);
+      await page.goto('/map');
+      await waitForRouteSettled(page);
+
+      await page
+        .locator('.react-flow__node', { hasText: 'edge-router' })
+        .click({ button: 'right' });
+      const menu = page.locator('.context-menu');
+      await expect(menu).toBeVisible();
+
+      // React Flow's pan/zoom stops mousedown from propagating off the canvas
+      // and nodes, and MapCanvas's pane handler threw before closing anything.
+      await clickOutside(page);
+      await expect(menu).toBeHidden();
+    });
+  }
+
+  test('the node context menu opens as a fixed popover at the pointer', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    await page.locator('.react-flow__node').first().click({ button: 'right' });
+
+    const menu = page.locator('.context-menu');
+    await expect(menu).toBeVisible();
+
+    // Its layout comes from Tailwind utilities (tw-fixed, tw-w-64). When
+    // Tailwind stopped scanning src/features/, those classes were never
+    // generated and the menu fell into page flow: full-width, or clipped
+    // out of sight inside the map container.
+    const layout = await menu.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        position: getComputedStyle(el).position,
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+        width: r.width,
+      };
+    });
+    expect(layout.position).toBe('fixed');
+    expect(layout.width).toBe(256);
+    // Fully on screen. Which side of the pointer it opens on depends on the
+    // room available, so only containment is asserted.
+    const viewport = page.viewportSize()!;
+    expect(layout.left).toBeGreaterThanOrEqual(0);
+    expect(layout.top).toBeGreaterThanOrEqual(0);
+    expect(layout.right).toBeLessThanOrEqual(viewport.width);
+    expect(layout.bottom).toBeLessThanOrEqual(viewport.height);
+    await expect(menu.getByRole('button').first()).toBeVisible();
+  });
 });
