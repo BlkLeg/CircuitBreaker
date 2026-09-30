@@ -526,6 +526,27 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  npm-cli:
+    name: npm CLI (Node ${{ matrix.node }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Unit tests
+        run: node --test packages/cli/test/*.test.js
+
+      - name: Packed-tarball smoke
+        run: scripts/ci/cli_packed_smoke.sh
+
   # ── Security Gate ─────────────────────────────────────────────────────────────
   security-gate:
     name: Security Gate

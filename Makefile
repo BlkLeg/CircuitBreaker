@@ -294,7 +294,7 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-composed verify-composed-browser verify-composed-agent verify-composed-mono verify-fleet verify-fleet-upgrade loadgen nav-wedge
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-composed verify-composed-browser verify-composed-agent verify-composed-mono verify-cli-pack verify-fleet verify-fleet-upgrade loadgen nav-wedge
 
 loadgen: ## Seed and run a non-blocking Phase-2 baseline (TIER=A, CB_LOADGEN_TOKEN required)
 	$(CURDIR)/.venv/bin/python scripts/loadgen/seed.py seed --tier "$(or $(TIER),A)" --db-url "$(CB_TEST_DB_URL)"
@@ -433,6 +433,9 @@ verify-composed-agent: ## Tier 2 — the composed agent journey, or its register
 verify-composed-mono: ## Tier 2 — build the mono image and run the compose smoke CI runs
 	docker build -f Dockerfile.mono -t circuitbreaker:local-smoke .
 	scripts/ci/tier2-mono-smoke.sh circuitbreaker:local-smoke
+
+verify-cli-pack: ## npm CLI — pack the exact tarball, install it offline, drive the launcher (Node 22+)
+	scripts/ci/cli_packed_smoke.sh
 
 # T3. Not part of `verify` and deliberately not wired into any workflow yet: it
 # boots a VM, downloads a 556MB image on first run, and takes minutes, which is

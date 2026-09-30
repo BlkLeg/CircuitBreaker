@@ -22,6 +22,7 @@ carries a status column.
 | Plan | Date | Status |
 |---|---|---|
 | [npm CLI implementation](./2026-09-30-v0.4.7-npm-cli-implementation.md) | 2026-09-30 | **Active** — planned; no implementation task started. Implements the [design contract](../docs/design/2026-09-30-v0.4.7-npm-cli-design.md) and approved terminal pattern, with verified staging, complete recovery, lifecycle commands and governed npm publication. |
+| [npm CLI 01 — foundation](./2026-09-30-v0.4.7-npm-cli-01-foundation.md) | 2026-09-30 | **Active** — planned; no task started. Package, identity, trusted native bridge, help/version, pack gates. Sub-plan 01 of the roadmap above. |
 
 ## cb-agent on macOS and Windows (2026-09-30)
 

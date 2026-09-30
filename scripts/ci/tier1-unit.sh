@@ -69,6 +69,17 @@ cb::section "Frontend unit tests"
     --outputFile.junit="$EVIDENCE/junit/frontend.xml" \
 ) 2>&1 | tee "$EVIDENCE/logs/frontend.log"
 
+cb::section "npm CLI unit tests"
+# node:test on the host's Node. The packed-tarball smoke, which needs the
+# package's Node 22 floor, runs in dev-ci.yml's npm-cli job and via
+# `make verify-cli-pack`. The explicit *.test.js glob is deliberate: Node 22+
+# treats a bare directory argument as a module path and fails with
+# MODULE_NOT_FOUND, while Node 20 accepts it.
+node --test \
+    --test-reporter=spec --test-reporter-destination=stdout \
+    --test-reporter=junit --test-reporter-destination="$EVIDENCE/junit/cli.xml" \
+    packages/cli/test/*.test.js 2>&1 | tee "$EVIDENCE/logs/cli.log"
+
 cb::section "Backend suite (mode: $CB_VERIFY_BACKEND)"
 if [ "$CB_VERIFY_BACKEND" = "off" ]; then
     # Explicit, never silent: the operator asked for this, and the run has to
