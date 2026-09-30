@@ -1072,14 +1072,87 @@ def sampled_time(iso):
     return moment.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+# Below this, a stall or throttle rate is background noise, not something to act on.
+ATTENTION_PERCENT = 1.0
+
+
 def pressure_summary(resource, text):
     """`some avg10=1.25 avg60=...` -> `memory pressure: tasks stalled 1.3% of the last 10s`."""
     for line in text.splitlines():
         match = re.search(r"avg10=([\d.]+)", line)
-        if match and float(match[1]) > 0:
+        if match and float(match[1]) >= ATTENTION_PERCENT:
             who = "all tasks" if line.startswith("full") else "tasks"
             return f"{resource} pressure: {who} stalled {float(match[1]):.1f}% of the last 10s"
     return None
+
+
+def cpu_count(cpuset):
+    """Number of CPUs in a cpuset list such as `0-3,6`, or None if unparseable."""
+    total = 0
+    for part in str(cpuset).split(","):
+        bounds = part.strip().split("-")
+        try:
+            low, high = int(bounds[0]), int(bounds[-1])
+        except ValueError:
+            return None
+        total += high - low + 1
+    return total or None
+
+
+def limit_parts(limit, cpus):
+    """The constraints in one limit record, as short phrases.
+
+    Drops what does not constrain anything: an unlimited memory ceiling and a
+    CPU set that already spans every visible CPU."""
+    memory, cpu = [], []
+    maximum = limit.get("memory.max", limit.get("MemoryMax", limit.get("Memory")))
+    value = integer(maximum)
+    unlimited = maximum in (None, "max", "infinity") or (
+        "Memory" in limit and value == 0
+    )
+    if not unlimited and value is not None:
+        memory.append(pretty(value).replace(".0 ", " "))
+    high = integer(limit.get("memory.high", limit.get("MemoryHigh")))
+    if high is not None:
+        memory.append(f"high {pretty(high).replace('.0 ', ' ')}")
+    quota = limit.get("cpu.max", "").split()
+    cores = None
+    if len(quota) == 2 and integer(quota[0]) is not None and integer(quota[1]):
+        cores = int(quota[0]) / int(quota[1])
+    elif limit.get("NanoCpus"):
+        cores = limit["NanoCpus"] / 1e9
+    elif (limit.get("CpuQuota") or 0) > 0 and limit.get("CpuPeriod"):
+        cores = limit["CpuQuota"] / limit["CpuPeriod"]
+    if cores is not None:
+        cpu.append(f"{cores:g} CPU")
+    elif limit.get("CPUQuotaPerSecUSec") not in (None, "infinity"):
+        cpu.append(f"{limit['CPUQuotaPerSecUSec']}/s CPU time")
+    cpuset = limit.get("cpuset.cpus.effective", limit.get("CpusetCpus"))
+    if cpuset and not (cpus and cpu_count(cpuset) == cpus):
+        cpu.append(f"CPUs {cpuset}")
+    return memory, cpu
+
+
+def own_limit(row, cpus):
+    """A component's own caps as `512 MiB, 0.5 CPU`; `-` when it has none."""
+    memory, cpu = [], []
+    for limit in row.get("limits", []):
+        if limit.get("shared_ancestor"):
+            continue
+        m, c = limit_parts(limit, cpus)
+        memory += [x for x in m if x not in memory]
+        cpu += [x for x in c if x not in cpu]
+    return ", ".join(memory + cpu) or "-"
+
+
+# Metrics a reader recognises, grouped the way USAGE reports them.
+MEASURED = (
+    ("CPU", ("cpu_cores",)),
+    ("Memory", ("memory_bytes",)),
+    ("Swap", ("swap_bytes",)),
+    ("Disk I/O", ("read_bytes_per_second", "write_bytes_per_second")),
+    ("Network", ("rx_bytes_per_second", "tx_bytes_per_second")),
+)
 
 
 def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
@@ -1087,7 +1160,8 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
         fancy = stdout_is_unicode()
     total = data["totals"]
     host = data["measurement_host"]
-    wide = width >= 100
+    cpus = host.get("cpus")
+    wide = width >= 110
 
     def amount(name, rate=False):
         m = total[name]
@@ -1095,23 +1169,20 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
         return text + ("/s" if rate and m["value"] is not None else "")
 
     def partial(*names):
-        # Name the gap once per line, after the numbers, not inside a unit.
-        gaps = [
-            total[n]
-            for n in names
-            if total[n]["value"] is not None and not total[n].get("complete", True)
-        ]
-        if not gaps:
-            return ""
-        g = gaps[0]
-        return f"  (partial: {g['measured_components']} of {g['expected_components']} components measured)"
+        # Name the gap once per line, after the numbers, never inside a unit.
+        for n in names:
+            m = total[n]
+            if m["value"] is not None and not m.get("complete", True):
+                return f"  ({m['measured_components']} of {m['expected_components']} measured)"
+        return ""
 
+    scope = host.get("scope", "collection failed")
     lines = [
         f"Circuit Breaker resources - {data['mode']}"
         + (f" on {host['name']}" if host.get("name") else " (host unavailable)"),
         (
-            f"Sampled {sampled_time(data['sampled_at'])} over {data['interval_seconds']:.1f}s"
-            f"  ({host.get('scope', 'collection failed')})"
+            f"Sampled {sampled_time(data['sampled_at'])} over "
+            f"{data['interval_seconds']:.1f}s - {scope}"
         ),
         "",
         "USAGE",
@@ -1119,7 +1190,6 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
 
     cpu_share = total["visible_cpu_percent"]["value"]
     memory_share = total["visible_memory_percent"]["value"]
-    cpus = host.get("cpus")
     cores = amount("cpu_cores") + (
         " cores" if total["cpu_cores"]["value"] is not None else ""
     )
@@ -1138,7 +1208,6 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
     lines.append(memory_line + partial("memory_bytes"))
     lines.append(
         f"           cache {amount('cache_bytes')}, swap {amount('swap_bytes')}"
-        + partial("cache_bytes", "swap_bytes")
     )
     lines.append(
         f"  Disk     read {amount('read_bytes_per_second', True)}, "
@@ -1155,9 +1224,15 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
             "  Shares are of visible capacity; limits above this install may be lower."
         )
 
-    rows = sorted(
-        data["components"], key=lambda r: (-(r["metrics"][sort]["value"] or 0), r["id"])
-    )
+    def ordering(r):
+        # Everything idle reads as 0.00 cores; memory then name keeps it stable.
+        return (
+            -round(r["metrics"][sort]["value"] or 0, 2 if sort == "cpu_cores" else 0),
+            -(r["metrics"]["memory_bytes"]["value"] or 0),
+            component_label(r),
+        )
+
+    rows = sorted(data["components"], key=ordering)
     hidden = []
     shown = []
     for row in rows:
@@ -1171,6 +1246,7 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
             "owned": True,
             "state": "group",
             "metrics": {},
+            "limits": [],
         }
         for name in (
             "cpu_cores",
@@ -1190,17 +1266,19 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
     ]
     if shown:
         name_width = min(
-            28, max(len("Component"), *(len(component_label(r)) for r in shown))
+            32, max(len("Component"), *(len(component_label(r)) for r in shown))
         )
-        header = f"  {'Component':<{name_width}}  {'CPU':>6}  {'Memory':>10}"
+        caps = [own_limit(r, cpus) for r in shown]
+        cap_width = max(len("Limit"), *(len(c) for c in caps))
+        header = f"  {'Component':<{name_width}}  {'CPU':>5}  {'Memory':>10}"
         if wide:
             header += f"  {'Read/s':>10}  {'Write/s':>10}"
-        lines.append(header + "  State")
-        for row in shown:
+        lines.append(header + f"  {'Limit':<{cap_width}}  State")
+        for row, cap in zip(shown, caps):
             m = row["metrics"]
             line = (
                 f"  {component_label(row)[:name_width]:<{name_width}}"
-                f"  {pretty(m['cpu_cores']['value'], 'cores'):>6}"
+                f"  {pretty(m['cpu_cores']['value'], 'cores'):>5}"
                 f"  {pretty(m['memory_bytes']['value']):>10}"
             )
             if wide:
@@ -1208,35 +1286,37 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
                     f"  {pretty(m['read_bytes_per_second']['value']):>10}"
                     f"  {pretty(m['write_bytes_per_second']['value']):>10}"
                 )
-            lines.append(line + f"  {row['state']}")
+            lines.append(line + f"  {cap:<{cap_width}}  {row['state']}")
     else:
         lines.append("  No components measured.")
 
-    limits, attention = [], []
+    # Only ceilings shared by several components get their own section; a
+    # component's own caps are its Limit column above.
+    shared, attention = [], []
     scopes = set()
     for row in rows:
         for limit in row["limits"]:
             scope = limit["scope"]
-            if scope in scopes:
+            if not limit.get("shared_ancestor") or scope in scopes:
                 continue
             scopes.add(scope)
-            values = limit_summary(limit)
-            if not values:
+            memory, cpu = limit_parts(limit, cpus)
+            if not memory and not cpu:
                 continue
-            # JSON keeps the exact cgroup path; a person needs the service or
-            # slice the limit belongs to, not the mount prefix.
-            label = short_name(Path(scope).name if scope.startswith("/") else scope)
-            notes = []
-            if scope.startswith("/") and "slice" in label:
-                notes.append("applies to this slice's members only")
-            if limit["shared_ancestor"]:
-                notes.append("ancestor ceiling")
-            limits.append(
-                (label, values + (f"  ({'; '.join(notes)})" if notes else ""))
-            )
+            current = integer(limit.get("memory.current"))
+            phrases = []
+            if memory:
+                phrases.append(
+                    "RAM "
+                    + (f"{pretty(current)} of " if current is not None else "")
+                    + ", ".join(memory)
+                )
+            phrases += cpu
+            label = Path(scope).name if scope.startswith("/") else scope
+            shared.append((label, ", ".join(phrases) + "  (whole slice)"))
         name = component_label(row)
         throttle = row["metrics"]["throttled_period_percent"]["value"]
-        if throttle:
+        if throttle and throttle >= ATTENTION_PERCENT:
             attention.append((name, f"CPU throttled in {throttle:.1f}% of periods"))
         oom = row["counters"]["oom_kills"]["value"]
         if oom:
@@ -1246,25 +1326,43 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
             if summary:
                 attention.append((name, summary))
 
-    for title, entries in (("LIMITS", limits), ("ATTENTION", attention)):
+    for title, entries in (("SHARED LIMITS", shared), ("ATTENTION", attention)):
         if entries:
-            label_width = min(28, max(len(label) for label, _ in entries))
+            label_width = min(32, max(len(label) for label, _ in entries))
             lines += ["", title]
             lines += [f"  {label:<{label_width}}  {text}" for label, text in entries]
     if data["warnings"]:
         lines += ["", "NOTICES"]
         lines += [f"  - {w}" for w in data["warnings"]]
-    missing = sorted(
-        {
-            m["reason"]
-            for r in rows
-            for m in r["metrics"].values()
-            if m["value"] is None and m["reason"]
-        }
-    )
-    if missing:
-        lines += ["", "NOT MEASURED"]
-        lines += [f"  - {reason}" for reason in missing]
+
+    gaps = []
+    # Count over the components the totals cover, so "3 of 16" agrees with USAGE.
+    counted = [r for r in rows if r.get("included_in_totals", True)]
+    for label, names in MEASURED:
+        missing = [
+            r for r in counted if any(r["metrics"][n]["value"] is None for n in names)
+        ]
+        if not missing:
+            continue
+        reasons = sorted(
+            {
+                r["metrics"][n]["reason"]
+                for r in missing
+                for n in names
+                if r["metrics"][n]["value"] is None and r["metrics"][n]["reason"]
+            }
+        )
+        who = (
+            ", ".join(component_label(r) for r in missing)
+            if len(missing) <= 3
+            else f"{len(missing)} of {len(counted)} components"
+        )
+        gaps.append(
+            f"  {label + ':':<10}{who}"
+            + (f"  ({'; '.join(reasons)})" if reasons else "")
+        )
+    if gaps:
+        lines += ["", "NOT MEASURED"] + gaps
     return "\n".join(line.rstrip() for line in lines)
 
 
@@ -1279,7 +1377,14 @@ THEME = {
     "warning": ((0xD7, 0x99, 0x21), 172),
     "muted": ((0x92, 0x83, 0x74), 245),
 }
-SECTIONS = ("USAGE", "COMPONENTS", "LIMITS", "ATTENTION", "NOTICES", "NOT MEASURED")
+SECTIONS = (
+    "USAGE",
+    "COMPONENTS",
+    "SHARED LIMITS",
+    "ATTENTION",
+    "NOTICES",
+    "NOT MEASURED",
+)
 
 
 def color_mode(stream):
@@ -1370,8 +1475,14 @@ def colorize(text, mode):
                 line,
             )
             line = re.sub(
-                r"  (failed|exited|dead|inactive|restarting)$",
+                r"  (failed|dead|restarting)$",
                 lambda m: "  " + paint(m[1], "danger", mode),
+                line,
+            )
+            # A oneshot unit (healthcheck) is normally inactive between runs.
+            line = re.sub(
+                r"  (inactive|exited)$",
+                lambda m: "  " + paint(m[1], "muted", mode),
                 line,
             )
         out.append(line)

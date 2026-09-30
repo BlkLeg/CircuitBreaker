@@ -402,7 +402,7 @@ def test_human_output_survives_collection_failure():
     assert "n/a" in resources.render(data)
 
 
-def _sample_report(*, rx_measured=True):
+def _sample_report(*, rx_measured=True, limits=None, pressure=None):
     rows = []
     for name, cores, memory in (
         ("circuitbreaker-api.service", 0.4, 600 << 20),
@@ -427,6 +427,8 @@ def _sample_report(*, rx_measured=True):
             None, "percent", "cgroup"
         )
         row["counters"]["oom_kills"] = resources.metric(0, "events", "cgroup")
+        row["limits"] = (limits or {}).get(name, [])
+        row["pressure"] = (pressure or {}).get(name, {})
         rows.append(row)
     host = {"name": "box", "scope": "systemd", "cpus": 4, "memory_bytes": 8 << 30}
     data = resources.report(rows, host, ["docker-proxy not running"], 2)
@@ -441,17 +443,80 @@ def test_human_output_names_a_partial_total_once_after_its_units():
     )
     # It used to read "4.0 KiB (observed subtotal)/s": the note split the unit.
     assert "(observed subtotal)" not in text
-    assert network.rstrip().endswith("(partial: 1 of 2 components measured)")
+    assert network.rstrip().endswith("(1 of 2 measured)")
     assert "4.0 KiB/s" in network
     assert "api" in text and "circuitbreaker-api.service" not in text
 
 
 def test_human_output_is_grouped_into_sections():
     text = resources.render(_sample_report(), width=100, fancy=False)
-    for heading in ("USAGE", "COMPONENTS  (sorted by CPU)", "NOTICES", "NOT MEASURED"):
+    for heading in ("USAGE", "COMPONENTS  (sorted by CPU)", "NOTICES"):
         assert heading in text.splitlines()
+    # Nothing is missing here, so there is nothing to list.
+    assert "NOT MEASURED" not in text
     assert "  - docker-proxy not running" in text
     assert all(line == line.rstrip() for line in text.splitlines())
+
+
+API = "circuitbreaker-api.service"
+POSTGRES = "circuitbreaker-postgres.service"
+
+
+def test_a_components_own_caps_are_its_limit_column():
+    own = {
+        "scope": f"/system.slice/{API}",
+        "shared_ancestor": False,
+        "memory.max": str(512 << 20),
+        "cpu.max": "50000 100000",
+        "cpuset.cpus.effective": "0-3",
+    }
+    text = resources.render(_sample_report(limits={API: [own]}), fancy=False)
+    api = next(line for line in text.splitlines() if line.strip().startswith("api "))
+    # A CPU set spanning every visible CPU constrains nothing, so it is not shown.
+    assert "512 MiB, 0.5 CPU" in api and "CPUs 0-3" not in api
+    postgres = next(
+        line for line in text.splitlines() if line.strip().startswith("postgres")
+    )
+    assert "  -  " in postgres
+    assert "SHARED LIMITS" not in text
+
+
+def test_only_real_shared_ceilings_get_their_own_section():
+    slice_cap = {
+        "scope": "/circuitbreaker.slice",
+        "shared_ancestor": True,
+        "memory.max": str(3 << 30),
+        "memory.current": str(800 << 20),
+    }
+    unconstrained = {
+        "scope": "/system.slice",
+        "shared_ancestor": True,
+        "memory.max": "max",
+        "cpuset.cpus.effective": "0-3",
+    }
+    text = resources.render(
+        _sample_report(limits={API: [slice_cap, unconstrained], POSTGRES: [slice_cap]}),
+        fancy=False,
+    )
+    section = text.split("SHARED LIMITS\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert section == ["  circuitbreaker.slice  RAM 800.0 MiB of 3 GiB  (whole slice)"]
+
+
+def test_attention_ignores_background_noise():
+    faint = {"cpu": "some avg10=0.04 avg60=0.01 avg300=0.00 total=10"}
+    real = {"memory": "some avg10=4.50 avg60=1.00 avg300=0.20 total=99"}
+    text = resources.render(
+        _sample_report(pressure={API: faint, POSTGRES: real}), fancy=False
+    )
+    assert "ATTENTION" in text
+    assert "postgres  memory pressure: tasks stalled 4.5% of the last 10s" in text
+    assert "cpu pressure" not in text
+
+
+def test_not_measured_says_what_and_for_whom():
+    text = resources.render(_sample_report(rx_measured=False), fancy=False)
+    gaps = text.split("NOT MEASURED\n", 1)[1].splitlines()
+    assert gaps == ["  Network:  postgres  (IP accounting disabled)"]
 
 
 def test_capacity_bars_fall_back_to_ascii():

@@ -49,11 +49,14 @@ Also clearer errors when adding a Proxmox cluster and a readable
 
 ### Changed
 
-- `cb resources` output is grouped into usage, components, limits, attention
-  and notices; CPU and memory show a capacity bar; totals that are missing
-  some components say so once at the end of the line; and services use one
-  short name throughout. In a terminal it uses the web app's colours; piped
-  output, `NO_COLOR` and `--json` are unchanged.
+- `cb resources` is readable. Output is grouped into usage, components, shared
+  limits, attention, notices and what was not measured; CPU and memory show a
+  capacity bar; each component's own RAM and CPU caps sit in its row instead of
+  a separate list, and CPU sets or unlimited ceilings that constrain nothing are
+  left out; totals missing some components say so once; low-level stalls below
+  1% no longer raise attention; and services use one short name throughout. In
+  a terminal it uses the web app's colours; piped output, `NO_COLOR` and
+  `--json` are unchanged.
 
 ### Security
 
