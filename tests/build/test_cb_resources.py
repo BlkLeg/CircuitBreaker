@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import pty
+import re
 import select
 import subprocess
 import sys
@@ -399,6 +400,102 @@ def test_human_output_survives_collection_failure():
     data["mode"] = "native"
     assert "runtime failed" in resources.render(data)
     assert "n/a" in resources.render(data)
+
+
+def _sample_report(*, rx_measured=True):
+    rows = []
+    for name, cores, memory in (
+        ("circuitbreaker-api.service", 0.4, 600 << 20),
+        ("circuitbreaker-postgres.service", 0.1, 800 << 20),
+    ):
+        row = resources.observation(name, "active", "cgroup")
+        row["boundary"] = f"/system.slice/{name}"
+        for key, value in (
+            ("memory_bytes", memory),
+            ("cache_bytes", 0),
+            ("swap_bytes", 0),
+            ("cpu_cores", cores),
+            ("read_bytes_per_second", 1024),
+            ("write_bytes_per_second", 2048),
+            ("rx_bytes_per_second", 4096 if rx_measured or "api" in name else None),
+            ("tx_bytes_per_second", 4096),
+        ):
+            row["metrics"][key] = resources.metric(
+                value, "bytes", "cgroup", "IP accounting disabled"
+            )
+        row["metrics"]["throttled_period_percent"] = resources.metric(
+            None, "percent", "cgroup"
+        )
+        row["counters"]["oom_kills"] = resources.metric(0, "events", "cgroup")
+        rows.append(row)
+    host = {"name": "box", "scope": "systemd", "cpus": 4, "memory_bytes": 8 << 30}
+    data = resources.report(rows, host, ["docker-proxy not running"], 2)
+    data["mode"] = "native"
+    return data
+
+
+def test_human_output_names_a_partial_total_once_after_its_units():
+    text = resources.render(_sample_report(rx_measured=False))
+    network = next(
+        line for line in text.splitlines() if line.strip().startswith("Network")
+    )
+    # It used to read "4.0 KiB (observed subtotal)/s": the note split the unit.
+    assert "(observed subtotal)" not in text
+    assert network.rstrip().endswith("(partial: 1 of 2 components measured)")
+    assert "4.0 KiB/s" in network
+    assert "api" in text and "circuitbreaker-api.service" not in text
+
+
+def test_human_output_is_grouped_into_sections():
+    text = resources.render(_sample_report(), width=100, fancy=False)
+    for heading in ("USAGE", "COMPONENTS  (sorted by CPU)", "NOTICES", "NOT MEASURED"):
+        assert heading in text.splitlines()
+    assert "  - docker-proxy not running" in text
+    assert all(line == line.rstrip() for line in text.splitlines())
+
+
+def test_capacity_bars_fall_back_to_ascii():
+    assert "█" not in resources.render(_sample_report(), fancy=False)
+    assert "[#" in resources.render(_sample_report(), fancy=False)
+    assert "█" in resources.render(_sample_report(), fancy=True)
+
+
+class _Stream:
+    def __init__(self, tty):
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+@pytest.mark.parametrize(
+    ("env", "tty", "expected"),
+    [
+        ({}, False, None),
+        ({"NO_COLOR": "1", "COLORTERM": "truecolor"}, True, None),
+        ({"TERM": "dumb"}, True, None),
+        ({"COLORTERM": "truecolor"}, True, "truecolor"),
+        ({"TERM": "xterm-256color"}, True, "256"),
+    ],
+)
+def test_colour_only_for_a_terminal_that_wants_it(monkeypatch, env, tty, expected):
+    for name in ("NO_COLOR", "COLORTERM", "TERM"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert resources.color_mode(_Stream(tty)) == expected
+
+
+def test_theme_colours_without_changing_the_text():
+    plain = resources.render(_sample_report(rx_measured=False), fancy=True)
+    assert "\033[" not in plain
+    for mode in ("truecolor", "256"):
+        themed = resources.colorize(plain, mode)
+        assert "\033[" in themed
+        assert re.sub(r"\033\[[\d;]*m", "", themed) == plain
+    # The app's primary colour (#fe8019) marks the section headings.
+    assert "\033[1;38;2;254;128;25mUSAGE" in resources.colorize(plain, "truecolor")
+    assert resources.colorize(plain, None) == plain
 
 
 def test_zero_docker_memory_limit_means_unlimited():

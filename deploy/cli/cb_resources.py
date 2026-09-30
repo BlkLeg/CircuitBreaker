@@ -994,18 +994,26 @@ def pretty(value, unit="bytes"):
         return "n/a"
     if unit == "cores":
         return f"{value:.2f}"
+    if value == 0:
+        return "0 B"
     for suffix in ("B", "KiB", "MiB", "GiB", "TiB"):
         if abs(value) < 1024 or suffix == "TiB":
             return f"{value:.1f} {suffix}"
         value /= 1024
 
 
-def component_label(row):
-    name = row.get("label") or row["id"].removesuffix(".service")
+def short_name(name):
+    """A unit or scope name as a person would say it: `circuitbreaker-api.service` -> `api`."""
+    name = name.removesuffix(".service")
     for prefix in ("circuitbreaker-", "circuit-breaker-"):
         name = name.removeprefix(prefix)
-    name = name.replace("worker@", "worker: ")
-    return name + (" [shared]" if not row["owned"] else "")
+    return name.replace("worker@", "worker: ")
+
+
+def component_label(row):
+    return short_name(row.get("label") or row["id"]) + (
+        " (shared)" if not row["owned"] else ""
+    )
 
 
 def limit_summary(limit):
@@ -1039,57 +1047,127 @@ def limit_summary(limit):
     return ", ".join(parts)
 
 
-def render(data, *, sort="cpu_cores", expanded=True, width=100):
-    total = data["totals"]
+BAR_WIDTH = 20
 
-    def display(name):
+
+def bar(percent, *, fancy):
+    """A fixed-width capacity bar; ASCII when the terminal cannot print block glyphs."""
+    if percent is None:
+        return ""
+    filled = round(min(max(percent, 0.0), 100.0) / 100 * BAR_WIDTH)
+    full, empty = ("█", "░") if fancy else ("#", "-")
+    return "[" + full * filled + empty * (BAR_WIDTH - filled) + "]"
+
+
+def stdout_is_unicode():
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower().replace("-", "")
+    return encoding in ("utf8", "utf16", "utf32")
+
+
+def sampled_time(iso):
+    try:
+        moment = dt.datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return str(iso)
+    return moment.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def pressure_summary(resource, text):
+    """`some avg10=1.25 avg60=...` -> `memory pressure: tasks stalled 1.3% of the last 10s`."""
+    for line in text.splitlines():
+        match = re.search(r"avg10=([\d.]+)", line)
+        if match and float(match[1]) > 0:
+            who = "all tasks" if line.startswith("full") else "tasks"
+            return f"{resource} pressure: {who} stalled {float(match[1]):.1f}% of the last 10s"
+    return None
+
+
+def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
+    if fancy is None:
+        fancy = stdout_is_unicode()
+    total = data["totals"]
+    host = data["measurement_host"]
+    wide = width >= 100
+
+    def amount(name, rate=False):
         m = total[name]
-        return pretty(m["value"], m["unit"]) + (
-            " (observed subtotal)" if not m.get("complete", True) else ""
+        text = pretty(m["value"], m["unit"])
+        return text + ("/s" if rate and m["value"] is not None else "")
+
+    def partial(*names):
+        # Name the gap once per line, after the numbers, not inside a unit.
+        gaps = [
+            total[n]
+            for n in names
+            if total[n]["value"] is not None and not total[n].get("complete", True)
+        ]
+        if not gaps:
+            return ""
+        g = gaps[0]
+        return f"  (partial: {g['measured_components']} of {g['expected_components']} components measured)"
+
+    lines = [
+        f"Circuit Breaker resources - {data['mode']}"
+        + (f" on {host['name']}" if host.get("name") else " (host unavailable)"),
+        (
+            f"Sampled {sampled_time(data['sampled_at'])} over {data['interval_seconds']:.1f}s"
+            f"  ({host.get('scope', 'collection failed')})"
+        ),
+        "",
+        "USAGE",
+    ]
+
+    cpu_share = total["visible_cpu_percent"]["value"]
+    memory_share = total["visible_memory_percent"]["value"]
+    cpus = host.get("cpus")
+    cores = amount("cpu_cores") + (
+        " cores" if total["cpu_cores"]["value"] is not None else ""
+    )
+    cpu_line = f"  CPU      {cores:<16}"
+    if cpu_share is not None:
+        cpu_line += f"{bar(cpu_share, fancy=fancy)} {cpu_share:5.1f}% of {cpus} CPUs"
+    else:
+        cpu_line += f"{cpus or '?'} CPUs visible"
+    lines.append(cpu_line + partial("cpu_cores"))
+    memory_line = f"  Memory   {amount('memory_bytes'):<16}"
+    if memory_share is not None:
+        memory_line += (
+            f"{bar(memory_share, fancy=fancy)} {memory_share:5.1f}% of "
+            f"{pretty(host.get('memory_bytes'))}"
+        )
+    lines.append(memory_line + partial("memory_bytes"))
+    lines.append(
+        f"           cache {amount('cache_bytes')}, swap {amount('swap_bytes')}"
+        + partial("cache_bytes", "swap_bytes")
+    )
+    lines.append(
+        f"  Disk     read {amount('read_bytes_per_second', True)}, "
+        f"write {amount('write_bytes_per_second', True)}"
+        + partial("read_bytes_per_second", "write_bytes_per_second")
+    )
+    lines.append(
+        f"  Network  in {amount('rx_bytes_per_second', True)}, "
+        f"out {amount('tx_bytes_per_second', True)}"
+        + partial("rx_bytes_per_second", "tx_bytes_per_second")
+    )
+    if cpu_share is not None or memory_share is not None:
+        lines.append(
+            "  Shares are of visible capacity; limits above this install may be lower."
         )
 
-    host = data["measurement_host"]
-    lines = [
-        f"Circuit Breaker resources | {data['mode']} | {data['sampled_at']}",
-        f"Sample {data['interval_seconds']:.1f}s | {host.get('name', 'unavailable')} | {host.get('scope', 'collection failed')}",
-        f"CPU     {display('cpu_cores')} cores | {host.get('cpus') or '?'} visible CPUs",
-        f"Memory  {display('memory_bytes')} | cache {display('cache_bytes')} | swap {display('swap_bytes')}",
-        f"Disk    {display('read_bytes_per_second')}/s read | {display('write_bytes_per_second')}/s write",
-        f"Network {display('rx_bytes_per_second')}/s receive | {display('tx_bytes_per_second')}/s transmit",
-        "",
-        f"{'Component':30} {'Cores':>7} {'Memory':>11}  State"
-        + (f" {'Read/s':>11} {'Write/s':>11}" if width >= 100 else ""),
-    ]
-    for metric_name, label in (
-        ("visible_cpu_percent", "CPU"),
-        ("visible_memory_percent", "Memory"),
-    ):
-        value = total[metric_name]["value"]
-        if value is not None:
-            lines.insert(
-                2,
-                f"{label} share: {value:.1f}% of visible capacity (ancestor limits may be lower)",
-            )
     rows = sorted(
         data["components"], key=lambda r: (-(r["metrics"][sort]["value"] or 0), r["id"])
     )
     hidden = []
-
-    def component_line(row):
-        name = component_label(row)
-        line = f"{name[:30]:30} {pretty(row['metrics']['cpu_cores']['value'], 'cores'):>7} {pretty(row['metrics']['memory_bytes']['value']):>11}  {row['state'][:10]:10}"
-        if width >= 100:
-            line += f" {pretty(row['metrics']['read_bytes_per_second']['value']):>11} {pretty(row['metrics']['write_bytes_per_second']['value']):>11}"
-        return line
-
+    shown = []
     for row in rows:
         if not expanded and "worker@" in row["id"]:
             hidden.append(row)
-            continue
-        lines.append(component_line(row))
+        else:
+            shown.append(row)
     if hidden:
         group = {
-            "id": f"Workers ({len(hidden)}) [e expand]",
+            "id": f"workers ({len(hidden)}), e to expand",
             "owned": True,
             "state": "group",
             "metrics": {},
@@ -1104,36 +1182,78 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100):
             group["metrics"][name] = {
                 "value": sum(values) if all(v is not None for v in values) else None
             }
-        lines.append(component_line(group))
+        shown.append(group)
+
+    lines += [
+        "",
+        f"COMPONENTS  (sorted by {'CPU' if sort == 'cpu_cores' else 'memory'})",
+    ]
+    if shown:
+        name_width = min(
+            28, max(len("Component"), *(len(component_label(r)) for r in shown))
+        )
+        header = f"  {'Component':<{name_width}}  {'CPU':>6}  {'Memory':>10}"
+        if wide:
+            header += f"  {'Read/s':>10}  {'Write/s':>10}"
+        lines.append(header + "  State")
+        for row in shown:
+            m = row["metrics"]
+            line = (
+                f"  {component_label(row)[:name_width]:<{name_width}}"
+                f"  {pretty(m['cpu_cores']['value'], 'cores'):>6}"
+                f"  {pretty(m['memory_bytes']['value']):>10}"
+            )
+            if wide:
+                line += (
+                    f"  {pretty(m['read_bytes_per_second']['value']):>10}"
+                    f"  {pretty(m['write_bytes_per_second']['value']):>10}"
+                )
+            lines.append(line + f"  {row['state']}")
+    else:
+        lines.append("  No components measured.")
+
+    limits, attention = [], []
     scopes = set()
     for row in rows:
         for limit in row["limits"]:
             scope = limit["scope"]
-            if scope not in scopes:
-                scopes.add(scope)
-                values = limit_summary(limit)
-                if values:
-                    # JSON retains the exact cgroup path; a human needs the
-                    # service/slice whose limit this is, not the mount prefix.
-                    label = Path(scope).name if scope.startswith("/") else scope
-                    if scope.startswith("/") and "slice" in label:
-                        label += " (includes only members of this slice)"
-                    lines.append(
-                        f"Limit {label}: {values}"
-                        + (" (ancestor ceiling)" if limit["shared_ancestor"] else "")
-                    )
+            if scope in scopes:
+                continue
+            scopes.add(scope)
+            values = limit_summary(limit)
+            if not values:
+                continue
+            # JSON keeps the exact cgroup path; a person needs the service or
+            # slice the limit belongs to, not the mount prefix.
+            label = short_name(Path(scope).name if scope.startswith("/") else scope)
+            notes = []
+            if scope.startswith("/") and "slice" in label:
+                notes.append("applies to this slice's members only")
+            if limit["shared_ancestor"]:
+                notes.append("ancestor ceiling")
+            limits.append(
+                (label, values + (f"  ({'; '.join(notes)})" if notes else ""))
+            )
+        name = component_label(row)
         throttle = row["metrics"]["throttled_period_percent"]["value"]
         if throttle:
-            lines.append(f"CPU throttling {row['id']}: {throttle:.1f}% of periods")
+            attention.append((name, f"CPU throttled in {throttle:.1f}% of periods"))
         oom = row["counters"]["oom_kills"]["value"]
         if oom:
-            lines.append(f"OOM kills {row['id']}: {oom} since scope creation")
-        for resource, pressure in row["pressure"].items():
-            for line in pressure.splitlines():
-                match = re.search(r"avg10=([\d.]+)", line)
-                if match and float(match[1]) > 0:
-                    lines.append(f"Pressure {component_label(row)} {resource}: {line}")
-    lines.extend("Notice: " + w for w in data["warnings"])
+            attention.append((name, f"{oom} out-of-memory kill(s) since it started"))
+        for resource, text in row["pressure"].items():
+            summary = pressure_summary(resource, text)
+            if summary:
+                attention.append((name, summary))
+
+    for title, entries in (("LIMITS", limits), ("ATTENTION", attention)):
+        if entries:
+            label_width = min(28, max(len(label) for label, _ in entries))
+            lines += ["", title]
+            lines += [f"  {label:<{label_width}}  {text}" for label, text in entries]
+    if data["warnings"]:
+        lines += ["", "NOTICES"]
+        lines += [f"  - {w}" for w in data["warnings"]]
     missing = sorted(
         {
             m["reason"]
@@ -1143,8 +1263,119 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100):
         }
     )
     if missing:
-        lines.append("Unavailable: " + "; ".join(missing))
-    return "\n".join(lines)
+        lines += ["", "NOT MEASURED"]
+        lines += [f"  - {reason}" for reason in missing]
+    return "\n".join(line.rstrip() for line in lines)
+
+
+# The web app's default (Gruvbox) palette, so the terminal view reads as the
+# same product: --color-primary, --color-danger, --color-success and
+# --color-warning from apps/frontend/src/styles/main.css, plus Gruvbox grey for
+# de-emphasis. Each role carries a 24-bit colour and its nearest xterm-256 slot.
+THEME = {
+    "primary": ((0xFE, 0x80, 0x19), 208),
+    "danger": ((0xFB, 0x49, 0x34), 203),
+    "success": ((0xB8, 0xBB, 0x26), 142),
+    "warning": ((0xD7, 0x99, 0x21), 172),
+    "muted": ((0x92, 0x83, 0x74), 245),
+}
+SECTIONS = ("USAGE", "COMPONENTS", "LIMITS", "ATTENTION", "NOTICES", "NOT MEASURED")
+
+
+def color_mode(stream):
+    """None for plain text, else "truecolor" or "256". Honours NO_COLOR and TERM=dumb."""
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return None
+    if not hasattr(stream, "isatty") or not stream.isatty():
+        return None
+    if os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit"):
+        return "truecolor"
+    return "256"
+
+
+def paint(text, role, mode, *, bold=False):
+    if not mode or not text:
+        return text
+    (r, g, b), slot = THEME[role]
+    color = f"38;2;{r};{g};{b}" if mode == "truecolor" else f"38;5;{slot}"
+    return f"\033[{'1;' if bold else ''}{color}m{text}\033[0m"
+
+
+def colorize(text, mode):
+    """Theme rendered output. Runs after layout, wrapping and paging, so escape
+    codes never count toward a line's width; plain output is unchanged."""
+    if not mode:
+        return text
+    out, section = [], None
+    for index, line in enumerate(text.split("\n")):
+        stripped = line.strip()
+        head = stripped.split("  (")[0]
+        if head in SECTIONS:
+            section = head
+            rest = stripped[len(head) :]
+            out.append(
+                paint(head, "primary", mode, bold=True) + paint(rest, "muted", mode)
+            )
+            continue
+        if index == 0 and line.startswith("Circuit Breaker"):
+            out.append(
+                paint("Circuit Breaker", "primary", mode, bold=True)
+                + line[len("Circuit Breaker") :]
+            )
+            continue
+        if index == 1 or stripped.startswith("Shares are of visible"):
+            out.append(paint(line, "muted", mode))
+            continue
+        if section == "COMPONENTS" and stripped.startswith("Component "):
+            out.append(paint(line, "muted", mode))
+            continue
+        if section == "ATTENTION" and stripped:
+            out.append(paint(line, "danger", mode))
+            continue
+        if section == "NOTICES" and stripped:
+            out.append(paint(line, "warning", mode))
+            continue
+        if section == "NOT MEASURED" and stripped:
+            out.append(paint(line, "muted", mode))
+            continue
+        line = re.sub(
+            r"\[([█#]*)([░-]*)\]( +)([\d.]+)%",
+            lambda m: (
+                paint("[", "muted", mode)
+                + paint(
+                    m[1],
+                    "danger"
+                    if float(m[4]) >= 90
+                    else "warning"
+                    if float(m[4]) >= 75
+                    else "primary",
+                    mode,
+                )
+                + paint(m[2], "muted", mode)
+                + paint("]", "muted", mode)
+                + m[3]
+                + m[4]
+                + "%"
+            ),
+            line,
+        )
+        line = re.sub(
+            r"\(partial: [^)]*\)", lambda m: paint(m[0], "warning", mode), line
+        )
+        line = re.sub(r"\bn/a\b", lambda m: paint(m[0], "muted", mode), line)
+        if section == "COMPONENTS":
+            line = re.sub(
+                r"  (active|running)$",
+                lambda m: "  " + paint(m[1], "success", mode),
+                line,
+            )
+            line = re.sub(
+                r"  (failed|exited|dead|inactive|restarting)$",
+                lambda m: "  " + paint(m[1], "danger", mode),
+                line,
+            )
+        out.append(line)
+    return "\n".join(out)
 
 
 @contextlib.contextmanager
@@ -1270,7 +1501,7 @@ def main(argv=None):
                     text = "\n".join(lines[scroll : scroll + page])
                     text += "\n[q] quit [c/m] sort [e] workers [j/k] scroll"
                     sys.stdout.write("\033[H\033[2J")
-                print(text, flush=True)
+                print(colorize(text, color_mode(sys.stdout)), flush=True)
             if not args.watch:
                 return 0
             previous, last = current, now
