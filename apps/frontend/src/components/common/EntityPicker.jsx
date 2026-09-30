@@ -80,7 +80,7 @@ export default function EntityPicker({
   return (
     <Drawer isOpen={isOpen} onClose={onClose} title={title} width="440px">
       <div className="tw-flex tw-flex-col tw-gap-3">
-        <label className="tw-text-xs tw-text-cb-text-muted" htmlFor="entity-picker-search">
+        <label className="tw-text-xs tw-text-cb-muted" htmlFor="entity-picker-search">
           Search every page
         </label>
         <input
@@ -93,7 +93,7 @@ export default function EntityPicker({
           autoFocus
         />
         {selectedLabels.length > 0 && (
-          <div className="tw-text-xs tw-text-cb-text-muted">
+          <div className="tw-text-xs tw-text-cb-muted">
             Selected:{' '}
             {selectedLabels.map((opt) => (
               <span key={opt.ref?.key || opt.label} className="tw-mr-2">
@@ -103,14 +103,14 @@ export default function EntityPicker({
             ))}
           </div>
         )}
-        {loading && <p className="tw-text-sm tw-text-cb-text-muted">Searching…</p>}
+        {loading && <p className="tw-text-sm tw-text-cb-muted">Searching…</p>}
         {error && (
           <p className="tw-text-sm tw-text-cb-danger" role="alert">
             {error}
           </p>
         )}
         {!loading && !error && items.length === 0 && (
-          <p className="tw-text-sm tw-text-cb-text-muted">No matching assets.</p>
+          <p className="tw-text-sm tw-text-cb-muted">No matching assets.</p>
         )}
         <ul className="tw-list-none tw-m-0 tw-p-0 tw-flex tw-flex-col">
           {items.map((opt) => (
@@ -126,7 +126,7 @@ export default function EntityPicker({
               >
                 <strong className="tw-font-medium">{opt.label}</strong>
                 {opt.description && (
-                  <span className="tw-block tw-text-xs tw-text-cb-text-muted tw-mt-1">
+                  <span className="tw-block tw-text-xs tw-text-cb-muted tw-mt-1">
                     {opt.description}
                   </span>
                 )}
@@ -135,11 +135,11 @@ export default function EntityPicker({
           ))}
         </ul>
         {hasMore && (
-          <p className="tw-text-xs tw-text-cb-text-muted">
+          <p className="tw-text-xs tw-text-cb-muted">
             More matches exist — refine the search to narrow results.
           </p>
         )}
-        <p className="tw-text-xs tw-text-cb-text-muted">
+        <p className="tw-text-xs tw-text-cb-muted">
           Results are independent of the current table page and filters.
         </p>
       </div>

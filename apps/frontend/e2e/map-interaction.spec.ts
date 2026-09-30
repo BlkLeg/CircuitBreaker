@@ -491,3 +491,46 @@ test.describe('topology map node panels', () => {
     await expect(menu.getByRole('button').first()).toBeVisible();
   });
 });
+
+test.describe('topology map create-node dialog', () => {
+  test('opens centred in the viewport, above the app chrome', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    const pane = page.locator('.react-flow__pane');
+    const paneBox = (await pane.boundingBox())!;
+    await pane.click({
+      button: 'right',
+      position: { x: paneBox.width - 40, y: paneBox.height / 2 },
+    });
+    const dialog = page.getByRole('dialog', { name: 'Create New Node' });
+    await expect(dialog).toBeVisible();
+    await page.waitForTimeout(400);
+
+    // Unstyled (Tailwind never compiled src/features/) it fell into page flow
+    // below the map and needed a scroll; rendered inside the map it sat under
+    // the top bar and the dock.
+    const box = (await dialog.boundingBox())!;
+    const viewport = page.viewportSize()!;
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+
+    const topmostIsDialog = (x: number, y: number) =>
+      page.evaluate(
+        ([px, py]) => !!document.elementFromPoint(px, py)?.closest('[role="dialog"]'),
+        [x, y]
+      );
+    const centreX = box.x + box.width / 2;
+    expect(await topmostIsDialog(centreX, box.y + 12), 'top bar covers the dialog header').toBe(
+      true
+    );
+    expect(
+      await topmostIsDialog(centreX, box.y + box.height - 6),
+      'dock covers the bottom of the dialog'
+    ).toBe(true);
+  });
+});

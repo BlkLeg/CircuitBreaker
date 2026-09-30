@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import PropTypes from 'prop-types';
 import {
   X,
@@ -68,7 +69,10 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
     setSelectedIconSlug(null);
   };
 
-  return (
+  // Portalled to <body>, like BulkQuickCreateModal: rendered inside the map it
+  // sat under the app's top bar and dock (z-index 50 inside the map's stacking
+  // context) and inherited map-scoped button styles.
+  const dialog = (
     <AnimatePresence>
       {isOpen && (
         <>
@@ -78,7 +82,8 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="tw-fixed tw-inset-0 tw-bg-black/70 tw-backdrop-blur-sm tw-z-50 tw-flex tw-items-center tw-justify-center"
+            style={{ zIndex: 1200 }}
+            className="tw-fixed tw-inset-0 tw-bg-black/70 tw-backdrop-blur-sm tw-flex tw-items-center tw-justify-center tw-p-4"
           >
             {/* Modal */}
             <motion.div
@@ -102,7 +107,7 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                   type="button"
                   onClick={onClose}
                   aria-label="Close create node dialog"
-                  className="tw-w-7 tw-h-7 tw-rounded-full tw-border tw-border-cb-border tw-text-cb-text-muted tw-hover:tw-text-cb-text tw-hover:tw-bg-cb-bg tw-transition-colors tw-inline-flex tw-items-center tw-justify-center"
+                  className="tw-w-7 tw-h-7 tw-rounded-full tw-border tw-border-cb-border tw-bg-transparent tw-cursor-pointer tw-text-cb-muted hover:tw-text-cb-text hover:tw-bg-cb-bg tw-transition-colors tw-inline-flex tw-items-center tw-justify-center"
                 >
                   <X className="tw-w-4 tw-h-4" />
                 </button>
@@ -125,7 +130,7 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                         value={label}
                         onChange={(e) => setLabel(e.target.value)}
                         placeholder="e.g. OptiPlex 7080 SFF"
-                        className="tw-w-full tw-bg-cb-bg tw-border tw-border-cb-border tw-rounded-lg tw-px-4 tw-py-2.5 tw-text-cb-text tw-placeholder:text-cb-muted tw-focus:outline-none tw-focus:border-blue-500/50 tw-transition-colors tw-font-mono tw-text-sm"
+                        className="tw-w-full tw-bg-cb-bg tw-border tw-border-cb-border tw-rounded-lg tw-px-4 tw-py-2.5 tw-text-cb-text placeholder:tw-text-cb-muted focus:tw-outline-none focus:tw-border-cb-primary tw-transition-colors tw-font-mono tw-text-sm"
                         autoFocus
                       />
                     </div>
@@ -143,7 +148,7 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                         value={subLabel}
                         onChange={(e) => setSubLabel(e.target.value)}
                         placeholder="e.g. 10.10.10.4"
-                        className="tw-w-full tw-bg-cb-bg tw-border tw-border-cb-border tw-rounded-lg tw-px-4 tw-py-2.5 tw-text-cb-text tw-placeholder:text-cb-muted tw-focus:outline-none tw-focus:border-blue-500/50 tw-transition-colors tw-font-mono tw-text-sm"
+                        className="tw-w-full tw-bg-cb-bg tw-border tw-border-cb-border tw-rounded-lg tw-px-4 tw-py-2.5 tw-text-cb-text placeholder:tw-text-cb-muted focus:tw-outline-none focus:tw-border-cb-primary tw-transition-colors tw-font-mono tw-text-sm"
                       />
                     </div>
 
@@ -152,7 +157,7 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                         Selected Role
                       </div>
                       <div className="tw-flex tw-items-center tw-gap-3 tw-p-3 tw-rounded-lg tw-bg-cb-secondary tw-border tw-border-cb-border">
-                        <div className="tw-w-10 tw-h-10 tw-rounded-full tw-bg-blue-500/20 tw-flex tw-items-center tw-justify-center tw-text-cb-primary">
+                        <div className="tw-w-10 tw-h-10 tw-rounded-full tw-bg-cb-primary/15 tw-flex tw-items-center tw-justify-center tw-text-cb-primary">
                           <selectedRole.icon className="tw-w-5 tw-h-5" />
                         </div>
                         <div>
@@ -193,7 +198,7 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                       <button
                         type="submit"
                         disabled={!label}
-                        className="tw-w-full tw-bg-cb-primary tw-hover:bg-cb-primary-h tw-disabled:opacity-50 tw-disabled:cursor-not-allowed tw-text-cb-text tw-font-medium tw-py-2.5 tw-rounded-lg tw-transition-colors tw-shadow-lg tw-shadow-[var(--color-primary-hover)]/20"
+                        className="tw-w-full tw-bg-cb-primary hover:tw-bg-cb-primary-h disabled:tw-opacity-50 disabled:tw-cursor-not-allowed tw-text-cb-text tw-font-medium tw-py-2.5 tw-rounded-lg tw-transition-colors tw-shadow-lg tw-shadow-cb-primary-h/20"
                       >
                         Create Node
                       </button>
@@ -219,11 +224,11 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                           className={`tw-flex tw-items-center tw-gap-3 tw-px-4 tw-py-3 tw-rounded-lg tw-text-left tw-transition-all ${
                             selectedRole.id === role.id
                               ? 'tw-bg-cb-secondary tw-border tw-border-cb-primary tw-text-cb-text tw-shadow-sm'
-                              : 'tw-bg-cb-surface tw-border tw-border-cb-border tw-text-cb-text tw-hover:tw-bg-cb-secondary tw-hover:tw-border-cb-primary/60 tw-hover:tw-shadow-sm'
+                              : 'tw-bg-cb-surface tw-border tw-border-cb-border tw-text-cb-text hover:tw-bg-cb-secondary hover:tw-border-cb-primary/60 hover:tw-shadow-sm'
                           }`}
                         >
                           <role.icon
-                            className={`tw-w-4 tw-h-4 ${selectedRole.id === role.id ? 'tw-text-cb-primary' : 'tw-text-cb-text-muted'}`}
+                            className={`tw-w-4 tw-h-4 ${selectedRole.id === role.id ? 'tw-text-cb-primary' : 'tw-text-cb-muted'}`}
                           />
                           <span className="tw-text-sm tw-font-medium">{role.label}</span>
                         </button>
@@ -246,6 +251,7 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
       )}
     </AnimatePresence>
   );
+  return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body);
 }
 
 CreateNodeModal.propTypes = {

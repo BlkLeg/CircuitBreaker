@@ -223,7 +223,7 @@ function EntityTable({
   const pageSelected = displayData.length > 0 && displayData.every((row) => checkSelected(row.id));
 
   const renderPager = (limitId) => (
-    <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-py-1.5 tw-px-0 tw-text-sm tw-text-cb-text-muted">
+    <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-py-1.5 tw-px-0 tw-text-sm tw-text-cb-muted">
       {!serverMode && (
         <div className="tw-flex tw-items-center tw-gap-2">
           <label htmlFor={limitId} className="tw-sr-only">
@@ -287,7 +287,7 @@ function EntityTable({
           >
             Previous
           </button>
-          <span className="tw-text-cb-text-muted">
+          <span className="tw-text-cb-muted">
             Page {page} of {totalPages}
           </span>
           <button
