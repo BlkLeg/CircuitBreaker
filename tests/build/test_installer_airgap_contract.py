@@ -50,7 +50,7 @@ UNREACHABLE_IN_AIRGAP = {
         "stage_docker_deploy": (
             "--docker deployment; rejected in combination with --airgap"
         ),
-        "cb_verify_bundle_checksum": (
+        "cb_fetch_release_asset": (
             "only called on the download branch of stage0_download_bundle, and "
             "--airgap requires --local-bundle, which takes the other branch"
         ),

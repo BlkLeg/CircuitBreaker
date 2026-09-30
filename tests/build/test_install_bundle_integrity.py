@@ -19,7 +19,7 @@ verification fails closed: no SHA256SUMS asset, an unreachable one, one that
 does not list our tarball, or a hash that does not match must each stop the
 install. Only --skip-checksum may waive it, and it says so out loud.
 
-install.sh runs ``main`` at import time, so cb_verify_bundle_checksum is
+install.sh runs ``main`` at import time, so the functions under test are
 extracted and eval'd in a clean bash subshell rather than sourced -- the same
 approach test_install_release_selection.py uses for cb_pick_release.
 """
@@ -57,9 +57,9 @@ def _extract(name: str) -> str:
 
 def _checksum_asset_name() -> str:
     """The asset name install.sh selects out of the release JSON."""
-    source = _extract("cb_verify_bundle_checksum")
-    names = re.findall(r'select\(\.name=="([^"]+)"\)', source)
-    assert names, f"cb_verify_bundle_checksum selects no asset by name:\n{source}"
+    source = _extract("stage0_download_bundle")
+    names = re.findall(r'cb_fetch_release_asset "\$release_json" (SHA256SUMS)\b(?!\.)', source)
+    assert names, f"stage0_download_bundle fetches no SHA256SUMS asset:\n{source}"
     assert len(set(names)) == 1, f"expected one checksum asset name, got {names}"
     return names[0]
 
@@ -102,144 +102,13 @@ def test_no_per_asset_sha256_url_is_constructed_any_more():
 
 
 # --------------------------------------------------------------------------
-# Behaviour: cb_verify_bundle_checksum run for real in a bash sandbox.
+# Behaviour (fails closed, the --ignore-missing trap, the .asc line, the
+# --skip-checksum warning) moved to test_install_bundle_verification.py, which
+# runs cb_check_bundle row by row. Here: the wiring only.
 # --------------------------------------------------------------------------
 
-# curl is replaced by a shell function that copies a canned SHA256SUMS to
-# whatever -o names, or fails like a 404 when STUB_SUMS is unset. cb_fail is
-# the real contract -- it exits 1 -- so "install stopped" is observable as a
-# non-zero return code rather than as a matched string.
-HARNESS = """
-set -euo pipefail
-RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' RESET=''
-cb_step() { echo "STEP: $1"; }
-cb_ok()   { echo "OK: $1"; }
-cb_warn() { echo "WARN: $1"; }
-cb_fail() { echo "FAIL: $1"; echo "HINT: ${2:-}"; exit 1; }
-curl() {
-  local dest=""
-  while [[ $# -gt 0 ]]; do
-    if [[ "$1" == "-o" ]]; then dest="$2"; shift 2; else shift; fi
-  done
-  [[ -n "${STUB_SUMS:-}" ]] || return 22
-  cp "$STUB_SUMS" "$dest"
-}
-"""
 
-
-def _run(release_json: dict, tarball_name: str, *, sums: Path | None, skip: bool = False):
-    script = "\n".join(
-        [
-            HARNESS,
-            f"SKIP_CHECKSUM={'true' if skip else 'false'}",
-            "CB_VERSION=1.2.3",
-            _extract("cb_verify_bundle_checksum"),
-            f"cb_verify_bundle_checksum {json.dumps(json.dumps(release_json))} "
-            f"{json.dumps(tarball_name)}",
-        ]
-    )
-    env = dict(os.environ)
-    if sums is not None:
-        env["STUB_SUMS"] = str(sums)
-    return subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, env=env
-    )
-
-
-@pytest.fixture()
-def bundle(tmp_path):
-    """A tarball at /tmp/<unique name>, where stage0_download_bundle puts it.
-
-    The path is not a knob the installer exposes, so the fixture writes into
-    the real /tmp and cleans up; the name is randomised so concurrent runs
-    cannot collide.
-    """
-    name = f"circuit-breaker_1.2.3_linux_amd64.{uuid.uuid4().hex}.tar.gz"
-    path = Path("/tmp") / name
-    path.write_bytes(b"not really a tarball, but it hashes")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    try:
-        yield name, digest, tmp_path
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def release_with_sums(url: str = "https://example.invalid/SHA256SUMS") -> dict:
-    return {
-        "tag_name": "v1.2.3",
-        "assets": [
-            {"name": "circuit-breaker_1.2.3_linux_amd64.tar.gz", "browser_download_url": "x"},
-            {"name": "SHA256SUMS", "browser_download_url": url},
-        ],
-    }
-
-
-def test_a_matching_checksum_verifies(bundle):
-    name, digest, tmp_path = bundle
-    sums = tmp_path / "SHA256SUMS"
-    # release.yml runs `find . -maxdepth 1` from dist/release/, so every entry
-    # is written in ./<name> form. The installer must read that form.
-    sums.write_text(f"{digest}  ./{name}\n{'0' * 64}  ./install.sh\n")
-    result = _run(release_with_sums(), name, sums=sums)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "OK: SHA256 checksum verified" in result.stdout
-
-
-def test_a_tampered_bundle_stops_the_install(bundle):
-    name, _digest, tmp_path = bundle
-    sums = tmp_path / "SHA256SUMS"
-    sums.write_text(f"{'a' * 64}  ./{name}\n")
-    result = _run(release_with_sums(), name, sums=sums)
-    assert result.returncode == 1, result.stdout + result.stderr
-    assert "SHA256 mismatch" in result.stdout
-
-
-def test_a_sha256sums_that_omits_our_tarball_stops_the_install(bundle):
-    """The `--ignore-missing` trap, pinned.
-
-    `sha256sum --ignore-missing -c` exits 0 when *none* of the listed files are
-    present, so verifying the whole file wholesale would report success for a
-    SHA256SUMS that never mentions the bundle at all -- an attacker-supplied
-    tarball plus an authentic checksum file for some other release passes.
-    """
-    name, _digest, tmp_path = bundle
-    sums = tmp_path / "SHA256SUMS"
-    sums.write_text(f"{'b' * 64}  ./some-other-release.tar.gz\n")
-    result = _run(release_with_sums(), name, sums=sums)
-    assert result.returncode == 1, result.stdout + result.stderr
-
-
-def test_an_asc_signature_line_does_not_stand_in_for_the_tarball(bundle):
-    """`./x.tar.gz.asc` contains `./x.tar.gz`; a substring match would pass."""
-    name, _digest, tmp_path = bundle
-    sums = tmp_path / "SHA256SUMS"
-    sums.write_text(f"{'c' * 64}  ./{name}.asc\n")
-    result = _run(release_with_sums(), name, sums=sums)
-    assert result.returncode == 1, result.stdout + result.stderr
-
-
-def test_a_release_without_a_sha256sums_asset_stops_the_install(bundle):
-    """The original bug: nothing to verify against must not mean "carry on"."""
-    name, _digest, tmp_path = bundle
-    release = {"tag_name": "v1.2.3", "assets": [{"name": "install.sh", "browser_download_url": "x"}]}
-    result = _run(release, name, sums=tmp_path / "unused")
-    assert result.returncode == 1, result.stdout + result.stderr
-
-
-def test_an_unreachable_sha256sums_stops_the_install(bundle):
-    """A 404 or a dropped connection is the exact case that used to be silent."""
-    name, _digest, _tmp_path = bundle
-    result = _run(release_with_sums(), name, sums=None)
-    assert result.returncode == 1, result.stdout + result.stderr
-
-
-def test_skip_checksum_waives_verification_and_says_so(bundle):
-    name, _digest, _tmp_path = bundle
-    result = _run(release_with_sums(), name, sums=None, skip=True)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "WARN: Skipping SHA256 verification (--skip-checksum)" in result.stdout
-
-
-def test_the_download_stage_calls_the_verifier(bundle):
+def test_the_download_stage_calls_the_verifier():
     """A verifier nothing invokes verifies nothing."""
-    assert "cb_verify_bundle_checksum " in _extract("stage0_download_bundle")
+    stage = _extract("stage0_download_bundle")
+    assert stage.count("cb_check_bundle ") == 2, "both the local and the download branch must verify"

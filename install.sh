@@ -731,6 +731,7 @@ FORCE_DEPS=false
 DOCKER_AVAILABLE=false
 INSTALL_DOCKER=true
 SKIP_CHECKSUM=false
+SKIP_SIGNATURE=false
 DOCKER_MODE=false
 
 # UI Functions
@@ -1606,78 +1607,120 @@ cb_pick_release() {
   esac
 }
 
-# Verify a downloaded bundle against the release's SHA256SUMS asset.
+# The history of why verification fails closed (the 404 on a never-published
+# ".sha256" asset, and why `--ignore-missing` is not used) lives above
+# cb_verify_sums_entry in the inlined library.
+# Download one release asset to /tmp/cb-<name>. 0: downloaded. 1: the release
+# does not publish it (the caller decides whether that is fatal). A failed
+# download stops the install: it is a network fault, not a verdict.
 #
-# $1 is the release JSON from the GitHub API, $2 the tarball's asset name; the
-# tarball itself is expected at /tmp/$2, where the caller downloaded it.
-#
-# This used to fetch "${tarball_url}.sha256", an asset no release has ever
-# published: release.yml builds one SHA256SUMS for the whole release
-# (`find . -maxdepth 1 -type f ! -name SHA256SUMS -exec sha256sum {} +`) and
-# uploads it alongside the artifacts. The fetch therefore 404'd every time --
-# and because the verification hung off an `elif curl ...` with no `else`, that
-# 404 skipped the check without printing a word. Every `curl | bash` install
-# unpacked and ran an unverified tarball as root while reporting success. So
-# this function fails closed: anything short of a matching hash stops the
-# install, and only --skip-checksum may waive it.
-cb_verify_bundle_checksum() {
-  local release_json="$1"
-  local tarball_name="$2"
+# The `|| true` keeps a truncated or proxy-mangled API body (jq exits 2) from
+# ending the install silently under `set -euo pipefail`; it falls through to
+# "not published", which cb_check_bundle then refuses out loud.
+cb_fetch_release_asset() {
+  local release_json="$1" name="$2" url
+  url=$(printf '%s' "$release_json" | jq -r --arg n "$name" '.assets[] | select(.name==$n) | .browser_download_url' 2>/dev/null || true)
+  if [[ -z "$url" ]] || [[ "$url" == "null" ]]; then
+    return 1
+  fi
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 -o "/tmp/cb-${name}" "$url" \
+    || cb_fail "Could not download ${name} for release v${CB_VERSION}" \
+               "Check internet connectivity and re-run"
+}
+
+# Build provenance (GitHub attestation). Reported, never required: an
+# air-gapped host cannot reach Sigstore, and the signature has already
+# decided. Only called after a signature verified.
+cb_check_attestation() {
+  local tarball="$1"
+  if [[ "$CB_AIRGAP" == "true" ]]; then
+    cb_ok "Build provenance not checked (air-gapped)"
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+    cb_ok "Build provenance not checked (install and log in to the GitHub CLI to check it)"
+    return 0
+  fi
+  if gh attestation verify "$tarball" --repo "${CB_GITHUB_REPO}" >/dev/null 2>&1; then
+    cb_ok "Build provenance verified (GitHub attestation)"
+  else
+    cb_warn "Build provenance could not be verified with gh (offline, or this release has no attestation); the signature above still verified"
+  fi
+}
+
+# Decide whether a bundle may be installed: signature first, then hash.
+# $1 tarball, $2 SHA256SUMS path or "", $3 SHA256SUMS.sig path or "",
+# $4 origin (download|local), $5 release version or "" (local).
+# Implements the behaviour table in
+# docs/design/2026-09-30-release-bundle-signing-design.md.
+cb_check_bundle() {
+  local tarball="$1" sums="$2" sig="$3" origin="$4" version="$5"
+  local key_id rc name refetch tried signed=false
+  name="$(basename -- "$tarball")"
+  if [[ "$origin" == "download" ]]; then
+    refetch="Download SHA256SUMS and SHA256SUMS.sig again from https://github.com/${CB_GITHUB_REPO}/releases/tag/v${version}"
+  else
+    refetch="Copy the release's SHA256SUMS and SHA256SUMS.sig next to the bundle"
+  fi
 
   if [[ "$SKIP_CHECKSUM" == "true" ]]; then
-    cb_warn "Skipping SHA256 verification (--skip-checksum)"
+    cb_warn "Skipping bundle verification (--skip-checksum): neither the signature nor the SHA256 of ${name} is checked"
     return 0
   fi
 
+  if [[ -z "$sums" ]]; then
+    if [[ "$origin" == "local" ]] && [[ -z "$sig" ]]; then
+      cb_warn "No SHA256SUMS or SHA256SUMS.sig next to ${tarball}: installing an UNVERIFIED bundle"
+      return 0
+    fi
+    cb_fail "No SHA256SUMS for ${name}" \
+      "${refetch}, or pass --skip-checksum only for a bundle you already trust"
+  fi
+
+  if [[ -n "$sig" ]] && [[ "$SKIP_SIGNATURE" != "true" ]]; then
+    cb_step "Verifying release signature"
+    tried="$(cb_release_keys | cut -d' ' -f1 | paste -sd, -)"
+    if key_id="$(cb_verify_sums_signature "$sums" "$sig")"; then
+      cb_ok "Signature verified (key ${key_id})"
+      signed=true
+    else
+      rc=$?
+      if [[ -z "$tried" ]]; then
+        cb_fail "This installer trusts no release keys" \
+          "Use an install.sh from a release that ships its trusted key list, or pass --skip-signature only for a bundle you already trust"
+      fi
+      if (( rc == 2 )); then
+        cb_fail "SHA256SUMS.sig is unreadable" "${refetch}. Keys tried: ${tried}"
+      fi
+      cb_fail "SHA256SUMS signature does not verify — the release files may have been tampered with" \
+        "${refetch}. Keys tried: ${tried}. Pass --skip-signature only for a bundle you already trust"
+    fi
+  elif [[ "$SKIP_SIGNATURE" == "true" ]]; then
+    cb_warn "Skipping signature verification (--skip-signature); the SHA256 is still checked"
+  elif [[ "$origin" == "download" ]] && cb_release_requires_signature "$version"; then
+    cb_fail "Release v${version} publishes no SHA256SUMS.sig" \
+      "Every release from v${CB_FIRST_SIGNED_RELEASE} on is signed; refusing an unsigned one. Pass --skip-signature only for a bundle you already trust"
+  elif [[ "$origin" == "download" ]]; then
+    cb_warn "Release v${version} predates bundle signing (v${CB_FIRST_SIGNED_RELEASE}); checking its SHA256 only"
+  else
+    cb_warn "No SHA256SUMS.sig next to the bundle; checking its SHA256 only"
+  fi
+
   cb_step "Verifying checksum"
-
-  # `|| true` for the same reason as docker_target_home's getent: `echo` cannot
-  # fail, so this pipeline's status is jq's, and jq exits 2 on a body it cannot
-  # parse — a truncated or proxy-mangled response that still arrived with a 200,
-  # which is exactly what `curl -fsSL` hands back. As a bare assignment under
-  # `set -euo pipefail` that ended the install on this line, so the cb_fail
-  # below never ran and the operator could not tell whether an unverifiable
-  # bundle had been refused or the installer had simply crashed. Stopping is
-  # correct here — this function is deliberately fail-closed — but it has to
-  # stop *out loud*. An unparseable body leaves checksum_url empty and falls
-  # into the same branch as a release that publishes no SHA256SUMS at all.
-  local checksum_url
-  checksum_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="SHA256SUMS") | .browser_download_url' || true)
-  if [[ -z "$checksum_url" ]] || [[ "$checksum_url" == "null" ]]; then
-    cb_fail "Could not determine the SHA256SUMS asset for release v${CB_VERSION}" \
-      "The release publishes none, or the API response could not be parsed. Refusing to install a bundle that cannot be verified — pass --skip-checksum only for a bundle you already trust"
-  fi
-
-  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 -o /tmp/cb-SHA256SUMS "$checksum_url" \
-    || cb_fail "Could not download SHA256SUMS for release v${CB_VERSION}" \
-               "Check internet connectivity and re-run, or pass --skip-checksum only for a bundle you already trust"
-
-  # Pick out the one line covering our tarball and check that line alone.
-  #
-  # Deliberately not `sha256sum --ignore-missing -c SHA256SUMS`: that flag
-  # exits 0 when *none* of the listed files are present, so a SHA256SUMS that
-  # simply never mentions our tarball would "verify" — swapping in a foreign
-  # bundle plus an authentic checksum file for some other release defeats it.
-  # Selecting the line first turns "not listed" into its own failure. The
-  # comparison is on awk's second field rather than a substring, because
-  # SHA256SUMS also lists ./<tarball>.asc, which contains the tarball name.
-  #
-  # release.yml runs its `find . -maxdepth 1` from dist/release/, so every
-  # entry is written in ./<name> form; the check runs from /tmp, where the
-  # bundle was downloaded, so those relative paths resolve.
-  local expected_line
-  expected_line=$(awk -v want="./${tarball_name}" '$2 == want { print; exit }' /tmp/cb-SHA256SUMS)
-  rm -f /tmp/cb-SHA256SUMS
-  if [[ -z "$expected_line" ]]; then
-    cb_fail "Release v${CB_VERSION} publishes no checksum for ${tarball_name}" \
-      "Refusing to install a bundle that cannot be verified — pass --skip-checksum only for a bundle you already trust"
-  fi
-
-  if (cd /tmp && printf '%s\n' "$expected_line" | sha256sum -c - >/dev/null 2>&1); then
+  if cb_verify_sums_entry "$sums" "$tarball"; then
     cb_ok "SHA256 checksum verified"
   else
-    cb_fail "SHA256 mismatch — the bundle may be corrupted or tampered with" \
-      "Re-run to download it again, or pass --skip-checksum only for a bundle you already trust"
+    rc=$?
+    if (( rc == 3 )); then
+      cb_fail "${name} is not listed in SHA256SUMS" \
+        "The bundle must keep its release file name (circuit-breaker_<version>_linux_<arch>.tar.gz) and come from the same release as SHA256SUMS"
+    fi
+    cb_fail "SHA256 mismatch — ${name} may be corrupted or tampered with" \
+      "Download it again, or pass --skip-checksum only for a bundle you already trust"
+  fi
+
+  if [[ "$signed" == "true" ]]; then
+    cb_check_attestation "$tarball"
   fi
 }
 
@@ -1692,6 +1735,11 @@ stage0_download_bundle() {
     fi
     CB_BUNDLE_TARBALL="$CB_LOCAL_BUNDLE"
     cb_ok "Local bundle: $CB_LOCAL_BUNDLE"
+    local local_dir local_sums="" local_sig=""
+    local_dir="$(dirname -- "$CB_LOCAL_BUNDLE")"
+    [[ -f "${local_dir}/SHA256SUMS" ]] && local_sums="${local_dir}/SHA256SUMS"
+    [[ -f "${local_dir}/SHA256SUMS.sig" ]] && local_sig="${local_dir}/SHA256SUMS.sig"
+    cb_check_bundle "$CB_LOCAL_BUNDLE" "$local_sums" "$local_sig" local ""
   else
     # Query GitHub for release
     cb_step "Querying GitHub for release"
@@ -1766,7 +1814,18 @@ stage0_download_bundle() {
     wait "$curl_pid" || cb_fail "Download failed" "$tarball_url"
     cb_ok "Downloaded $(du -h "/tmp/${tarball_name}" | cut -f1)"
 
-    cb_verify_bundle_checksum "$release_json" "$tarball_name"
+    local sums_path="" sig_path=""
+    rm -f /tmp/cb-SHA256SUMS /tmp/cb-SHA256SUMS.sig
+    if [[ "$SKIP_CHECKSUM" != "true" ]]; then
+      if cb_fetch_release_asset "$release_json" SHA256SUMS; then
+        sums_path=/tmp/cb-SHA256SUMS
+      fi
+      if [[ "$SKIP_SIGNATURE" != "true" ]] && cb_fetch_release_asset "$release_json" SHA256SUMS.sig; then
+        sig_path=/tmp/cb-SHA256SUMS.sig
+      fi
+    fi
+    cb_check_bundle "/tmp/${tarball_name}" "$sums_path" "$sig_path" download "$CB_VERSION"
+    rm -f /tmp/cb-SHA256SUMS /tmp/cb-SHA256SUMS.sig
 
     CB_BUNDLE_TARBALL="/tmp/${tarball_name}"
   fi
@@ -1917,6 +1976,7 @@ show_help() {
   echo "  --force-deps           Force reinstall dependencies in upgrade mode"
   echo "  --docker               Compose-only deployment (installs Docker if missing)"
   echo "  --skip-checksum        Skip SHA256 bundle verification (for a local bundle you already trust)"
+  echo "  --skip-signature       Skip the release signature check (SHA256 is still checked)"
   echo "  --airgap               Offline install: make no outbound request at all."
   echo "                         Installs no packages, adds no repository, downloads"
   echo "                         nothing. Requires --local-bundle and every dependency"
@@ -1995,6 +2055,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-checksum)
       SKIP_CHECKSUM=true
+      shift
+      ;;
+    --skip-signature)
+      SKIP_SIGNATURE=true
       shift
       ;;
     --help)

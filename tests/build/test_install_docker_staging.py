@@ -460,26 +460,31 @@ jq() { echo "parse error: Invalid numeric literal" >&2; return 2; }
 """
 
 
-def test_an_unparseable_release_refuses_to_install_out_loud(home):
-    """Checksum verification must fail *with its reason*, not just fail.
+def test_an_unparseable_release_is_reported_as_not_published_not_a_crash(home):
+    """cb_fetch_release_asset must survive a body jq cannot parse.
 
-    `checksum_url=$(echo "$release_json" | jq -r ...)` is the same bare
-    assignment: `echo` cannot fail, so the pipeline's status is jq's, pipefail
-    surfaces it and errexit ends the install. The install stopping is correct
-    here -- this function is deliberately fail-closed -- but the operator is
-    left to guess whether an unverifiable bundle was rejected or the installer
-    simply crashed, and the message below the assignment says which.
+    `url=$(printf ... | jq -r ...)` as a bare assignment under `set -euo
+    pipefail` ends the install on the spot when jq exits 2, which leaves the
+    operator guessing whether an unverifiable bundle was refused or the
+    installer crashed. The `|| true` turns it into "the release publishes no
+    such asset" (return 1), which cb_check_bundle then refuses out loud.
     """
-    result = _run_function(
-        "cb_verify_bundle_checksum",
-        home,
-        overrides=JQ_UNPARSEABLE + "\nCB_VERSION=1.2.3\nSKIP_CHECKSUM=false\n",
-        args=("{}", "bundle.tar.gz"),
+    script = "\n".join(
+        [
+            HARNESS,
+            JQ_UNPARSEABLE,
+            "CB_VERSION=1.2.3",
+            _extract("cb_fetch_release_asset"),
+            "rc=0",
+            "cb_fetch_release_asset '{}' SHA256SUMS || rc=$?",
+            'echo "RC=$rc"',
+        ]
     )
-    assert result.returncode != 0, (
-        "an unverifiable bundle was accepted:\n" + result.stdout + result.stderr
+    env = dict(os.environ, SANDBOX_HOME=str(home))
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, env=env, cwd=REPO_ROOT
     )
-    assert "SHA256SUMS" in result.stdout, (
-        "the install stopped without saying that the bundle could not be "
-        f"verified:\n exit={result.returncode}\n{result.stdout}{result.stderr}"
+    assert "RC=1" in result.stdout, (
+        "an unparseable release body crashed the installer instead of "
+        f"reading as 'not published':\n exit={result.returncode}\n{result.stdout}{result.stderr}"
     )
