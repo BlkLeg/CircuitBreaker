@@ -160,3 +160,24 @@ test('version rejects unknown options', async () => {
   const { deps } = await host({ identity: {} });
   assert.equal(await run(['version', '--yaml'], deps), EXIT.USAGE);
 });
+
+test('identity read errors in help become EXIT.UNSUPPORTED', async () => {
+  const { deps, output } = await host({ identity: {} });
+  deps.readFile = async () => { throw Object.assign(new Error('symlink loop'), { code: 'ELOOP' }); };
+  assert.equal(await run(['help'], deps), EXIT.UNSUPPORTED);
+  assert.match(output.err, /ELOOP/);
+});
+
+test('identity read errors in version become EXIT.UNSUPPORTED', async () => {
+  const { deps, output } = await host({ identity: {} });
+  deps.readFile = async () => { throw Object.assign(new Error('symlink loop'), { code: 'ELOOP' }); };
+  assert.equal(await run(['version'], deps), EXIT.UNSUPPORTED);
+  assert.match(output.err, /ELOOP/);
+});
+
+test('identity read errors during forwarding become EXIT.UNSUPPORTED', async () => {
+  const { deps, output } = await host({ identity: {} });
+  deps.readFile = async () => { throw Object.assign(new Error('symlink loop'), { code: 'ELOOP' }); };
+  assert.equal(await run(['status'], deps), EXIT.UNSUPPORTED);
+  assert.match(output.err, /ELOOP/);
+});

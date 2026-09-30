@@ -72,11 +72,11 @@ async function forwardManagement(command, args, deps) {
     return await forwardToNative({ cliPath: trusted.path, args: [command, ...args], env: deps.env, spawnImpl: deps.spawnImpl, proc: deps.proc });
   } catch (error) {
     const code = error.code === 'EACCES' || error.code === 'EPERM' ? EXIT.PERMISSION : EXIT.UNSUPPORTED;
-    return refuse(deps, code, `could not start ${trusted.path} (${error.code})`);
+    return refuse(deps, code, `could not start ${trusted.path} (${error.code ?? error.message})`);
   }
 }
 
-export async function run(argv, deps = defaultDeps()) {
+async function dispatch(argv, deps) {
   if (deps.env[FORWARD_MARKER] === '1') {
     return refuse(deps, EXIT.USAGE, 'refusing to run inside a forwarded native command (forwarding loop).');
   }
@@ -93,4 +93,12 @@ export async function run(argv, deps = defaultDeps()) {
       `'${command}' is not in this build of the CLI. Run 'cb ${command}' on the server, or use install.sh.`);
   }
   return forwardManagement(command, rest, deps);
+}
+
+export async function run(argv, deps = defaultDeps()) {
+  try {
+    return await dispatch(argv, deps);
+  } catch (error) {
+    return refuse(deps, EXIT.UNSUPPORTED, `unexpected error: ${error.code ?? error.message}`);
+  }
 }
