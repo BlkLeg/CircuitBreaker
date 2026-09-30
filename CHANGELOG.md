@@ -15,7 +15,53 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
-## [0.4.5] — unreleased
+## [0.4.6] — unreleased
+
+A topology map patch: panels and menus that would not close, a map that
+re-rendered continuously, and zoom that could not show a large map whole.
+Also clearer errors when adding a Proxmox cluster and a readable
+`cb resources`.
+
+### Fixed
+
+- The map no longer re-renders continuously. Since 0.2.x it re-rendered
+  around a thousand times a second from page load, on every map, which cost
+  CPU and made the panels below unreliable.
+- The node details panel closes on the first click of its close button. It
+  could take several clicks: the panel re-selected the node it had just
+  closed, and a slight pointer movement during the click jumped the panel away
+  from the button.
+- The right-click menu on a node is laid out as a menu again. Its styles
+  stopped being generated when the map moved in 0.4.2, so it stretched across
+  the screen or did not appear at all. It, and the boundary and line menus,
+  now close on a left click anywhere outside them, including on the canvas and
+  on other nodes.
+- The hover telemetry card opens beside the pointer rather than a few hundred
+  pixels below it, and stays closed after its close button instead of
+  reopening for whichever node was underneath.
+- A large or wide map can be fitted into view whole. Automatic fits were held
+  at 40% zoom and the canvas was bounded, so big maps could not be shown or
+  panned in full. The saved zoom and position are now kept per map instead of
+  one shared across every map.
+- Adding a Proxmox cluster with the name, URL or API token left empty now says
+  which field is missing. The Save button used to be disabled with no
+  explanation, and the name's placeholder looked like a value already entered.
+
+### Changed
+
+- `cb resources` output is grouped into usage, components, limits, attention
+  and notices; CPU and memory show a capacity bar; totals that are missing
+  some components say so once at the end of the line; and services use one
+  short name throughout. In a terminal it uses the web app's colours; piped
+  output, `NO_COLOR` and `--json` are unchanged.
+
+### Security
+
+- Updated `undici` (7.30.0) and `brace-expansion` (1.1.21, 5.0.12), both
+  frontend development dependencies, for published denial-of-service and
+  TLS-validation advisories. Neither ships in the application bundle.
+
+## [0.4.5] — 2026-09-29
 
 Fixes a vault key rotation that cut off every enrolled agent, and adds
 `cb resources` alongside the automation that now cuts and maintains each

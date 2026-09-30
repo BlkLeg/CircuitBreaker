@@ -9,7 +9,7 @@
 > of the topology map that runs right in your browser. No install, no account.
 
 > **⚠️ Release Candidate Security Notice**
-> 0.4.5. Not fully audited; several 1.0 security acceptance rows are still unevidenced. Run on a
+> 0.4.6. Not fully audited; several 1.0 security acceptance rows are still unevidenced. Run on a
 > trusted LAN or behind a VPN — internet-exposed direct deployment is outside the 1.0.0 support
 > boundary, which is tracked in
 > [docs/release/1.0.0-support-contract.md](docs/release/1.0.0-support-contract.md).
