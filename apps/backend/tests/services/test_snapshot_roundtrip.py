@@ -89,6 +89,7 @@ def _replay_into_scratch(sql: str) -> str:
 
 
 @requires_pg_client
+@pytest.mark.usefixtures("pg_dump_matches_server")
 @pytest.mark.asyncio
 async def test_snapshot_restores_into_a_scratch_database(setup_db: None, tmp_path: Path) -> None:
     """Uses the Postgres the suite already runs against; restores into a scratch database."""

@@ -191,33 +191,34 @@ def test_no_publisher_exists_for_the_subject_the_worker_consumes() -> None:
     still standing.
     """
     worker = _BACKEND / "src/app/workers/discovery.py"
-    hits = subprocess.run(
+    # Tracked files only. Walking the filesystem also found copies of the app
+    # in git worktrees under .claude/ and in build/ output (a local native
+    # bundle build), and reported each as a "publisher"; git grep asks what is
+    # actually part of this repository, as the Phase 4 ratchets do.
+    grep = subprocess.run(
         [
-            "grep",
-            "-rlF",
-            "--include=*.py",
-            "--include=*.go",
-            "--include=*.ts",
-            "--include=*.tsx",
-            "--exclude-dir=tests",
-            "--exclude-dir=e2e",
-            "--exclude-dir=.venv",
-            "--exclude-dir=node_modules",
-            "--exclude-dir=.git",
-            # Registered git worktrees live under .claude/ and hold FULL
-            # copies of the source tree, so without this the scan reports
-            # workers/discovery.py once per worktree — as a "publisher",
-            # against paths that are not this checkout. Unrelated to slice
-            # 4.x; the same hazard is why the Phase 4 ratchets ask git what
-            # is tracked instead of walking the filesystem.
-            "--exclude-dir=.claude",
-            '"discovery.jobs"',
+            "git",
+            "-C",
             str(_REPO),
+            "grep",
+            "-lF",
+            '"discovery.jobs"',
+            "--",
+            "*.py",
+            "*.go",
+            "*.ts",
+            "*.tsx",
         ],
         capture_output=True,
         text=True,
         check=False,
-    ).stdout.split()
+    )
+    assert grep.returncode in (0, 1), f"git grep failed: {grep.stderr}"
+    hits = [
+        str(_REPO / rel)
+        for rel in grep.stdout.split()
+        if not {"tests", "e2e"} & set(Path(rel).parts)
+    ]
     publishers = sorted(h for h in hits if Path(h).resolve() != worker.resolve())
 
     if publishers:
