@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -74,9 +75,14 @@ def test_the_promote_input_is_a_boolean_defaulting_to_true() -> None:
     assert promote["default"] is True
 
 
+def _environment_name(job: dict[str, Any]) -> str | None:
+    environment = job.get("environment")
+    return environment.get("name") if isinstance(environment, dict) else environment
+
+
 def test_promote_declares_the_release_environment() -> None:
     environment = JOBS["promote"].get("environment")
-    name = environment.get("name") if isinstance(environment, dict) else environment
+    name = _environment_name(JOBS["promote"])
     assert name == "release", (
         "the promote job must run behind `environment: release`; that environment's "
         "required reviewer is the only human approval between a candidate and a "
@@ -89,9 +95,9 @@ def test_only_promote_uses_the_release_environment() -> None:
     others = sorted(
         name
         for name, job in JOBS.items()
-        if name != "promote" and job.get("environment") is not None
+        if name != "promote" and _environment_name(job) == "release"
     )
-    assert not others, f"jobs other than promote declare an environment: {others}"
+    assert not others, f"jobs other than promote declare the release environment: {others}"
 
 
 def test_an_upstream_job_asserts_the_environment_requires_a_reviewer() -> None:

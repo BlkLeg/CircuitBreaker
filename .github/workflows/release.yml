@@ -461,6 +461,16 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
     needs: [version, build, artifact-smoke, tier2, installer-journey, image-merge, runtime-parity]
     runs-on: ubuntu-22.04
+    # The release-bundle key is a secret of this environment, whose deployment
+    # branch rule allows main only (docs/release/bundle-signing.md). It has no
+    # reviewers: approval happens once, on `release`, before promote.
+    environment: release-signing
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      security-events: write
+      attestations: write
     steps:
       - uses: actions/checkout@v5
 
@@ -685,11 +695,64 @@ jobs:
                 --armor --detach-sign "$f"
           done
 
-          # Regenerate SHA256SUMS (now includes .asc + SBOM files) then sign it
-          find . -maxdepth 1 -type f ! -name SHA256SUMS -exec sha256sum {} + > SHA256SUMS
+      # The one SHA256SUMS that is published and signed: every file attached
+      # to the release, including the SBOMs and .asc files written above, and
+      # never SHA256SUMS or its own signatures.
+      - name: Write the final SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist/release/
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -exec sha256sum {} + > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: GPG sign SHA256SUMS
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -z "${GPG_PRIVATE_KEY}" ]; then
+            echo "GPG_PRIVATE_KEY not set — skipping the GPG signature of SHA256SUMS"
+            exit 0
+          fi
+          cd dist/release/
           gpg --batch --yes --pinentry-mode loopback \
               --passphrase "${GPG_PASSPHRASE}" \
               --armor --detach-sign SHA256SUMS
+
+      # Required: a release is never staged unsigned. The key exists only in
+      # this step, in a 0600 file removed before the step ends.
+      - name: Sign SHA256SUMS with the release bundle key
+        env:
+          RELEASE_BUNDLE_SIGNING_KEY: ${{ secrets.RELEASE_BUNDLE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_BUNDLE_SIGNING_KEY}" ]; then
+            echo "::error::RELEASE_BUNDLE_SIGNING_KEY is empty. It is a secret of the release-signing environment (docs/release/bundle-signing.md); a release is never staged unsigned."
+            exit 1
+          fi
+          umask 077
+          keyfile="$(mktemp)"
+          trap 'rm -f "${keyfile}"' EXIT
+          printf '%s\n' "${RELEASE_BUNDLE_SIGNING_KEY}" > "${keyfile}"
+          scripts/ci/sign_release_sums.sh "${keyfile}" dist/release/SHA256SUMS dist/release/SHA256SUMS.sig
+          rm -f "${keyfile}"
+
+      # Against the COMMITTED key list, so a secret that does not match the
+      # public key install.sh trusts fails here, not on users' hosts.
+      - name: Verify SHA256SUMS.sig against the trusted keys
+        run: |
+          set -euo pipefail
+          source deploy/lib/bundle-signature.sh
+          if ! key_id="$(cb_verify_sums_signature dist/release/SHA256SUMS dist/release/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt)"; then
+            echo "::error::the new SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt: the release-signing secret and the committed public key do not match"
+            exit 1
+          fi
+          echo "SHA256SUMS signed by trusted key ${key_id}"
+
+      - name: Attest build provenance for the bundles
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/release/circuit-breaker_*_linux_*.tar.gz
 
       - name: Remove bundle directory from release artifacts
         run: rm -rf dist/release/bundle
