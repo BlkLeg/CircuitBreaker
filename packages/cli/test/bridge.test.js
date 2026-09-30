@@ -29,11 +29,12 @@ test('arguments arrive verbatim, shell syntax included, with the loop marker set
     `require('node:fs').writeFileSync(process.env.OUT, JSON.stringify({ argv: process.argv.slice(2), marker: process.env.${FORWARD_MARKER} }));`,
   );
   const out = join(dir, 'out.json');
-  const args = ['token', 'create', '--name', '$(touch pwned)', '; rm -rf /', '--', '-f', ''];
+  const pwned = join(dir, 'pwned');
+  const args = ['token', 'create', '--name', `$(touch ${pwned})`, '; rm -rf /', '--', '-f', ''];
   const code = await forwardToNative({ cliPath: file, args, env: { ...quiet(), OUT: out }, proc: new EventEmitter() });
   assert.equal(code, 0);
   assert.deepEqual(JSON.parse(await readFile(out, 'utf8')), { argv: args, marker: '1' });
-  await assert.rejects(access(join(dir, 'pwned')));
+  await assert.rejects(access(pwned));
 });
 
 test("the child's exit code is returned unchanged", async () => {
@@ -49,23 +50,29 @@ test('death by signal maps to 128 + signal number', async () => {
 });
 
 test('SIGINT to the launcher is left to the child; SIGTERM is relayed', async () => {
-  const { dir, file } = await fake(`
+  const { dir: dir1, file: file1 } = await fake(`
     const fs = require('node:fs');
     process.on('SIGTERM', () => process.exit(42));
     fs.writeFileSync(process.env.READY, '');
     setTimeout(() => process.exit(7), 400);
   `);
   const proc = new EventEmitter();
-  const ready = join(dir, 'ready');
-  const pending = forwardToNative({ cliPath: file, args: [], env: { ...quiet(), READY: ready }, proc });
+  const ready = join(dir1, 'ready');
+  const pending = forwardToNative({ cliPath: file1, args: [], env: { ...quiet(), READY: ready }, proc });
   await waitFor(ready);
   proc.emit('SIGINT');
   assert.equal(await pending, 7, 'SIGINT must not kill the child from the launcher side');
   assert.equal(proc.listenerCount('SIGINT'), 0);
   assert.equal(proc.listenerCount('SIGTERM'), 0);
 
-  const ready2 = join(dir, 'ready2');
-  const relayed = forwardToNative({ cliPath: file, args: [], env: { ...quiet(), READY: ready2 }, proc });
+  const { dir: dir2, file: file2 } = await fake(`
+    const fs = require('node:fs');
+    process.on('SIGTERM', () => process.exit(42));
+    fs.writeFileSync(process.env.READY, '');
+    setInterval(() => {}, 1 << 30);
+  `);
+  const ready2 = join(dir2, 'ready2');
+  const relayed = forwardToNative({ cliPath: file2, args: [], env: { ...quiet(), READY: ready2 }, proc });
   await waitFor(ready2);
   proc.emit('SIGTERM');
   assert.equal(await relayed, 42);
