@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Every file that carries a copy of the version. apps/backend/pyproject.toml is
 # absent on purpose: [tool.hatch.version] reads ../../VERSION directly, so it
 # cannot drift.
-_JSON_MANIFESTS = ("package.json", "apps/frontend/package.json")
+_JSON_MANIFESTS = ("package.json", "apps/frontend/package.json", "packages/cli/package.json")
 
 # The lockfiles carry the project's own version too, in two places each: the
 # top-level "version" and packages[""].version, which npm keeps in step with
