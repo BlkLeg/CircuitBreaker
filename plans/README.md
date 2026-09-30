@@ -17,6 +17,20 @@ carries a status column.
 - **Superseded** — a later plan replaced it.
 - **Reference** — never a work item; a review, an index, or a deferred-item list.
 
+## Map console and connection walkthrough (2026-09-29)
+
+| Plan | Date | Status |
+|---|---|---|
+| [Map upgrade scope](./v0.5.0-map-upgrade.md) | 2026-09-29 | **Active** — visual design approved; application implementation pending. Console version 5 and walkthrough version 7 are recorded in the [approved design](../docs/design/2026-09-29-map-console-and-connection-walkthrough.md). |
+| [Connection walkthrough contract](./v0.5.0-connection-walkthrough.md) | 2026-09-29 | **Active** — approved optional editor; implementation pending. Covers endpoint speed controls, relationship validation, reviewed layout handoff and partial-failure handling. |
+| [Map capability audit](./v0.5.0-map-feature-audit.md) | 2026-09-29 | **Reference** — existing features and presentation gaps assessed for the v0.5.0 visual design; not evidence of implementation. |
+
+## Enterprise navigation dock (2026-09-29)
+
+| Plan | Date | Status |
+|---|---|---|
+| [Enterprise navigation dock](./2026-09-29-enterprise-dock-implementation.md) | 2026-09-29 | **Active** — planned; no task started. Implements approved navigation draft version 4's dock, with a fixed Map anchor, custom illustrated icons, saved shortcuts, and the existing unified navigator. |
+
 ## CI/CD split — Forgejo verifies, GitHub publishes (2026-09-28)
 
 | Plan | Date | Status |

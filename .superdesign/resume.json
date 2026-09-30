@@ -1,0 +1,318 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "global-navigation-dock": {
+      "targetKind": "existing-ui",
+      "projectId": "02148c7f-c84d-4250-bab6-85efce83f378",
+      "baselineDraftId": "73e96da5-8c65-4fba-8088-9a5cc550f2dd",
+      "activeDraftId": "763528ae-7b07-4471-8c7e-d85941439824",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "apps/frontend/src/components/MacOSDOCK.jsx",
+        "apps/frontend/src/data/navigation.js",
+        "apps/frontend/src/styles/main.css:1:66",
+        "apps/frontend/src/styles/main.css:364:600"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "5c27995c7d8fd45080cd68e362e8c3ca20beff49284ddc465edefd594437464b",
+        "apps/frontend/src/components/MacOSDOCK.jsx": "112d96c66867cf53bfa0d19e0c2be6c001cc8ac5797c272da6b9a4f1de664dfd",
+        "apps/frontend/src/data/navigation.js": "c7372aa985bb60b73e41bf09d64660e0b026afeb09b09048318a7209d6cb6df9",
+        "apps/frontend/src/styles/main.css": "ecb9da0c86abeb3fdf9c3649f3d4d5a57a00abf0dc587c434ca3c79d7fc0c9b3"
+      },
+      "components": [
+        {
+          "name": "CurrentDock",
+          "id": "bd55e6d2-ec2e-44eb-b69a-587ee498961e",
+          "sourcePath": "apps/frontend/src/components/MacOSDOCK.jsx"
+        }
+      ],
+      "drafts": {
+        "73e96da5-8c65-4fba-8088-9a5cc550f2dd": {
+          "title": "Current dock \u2014 reference",
+          "visualDirection": "Existing desktop dock component",
+          "currentVersion": 1
+        },
+        "763528ae-7b07-4471-8c7e-d85941439824": {
+          "title": "Map-first navigation \u2014 labeled favorites",
+          "visualDirection": "Refined enterprise dock: consistent machined dimensional icon set, connected infrastructure topology mark for Map in a raised rounded-square tile, restrained finish and hover lift",
+          "currentVersion": 4
+        }
+      },
+      "updatedAt": "2026-09-29T21:08:24.763405+00:00"
+    },
+    "topology-map": {
+      "targetKind": "existing-ui",
+      "projectId": "a44eac63-f5b5-4185-b1c9-18d768ecbc40",
+      "baselineDraftId": "d065afe9-56b1-4c40-b88e-ecb6dd755281",
+      "activeDraftId": "d065afe9-56b1-4c40-b88e-ecb6dd755281",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "apps/frontend/src/styles/main.css:1:66",
+        "apps/frontend/src/features/map/components/MapHeader.jsx",
+        "apps/frontend/src/features/map/components/MapCanvas.jsx",
+        "apps/frontend/src/features/map/components/CustomNode.jsx",
+        "apps/frontend/src/features/map/components/CustomEdge.jsx",
+        "apps/frontend/src/components/MapToolbar.jsx",
+        "apps/frontend/src/features/map/components/LegendPanel.jsx",
+        "plans/v0.5.0-map-feature-audit.md",
+        ".superdesign/map-design-brief.md",
+        "apps/frontend/src/components/agents/AgentTelemetryTab.jsx:309:548"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "5c27995c7d8fd45080cd68e362e8c3ca20beff49284ddc465edefd594437464b",
+        "apps/frontend/src/styles/main.css": "ecb9da0c86abeb3fdf9c3649f3d4d5a57a00abf0dc587c434ca3c79d7fc0c9b3",
+        "apps/frontend/src/features/map/components/MapHeader.jsx": "a7cad61e2183c6af317d0d0252b41d8d6db64e4349c765a0f87ed2926ca9afef",
+        "apps/frontend/src/features/map/components/MapCanvas.jsx": "6fc66acea176865888981838a142266c074cd28452388da848f06d464c01b5c2",
+        "apps/frontend/src/features/map/components/CustomNode.jsx": "c6c4bd4da828da36e792bc99bc0ab8ba17f3b5163b15f351bc7d4197c2572423",
+        "apps/frontend/src/features/map/components/CustomEdge.jsx": "93481eae429f6c65cd058d0d4469067cc015ca099cf99f1f6bd6b31c65ad0839",
+        "apps/frontend/src/components/MapToolbar.jsx": "38a5670940f0f16f3c776c043269689fce516eccc91dad66cd8c6311d8e2b589",
+        "apps/frontend/src/features/map/components/LegendPanel.jsx": "31e2fb92db1e82a711870352cccbc01cdbae58b0afd8ce3828bbee74dbe936e4",
+        "plans/v0.5.0-map-feature-audit.md": "8ff8d954321dcdd99bf3c762b33f672af2c43c6d636bd9d46ccbbde9230c4c9d",
+        ".superdesign/map-design-brief.md": "ddd8e59bc983a079b169b71f4396e654bb62088f9a2cc66d00916ef8f3c64632",
+        "apps/frontend/src/components/agents/AgentTelemetryTab.jsx": "1d117ab04135d6c17e23e808d1591b2c09184eb779d5a08b597235c8e94c3921"
+      },
+      "referenceIds": [
+        "469c3a8f-5e17-426f-a61b-8727006ecfdf",
+        "382491c6-1854-494d-952a-57fbaa7bce0b",
+        "19e29b7a-5197-4ddb-a42c-a589a7eb3ba1",
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/a44eac63-f5b5-4185-b1c9-18d768ecbc40/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "components": [
+        {
+          "name": "MapAppHeader",
+          "id": "b051b7a2-a3f8-4f69-9e14-942af19bc47d",
+          "sourcePath": "apps/frontend/src/components/Header.jsx",
+          "logoAssetKey": "apps-frontend-public-CB-AZ_Final.png"
+        }
+      ],
+      "drafts": {
+        "cb634596-1e5d-4c3a-9fa8-dddf8ebd9e23": {
+          "title": "Enterprise NOC topology console",
+          "visualDirection": "Enterprise NOC/SOC equipment topology: 20 devices in 5 zones, connected backbone, source-consistent selected-host inspection, calibrated CPU/memory/RX/TX sample geometry",
+          "currentVersion": 4,
+          "baselineVersion": 1
+        },
+        "4ae640b7-5c58-4123-947e-3f6d28be602b": {
+          "title": "Enterprise Operations Topology Workspace",
+          "visualDirection": "Approved native console framing; active-map health/freshness strip; Attention/Recent changes rail; coherent selected-asset inspector; full-width telemetry/change workbench; map screenshot and illustrative data",
+          "currentVersion": 4,
+          "parentDraftId": "d065afe9-56b1-4c40-b88e-ecb6dd755281"
+        },
+        "9d6e2496-9e84-47fb-a273-df6b88c698f8": {
+          "title": "Enterprise Exploration Workspace",
+          "visualDirection": "Approved native-map console framing, bounded search/scope rail, entity/relationship inspector, relationship/telemetry workbench; native map screenshot reference; illustrative scope controls",
+          "parentDraftId": "cb634596-1e5d-4c3a-9fa8-dddf8ebd9e23",
+          "currentVersion": 6
+        },
+        "d065afe9-56b1-4c40-b88e-ecb6dd755281": {
+          "title": "Native map with hideable NOC console",
+          "visualDirection": "Exact current screenshot reference preserving native node artwork, calibrated telemetry console, hide/restore controls; walkthrough concept remains unimplemented; middle-pane plots span divider to divider",
+          "currentVersion": 5,
+          "baselineVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-29T23:00:35.251Z",
+      "approvedDraftId": "d065afe9-56b1-4c40-b88e-ecb6dd755281",
+      "approvedVersion": 5,
+      "designRecordPath": "docs/design/2026-09-29-map-console-and-connection-walkthrough.md"
+    },
+    "connection-walkthrough": {
+      "targetKind": "new-ui",
+      "projectId": "a44eac63-f5b5-4185-b1c9-18d768ecbc40",
+      "parentDraftId": "d065afe9-56b1-4c40-b88e-ecb6dd755281",
+      "activeDraftId": "c8e6462a-4db9-44f4-86eb-042aa156bd05",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/map-design-brief.md",
+        "plans/v0.5.0-connection-walkthrough.md",
+        "apps/frontend/src/features/map/model/linkMutations.js",
+        "apps/frontend/src/features/map/model/connectionTypes.js",
+        "apps/frontend/src/features/map/components/EdgeInspector.jsx",
+        "apps/frontend/src/config/mapTheme.js",
+        "apps/frontend/src/utils/bandwidthCalculator.js"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "5c27995c7d8fd45080cd68e362e8c3ca20beff49284ddc465edefd594437464b",
+        ".superdesign/map-design-brief.md": "ddd8e59bc983a079b169b71f4396e654bb62088f9a2cc66d00916ef8f3c64632",
+        "plans/v0.5.0-connection-walkthrough.md": "dc2f3f3d89028d03816cd3b3db7d1db6a2406f5534d547ddc1aeee8eaca8ad82",
+        "apps/frontend/src/features/map/model/linkMutations.js": "5121b1f354c9ea8adcd934ac55d358c2b11a4044c8da3feb9220c58e4d42abee",
+        "apps/frontend/src/features/map/model/connectionTypes.js": "3b65772ad6fd3d94c9ce6f88f63c60782e6880287abb83d4d59a95ca1bb7426f",
+        "apps/frontend/src/features/map/components/EdgeInspector.jsx": "ba0cf04dece994dcb48e66bd6ecb7f948614ddf13f11b1117bd5dcdf3dfae262",
+        "apps/frontend/src/config/mapTheme.js": "b8771a854aad240bacebe8ed40850022711ac15826284321edf572686f361001",
+        "apps/frontend/src/utils/bandwidthCalculator.js": "49c64d2141ae0637c539cd321093264b37a3daf454782f6f59feea1982ddaf05"
+      },
+      "referenceIds": [
+        "469c3a8f-5e17-426f-a61b-8727006ecfdf",
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/a44eac63-f5b5-4185-b1c9-18d768ecbc40/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "components": [
+        {
+          "name": "MapAppHeader",
+          "id": "b051b7a2-a3f8-4f69-9e14-942af19bc47d",
+          "sourcePath": "apps/frontend/src/components/Header.jsx",
+          "logoAssetKey": "apps-frontend-public-CB-AZ_Final.png"
+        }
+      ],
+      "drafts": {
+        "c8e6462a-4db9-44f4-86eb-042aa156bd05": {
+          "title": "Connection Walkthrough \u2014 Compose and Present",
+          "currentVersion": 7,
+          "visualDirection": "12-node structured relationship editor with endpoint speed presets and type-capped effective capacity, anchors/routing controls, native link profile preview, ownership acknowledgement, queue/edit/review and illustrative native map handoff"
+        }
+      },
+      "updatedAt": "2026-09-29T23:00:35.252Z",
+      "approvedDraftId": "c8e6462a-4db9-44f4-86eb-042aa156bd05",
+      "approvedVersion": 7,
+      "designRecordPath": "docs/design/2026-09-29-map-console-and-connection-walkthrough.md"
+    },
+    "exploration-workspace": {
+      "projectId": "a44eac63-f5b5-4185-b1c9-18d768ecbc40",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "apps/frontend/src/styles/main.css:1:66",
+        "apps/frontend/src/features/map/components/MapHeader.jsx",
+        "apps/frontend/src/features/map/components/MapCanvas.jsx",
+        "apps/frontend/src/features/map/components/CustomNode.jsx",
+        "apps/frontend/src/features/map/components/CustomEdge.jsx",
+        "apps/frontend/src/components/MapToolbar.jsx",
+        "apps/frontend/src/features/map/components/LegendPanel.jsx",
+        "plans/v0.5.0-map-feature-audit.md",
+        ".superdesign/map-design-brief.md",
+        "apps/frontend/src/components/agents/AgentTelemetryTab.jsx:309:548"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "5c27995c7d8fd45080cd68e362e8c3ca20beff49284ddc465edefd594437464b",
+        "apps/frontend/src/styles/main.css": "ecb9da0c86abeb3fdf9c3649f3d4d5a57a00abf0dc587c434ca3c79d7fc0c9b3",
+        "apps/frontend/src/features/map/components/MapHeader.jsx": "a7cad61e2183c6af317d0d0252b41d8d6db64e4349c765a0f87ed2926ca9afef",
+        "apps/frontend/src/features/map/components/MapCanvas.jsx": "6fc66acea176865888981838a142266c074cd28452388da848f06d464c01b5c2",
+        "apps/frontend/src/features/map/components/CustomNode.jsx": "c6c4bd4da828da36e792bc99bc0ab8ba17f3b5163b15f351bc7d4197c2572423",
+        "apps/frontend/src/features/map/components/CustomEdge.jsx": "93481eae429f6c65cd058d0d4469067cc015ca099cf99f1f6bd6b31c65ad0839",
+        "apps/frontend/src/components/MapToolbar.jsx": "38a5670940f0f16f3c776c043269689fce516eccc91dad66cd8c6311d8e2b589",
+        "apps/frontend/src/features/map/components/LegendPanel.jsx": "31e2fb92db1e82a711870352cccbc01cdbae58b0afd8ce3828bbee74dbe936e4",
+        "plans/v0.5.0-map-feature-audit.md": "8ff8d954321dcdd99bf3c762b33f672af2c43c6d636bd9d46ccbbde9230c4c9d",
+        ".superdesign/map-design-brief.md": "ddd8e59bc983a079b169b71f4396e654bb62088f9a2cc66d00916ef8f3c64632",
+        "apps/frontend/src/components/agents/AgentTelemetryTab.jsx": "1d117ab04135d6c17e23e808d1591b2c09184eb779d5a08b597235c8e94c3921"
+      },
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/a44eac63-f5b5-4185-b1c9-18d768ecbc40/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "components": [
+        {
+          "name": "MapAppHeader",
+          "id": "b051b7a2-a3f8-4f69-9e14-942af19bc47d",
+          "sourcePath": "apps/frontend/src/components/Header.jsx",
+          "logoAssetKey": "apps-frontend-public-CB-AZ_Final.png"
+        }
+      ],
+      "targetKind": "existing-ui",
+      "activeDraftId": "9d6e2496-9e84-47fb-a273-df6b88c698f8",
+      "referenceIds": [
+        "e527b4a8-cc8b-4205-9289-a14b86b80132",
+        "469c3a8f-5e17-426f-a61b-8727006ecfdf",
+        "382491c6-1854-494d-952a-57fbaa7bce0b",
+        "19e29b7a-5197-4ddb-a42c-a589a7eb3ba1",
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "drafts": {
+        "9d6e2496-9e84-47fb-a273-df6b88c698f8": {
+          "title": "Enterprise Exploration Workspace",
+          "visualDirection": "Approved native-map console framing, bounded search/scope rail, entity/relationship inspector, relationship/telemetry workbench; native map screenshot reference; illustrative scope controls",
+          "parentDraftId": "cb634596-1e5d-4c3a-9fa8-dddf8ebd9e23",
+          "currentVersion": 6
+        }
+      },
+      "sourceTarget": "topology-map",
+      "sourceDraftId": "d065afe9-56b1-4c40-b88e-ecb6dd755281",
+      "updatedAt": "2026-09-29T23:53:37.563427+00:00"
+    },
+    "operations-workspace": {
+      "projectId": "a44eac63-f5b5-4185-b1c9-18d768ecbc40",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "apps/frontend/src/styles/main.css:1:66",
+        "apps/frontend/src/features/map/components/MapHeader.jsx",
+        "apps/frontend/src/features/map/components/MapCanvas.jsx",
+        "apps/frontend/src/features/map/components/CustomNode.jsx",
+        "apps/frontend/src/features/map/components/CustomEdge.jsx",
+        "apps/frontend/src/components/MapToolbar.jsx",
+        "apps/frontend/src/features/map/components/LegendPanel.jsx",
+        "plans/v0.5.0-map-feature-audit.md",
+        ".superdesign/map-design-brief.md",
+        "apps/frontend/src/components/agents/AgentTelemetryTab.jsx:309:548",
+        ".superdesign/tmp/exploration-enterprise-v4.html"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "5c27995c7d8fd45080cd68e362e8c3ca20beff49284ddc465edefd594437464b",
+        "apps/frontend/src/styles/main.css": "ecb9da0c86abeb3fdf9c3649f3d4d5a57a00abf0dc587c434ca3c79d7fc0c9b3",
+        "apps/frontend/src/features/map/components/MapHeader.jsx": "a7cad61e2183c6af317d0d0252b41d8d6db64e4349c765a0f87ed2926ca9afef",
+        "apps/frontend/src/features/map/components/MapCanvas.jsx": "6fc66acea176865888981838a142266c074cd28452388da848f06d464c01b5c2",
+        "apps/frontend/src/features/map/components/CustomNode.jsx": "c6c4bd4da828da36e792bc99bc0ab8ba17f3b5163b15f351bc7d4197c2572423",
+        "apps/frontend/src/features/map/components/CustomEdge.jsx": "93481eae429f6c65cd058d0d4469067cc015ca099cf99f1f6bd6b31c65ad0839",
+        "apps/frontend/src/components/MapToolbar.jsx": "38a5670940f0f16f3c776c043269689fce516eccc91dad66cd8c6311d8e2b589",
+        "apps/frontend/src/features/map/components/LegendPanel.jsx": "31e2fb92db1e82a711870352cccbc01cdbae58b0afd8ce3828bbee74dbe936e4",
+        "plans/v0.5.0-map-feature-audit.md": "8ff8d954321dcdd99bf3c762b33f672af2c43c6d636bd9d46ccbbde9230c4c9d",
+        ".superdesign/map-design-brief.md": "ddd8e59bc983a079b169b71f4396e654bb62088f9a2cc66d00916ef8f3c64632",
+        "apps/frontend/src/components/agents/AgentTelemetryTab.jsx": "1d117ab04135d6c17e23e808d1591b2c09184eb779d5a08b597235c8e94c3921",
+        ".superdesign/tmp/exploration-enterprise-v4.html": "fb11dacccd6bff656cc73dee2449d928a69d0b5e338cc79cbfbb1680586b56da"
+      },
+      "brandAssets": {
+        "logo": {
+          "assetKey": "apps-frontend-public-CB-AZ_Final.png",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/a44eac63-f5b5-4185-b1c9-18d768ecbc40/brand-assets/apps-frontend-public-CB-AZ_Final.png/CB-AZ_Final.png",
+          "sourcePath": "apps/frontend/public/CB-AZ_Final.png"
+        }
+      },
+      "components": [
+        {
+          "name": "MapAppHeader",
+          "id": "b051b7a2-a3f8-4f69-9e14-942af19bc47d",
+          "sourcePath": "apps/frontend/src/components/Header.jsx",
+          "logoAssetKey": "apps-frontend-public-CB-AZ_Final.png"
+        }
+      ],
+      "targetKind": "existing-ui",
+      "activeDraftId": "4ae640b7-5c58-4123-947e-3f6d28be602b",
+      "referenceIds": [
+        "e527b4a8-cc8b-4205-9289-a14b86b80132",
+        "469c3a8f-5e17-426f-a61b-8727006ecfdf",
+        "382491c6-1854-494d-952a-57fbaa7bce0b",
+        "19e29b7a-5197-4ddb-a42c-a589a7eb3ba1",
+        "apps-frontend-public-CB-AZ_Final.png"
+      ],
+      "drafts": {
+        "4ae640b7-5c58-4123-947e-3f6d28be602b": {
+          "title": "Enterprise Operations Topology Workspace",
+          "visualDirection": "Approved native console framing; active-map health/freshness strip; Attention/Recent changes rail; coherent selected-asset inspector; full-width telemetry/change workbench; map screenshot and illustrative data",
+          "currentVersion": 4,
+          "parentDraftId": "d065afe9-56b1-4c40-b88e-ecb6dd755281"
+        }
+      },
+      "sourceTarget": "topology-map",
+      "sourceDraftId": "d065afe9-56b1-4c40-b88e-ecb6dd755281",
+      "updatedAt": "2026-09-30T00:00:52.910562+00:00"
+    }
+  }
+}

@@ -13,6 +13,26 @@ Two designs written after this series extend it and live beside it in `docs/desi
 entry point plan 04 named, and
 [metric alert rules](../2026-09-17-metric-alert-rules-ui-design.md), which is plan 08's UI half.
 
+The [enterprise navigation dock design plan](../2026-09-29-enterprise-dock-design-plan.md)
+was approved on 2026-09-29 for the dock portion of navigation draft version 4.
+Implementation is pending. It updates the dock's visual treatment and defines its
+fixed Map anchor while retaining the shared navigator and existing settings storage.
+
+The [map console and connection walkthrough](../2026-09-29-map-console-and-connection-walkthrough.md)
+were approved on 2026-09-29: console draft version 5 and walkthrough version 7.
+Implementation is pending. The design preserves native node artwork, adds a
+fully hideable analysis console with charts spanning the middle pane, and defines
+the optional structured connection editor and reviewed native-map handoff.
+
+The [Exploration workspace plan](../2026-09-29-map-exploration-workspace-plan.md)
+(selected draft version 6) and
+[Operations workspace plan](../2026-09-29-map-operations-workspace-plan.md)
+(planning baseline version 4) extend the approved native console with two working
+modes. Implementation is pending. They share the console/telemetry foundation;
+Exploration adds local search and bounded neighborhood scope, while Operations
+adds scoped health/freshness and an authorized recent-changes feed. The prototypes
+use a map screenshot and illustrative data; the plans specify the production gaps.
+
 ## Decisions of record
 
 1. Implement the seven operational workflows and the global navigator approved on the Superdesign canvas.
