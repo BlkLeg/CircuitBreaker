@@ -1,0 +1,90 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Circuit Breaker — doctor</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          'canvas': '#111114',
+          'terminal': '#19191d',
+          'text-base': '#e4e4e7',
+          'muted': '#98989f',
+          'cb-orange': '#ff875f',
+          'cb-purple': '#af87ff',
+          'cb-violet': '#875fff',
+          'cb-shade': '#444444',
+          'cb-success': '#b8bb26',
+          'cb-danger': '#fb4934'
+        },
+        fontFamily: {
+          mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+        }
+      }
+    }
+  }
+</script>
+<style>
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none !important;
+    }
+  }
+  .spinner {
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+<div class="bg-canvas m-0 p-0 font-mono text-text-base antialiased flex flex-col items-center justify-center min-h-screen">
+  <div class="w-full max-w-[960px] p-4 sm:p-8">
+    <div class="text-muted text-xs mb-3 text-center tracking-wide">Sample data · design preview</div>
+    <div class="bg-terminal rounded-lg shadow-2xl overflow-hidden border border-cb-shade/30">
+      <div class="flex items-center px-4 py-3 border-b border-cb-shade/30 bg-terminal/80">
+        <div class="flex space-x-2">
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+        </div>
+        <div class="mx-auto text-xs text-muted">cb doctor</div>
+      </div>
+      <div class="p-6 sm:p-10 overflow-x-auto">
+<pre class="text-xs sm:text-sm leading-relaxed whitespace-pre">
+<span class="font-bold text-cb-orange">Circuit Breaker 0.4.7</span>  <span class="text-cb-purple">DOCTOR</span>  native / linux-amd64
+<span class="text-cb-success">8 passed</span> · <span class="text-cb-danger">1 failed</span> · <span class="text-muted">1 skipped</span>
+<span class="font-bold text-cb-danger">Attention required</span> — data filesystem below minimum free space.
+
+<span class="font-bold text-cb-orange">CHECKS</span>
+  <span class="text-muted">Result  Check                  Evidence</span>
+  <span class="text-cb-success">PASS</span>    Install identity       <span class="text-muted">Valid native identity</span>
+  <span class="text-cb-success">PASS</span>    Binary selftest        <span class="text-muted">Application modules load</span>
+  <span class="text-cb-success">PASS</span>    PostgreSQL             <span class="text-muted">service active</span>
+  <span class="text-cb-success">PASS</span>    Redis                  <span class="text-muted">service active</span>
+  <span class="text-cb-success">PASS</span>    NATS                   <span class="text-muted">service active</span>
+  <span class="text-cb-success">PASS</span>    Backend                <span class="text-muted">service active</span>
+  <span class="text-cb-success">PASS</span>    Backend readiness      <span class="text-muted">:8000/api/v1/readyz responds</span>
+  <span class="text-cb-success">PASS</span>    Identity endpoint      <span class="text-muted">:8088/api/v1/readyz responds</span>
+  <span class="text-cb-danger">FAIL</span>    Data filesystem        <span class="text-muted">512 MiB free; minimum 1 GiB</span>
+  <span class="text-muted">SKIP</span>    Admin diagnostics      <span class="text-muted">CB_ADMIN_TOKEN unset</span>
+
+<span class="font-bold text-cb-orange">NEXT STEPS</span>
+  1. Inspect the data filesystem:
+     <span class="text-muted">df -h /var/lib/circuitbreaker</span>
+  2. Review local backup retention or increase filesystem capacity.
+     Retain a verified recovery copy before deleting backups.
+  3. Re-run: <span class="text-muted">cb doctor</span>
+
+<span class="text-muted">No repairs made · Exit 1
+More: cb doctor --json · cb diag bundle</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>

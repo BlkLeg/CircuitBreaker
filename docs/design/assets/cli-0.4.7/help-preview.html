@@ -1,0 +1,108 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Circuit Breaker — command overview</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          'canvas': '#111114',
+          'terminal': '#19191d',
+          'text-base': '#e4e4e7',
+          'muted': '#98989f',
+          'cb-orange': '#ff875f',
+          'cb-purple': '#af87ff',
+          'cb-violet': '#875fff',
+          'cb-shade': '#444444',
+          'cb-success': '#b8bb26',
+          'cb-danger': '#fb4934'
+        },
+        fontFamily: {
+          mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+        }
+      }
+    }
+  }
+</script>
+<style>
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none !important;
+    }
+  }
+  .spinner {
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+<div class="bg-canvas m-0 p-0 font-mono text-text-base antialiased flex flex-col items-center justify-center min-h-screen">
+  <div class="w-full max-w-[960px] p-4 sm:p-8">
+    <div class="text-muted text-xs mb-3 text-center tracking-wide">Sample data · design preview</div>
+    <div class="bg-terminal rounded-lg shadow-2xl overflow-hidden border border-cb-shade/30">
+      <div class="flex items-center px-4 py-3 border-b border-cb-shade/30 bg-terminal/80">
+        <div class="flex space-x-2">
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+        </div>
+        <div class="mx-auto text-xs text-muted">cb</div>
+      </div>
+      <div class="p-6 sm:p-10 overflow-x-auto">
+<pre class="text-xs sm:text-sm leading-relaxed whitespace-pre">
+<span class="font-bold text-text-base">Circuit Breaker 0.4.7</span>
+<span class="text-muted">CLI 0.4.7 · Server 0.4.7 · native / linux-amd64</span>
+Usage: cb &lt;command&gt; [options]
+
+<span class="font-bold text-cb-orange">OBSERVE</span>
+  <span class="text-cb-purple">info</span>             <span class="text-muted">Install identity, paths and endpoint</span>
+  <span class="text-cb-purple">status</span>           <span class="text-muted">Service and container state</span>
+  <span class="text-cb-purple">resources</span>        <span class="text-muted">App resource usage; --watch for live view</span>
+  <span class="text-cb-purple">logs</span>             <span class="text-muted">Application logs; -f to follow</span>
+  <span class="text-cb-purple">doctor</span>           <span class="text-muted">Health checks and diagnosis</span>
+  <span class="text-cb-purple">diag bundle</span>      <span class="text-muted">Write a redacted support archive</span>
+
+<span class="font-bold text-cb-orange">LIFECYCLE</span>
+  <span class="text-cb-purple">install</span>          <span class="text-muted">Install a verified release</span>
+  <span class="text-cb-purple">update</span>           <span class="text-muted">Update server; --check only checks</span>
+  <span class="text-cb-purple">downgrade</span>        <span class="text-muted">Select an older compatible release</span>
+  <span class="text-cb-purple">rollback</span>         <span class="text-muted">Restore a recorded recovery point</span>
+  <span class="text-cb-purple">recover</span>          <span class="text-muted">Recover an interrupted operation</span>
+  <span class="text-cb-purple">history</span>          <span class="text-muted">Operations and recovery points</span>
+  <span class="text-cb-purple">restart</span>          <span class="text-muted">Restart app services</span>
+  <span class="text-cb-purple">uninstall</span>        <span class="text-muted">Remove software; data choice is explicit</span>
+
+<span class="font-bold text-cb-orange">DATA & SETUP</span>
+  <span class="text-cb-purple">backup</span>           <span class="text-muted">Full-state snapshot; encryption available</span>
+  <span class="text-cb-purple">restore</span>          <span class="text-muted">Restore a snapshot; replaces data</span>
+  <span class="text-cb-purple">setup</span>            <span class="text-muted">First-run setup status</span>
+  <span class="text-cb-purple">setup-token</span>      <span class="text-muted">Print one-time token; keep out of logs</span>
+  <span class="text-cb-purple">config validate</span>  <span class="text-muted">Validate configuration</span>
+  <span class="text-cb-purple">migrate status</span>   <span class="text-muted">Show database schema revision</span>
+  <span class="text-cb-purple">migrate upgrade</span>  <span class="text-muted">Apply pending migrations</span>
+  <span class="text-cb-purple">vault-recover</span>    <span class="text-muted">Recover an uninitialized vault</span>
+
+<span class="font-bold text-cb-orange">ACCESS & FLEET</span>
+  <span class="text-cb-purple">token</span>            <span class="text-muted">Create, list, rotate and revoke API tokens</span>
+  <span class="text-cb-purple">user</span>             <span class="text-muted">Manage local accounts and roles</span>
+  <span class="text-cb-purple">agent</span>            <span class="text-muted">List, approve and revoke agents</span>
+
+<span class="font-bold text-cb-orange">CLI</span>
+  <span class="text-cb-purple">cli update</span>       <span class="text-muted">Update npm CLI only</span>
+  <span class="text-cb-purple">version</span>          <span class="text-muted">CLI and installed server versions</span>
+  <span class="text-cb-purple">help</span>             <span class="text-muted">Show command help</span>
+
+More: cb &lt;command&gt; --help
+Try:  cb resources --watch · cb update --check
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>

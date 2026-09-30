@@ -17,6 +17,12 @@ carries a status column.
 - **Superseded** — a later plan replaced it.
 - **Reference** — never a work item; a review, an index, or a deferred-item list.
 
+## npm CLI and lifecycle for 0.4.7 (2026-09-30)
+
+| Plan | Date | Status |
+|---|---|---|
+| [npm CLI implementation](./2026-09-30-v0.4.7-npm-cli-implementation.md) | 2026-09-30 | **Active** — planned; no implementation task started. Implements the [design contract](../docs/design/2026-09-30-v0.4.7-npm-cli-design.md) and approved terminal pattern, with verified staging, complete recovery, lifecycle commands and governed npm publication. |
+
 ## cb-agent on macOS and Windows (2026-09-30)
 
 | Plan | Date | Status |

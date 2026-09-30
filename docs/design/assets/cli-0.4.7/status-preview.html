@@ -1,0 +1,91 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Circuit Breaker — status</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          'canvas': '#111114',
+          'terminal': '#19191d',
+          'text-base': '#e4e4e7',
+          'muted': '#98989f',
+          'cb-orange': '#ff875f',
+          'cb-purple': '#af87ff',
+          'cb-violet': '#875fff',
+          'cb-shade': '#444444',
+          'cb-success': '#b8bb26',
+          'cb-danger': '#fb4934'
+        },
+        fontFamily: {
+          mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+        }
+      }
+    }
+  }
+</script>
+<style>
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none !important;
+    }
+  }
+  .spinner {
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+<div class="bg-canvas m-0 p-0 font-mono text-text-base antialiased flex flex-col items-center justify-center min-h-screen">
+  <div class="w-full max-w-[960px] p-4 sm:p-8">
+    <div class="text-muted text-xs mb-3 text-center tracking-wide">Sample data · design preview</div>
+    <div class="bg-terminal rounded-lg shadow-2xl overflow-hidden border border-cb-shade/30">
+      <div class="flex items-center px-4 py-3 border-b border-cb-shade/30 bg-terminal/80">
+        <div class="flex space-x-2">
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+        </div>
+        <div class="mx-auto text-xs text-muted">cb status</div>
+      </div>
+      <div class="p-6 sm:p-10 overflow-x-auto">
+<pre class="text-xs sm:text-sm leading-relaxed whitespace-pre">
+<span class="font-bold text-cb-orange">Circuit Breaker 0.4.7</span>  <span class="text-cb-purple">STATUS</span>  native / linux-amd64
+12 / 12 app units active · 1 shared service active
+<span class="text-muted">Service state only; run cb doctor for readiness checks.</span>
+
+<span class="font-bold text-cb-orange">APP SERVICES</span>
+  <span class="text-muted">Unit                                           State   Active since</span>
+  circuitbreaker-postgres                        <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-pgbouncer                       <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-redis                           <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-nats                            <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-backend                         <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-worker@discovery                <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-worker@notification             <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-worker@telemetry                <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-worker@integration              <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-worker@monitor_scheduler        <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-worker@monitor_poll             <span class="text-cb-success">active</span>  10:32 Sep 30
+  circuitbreaker-worker@monitor_probe_dispatch   <span class="text-cb-success">active</span>  10:32 Sep 30
+
+<span class="font-bold text-cb-orange">SHARED SERVICES</span>
+  nginx                                          <span class="text-cb-success">active</span>  09:14 Sep 30  <span class="text-muted">(shared)</span>
+
+<span class="font-bold text-cb-orange">INSTALL</span>
+  Identity: /etc/circuitbreaker/install-identity.json
+  Endpoint (configured): http://127.0.0.1:8088/api/v1/readyz
+
+  <span class="text-muted">Next:</span> cb doctor · cb logs -f · cb resources --watch
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>

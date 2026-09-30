@@ -1,0 +1,103 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Circuit Breaker — expanded worker resources</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          'canvas': '#111114',
+          'terminal': '#19191d',
+          'text-base': '#e4e4e7',
+          'muted': '#98989f',
+          'cb-orange': '#ff875f',
+          'cb-purple': '#af87ff',
+          'cb-violet': '#875fff',
+          'cb-shade': '#444444',
+          'cb-success': '#b8bb26',
+          'cb-danger': '#fb4934'
+        },
+        fontFamily: {
+          mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+        }
+      }
+    }
+  }
+</script>
+<style>
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none !important;
+    }
+  }
+  .spinner {
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+<div class="bg-canvas m-0 p-0 font-mono text-text-base antialiased flex flex-col items-center justify-center min-h-screen">
+  <div class="w-full max-w-[960px] p-4 sm:p-8">
+    <div class="text-muted text-xs mb-3 text-center tracking-wide">Sample data · design preview</div>
+    <div class="bg-terminal rounded-lg shadow-2xl overflow-hidden border border-cb-shade/30">
+      <div class="flex items-center px-4 py-3 border-b border-cb-shade/30 bg-terminal/80">
+        <div class="flex space-x-2">
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade"></div>
+        </div>
+        <div class="mx-auto text-xs text-muted">cb resources --watch</div>
+      </div>
+      <div class="p-6 sm:p-10 overflow-x-auto">
+<pre class="text-xs sm:text-sm leading-relaxed whitespace-pre">
+<span class="font-bold text-cb-orange">Circuit Breaker 0.4.7</span>  <span class="text-cb-purple">RESOURCES</span>  native
+<span class="text-muted">Sample window 2.0s · refresh 2s · sorted by CPU · workers expanded</span>
+<span class="text-muted">Scope: local app-owned services · shared nginx excluded</span>
+
+<span class="font-bold text-cb-orange">USAGE</span>
+  CPU      0.72 cores  <span class="text-cb-orange">███</span><span class="text-cb-shade">░░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>   9.0% of 8 visible CPUs
+  Memory   1.84 GiB    <span class="text-cb-orange">████</span><span class="text-cb-shade">░░░░░░░░░░░░░░░░░░░░░░░░░░░░</span>  11.5% of 16 GiB RAM
+           <span class="text-muted">Includes cache · cache 256 MiB · swap 24 MiB</span>
+  Disk     128 KiB/s read · 1.20 MiB/s write
+  Network  <span class="text-muted">unavailable — per-service accounting disabled</span>
+  <span class="text-muted">Shares use visible capacity; enclosing limits may be lower.</span>
+
+<span class="font-bold text-cb-orange">COMPONENTS</span>  <span class="text-muted">(sorted by CPU)</span>
+  <span class="text-muted">Component                       CPU cores     Memory    Read/s   Write/s  State</span>
+  API                                  0.18    420 MiB         0         0  active
+  PostgreSQL                           0.17    520 MiB   112 KiB   960 KiB  active
+  <span class="text-cb-danger">worker: telemetry</span>                    0.10    160 MiB     8 KiB    96 KiB  active
+  worker: discovery                    0.07    140 MiB     4 KiB    64 KiB  active
+  worker: monitor_poll                 0.05    110 MiB     2 KiB    48 KiB  active
+  worker: integration                  0.04    100 MiB     2 KiB    32 KiB  active
+  worker: monitor_probe_dispatch       0.03     80 MiB         0     8 KiB  active
+  Redis                                0.02    120 MiB         0         0  active
+  NATS                                 0.02     80 MiB         0    13 KiB  active
+  worker: monitor_scheduler            0.01     50 MiB         0     4 KiB  active
+  worker: notification                 0.01     40 MiB         0     4 KiB  active
+  PgBouncer                            0.01     32 MiB         0         0  active
+  Helper                               0.01     32 MiB         0         0  active
+
+<span class="font-bold text-cb-orange">SHARED LIMITS</span>
+  circuitbreaker.slice  1.30 / 3.00 GiB <span class="text-muted">(whole slice)</span>
+  <span class="text-muted">PostgreSQL and helper are outside this slice.</span>
+
+<span class="font-bold text-cb-orange">SHARED USAGE</span>
+  nginx                 0.03 cores / 46 MiB <span class="text-muted">(excluded from app totals)</span>
+
+<span class="font-bold text-cb-danger">ATTENTION</span>
+  telemetry worker      CPU throttled in 18% of periods
+
+<span class="text-muted">[q] quit  [c] CPU  [m] memory  [e] collapse workers  [j/k] scroll</span>
+</pre>
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>
