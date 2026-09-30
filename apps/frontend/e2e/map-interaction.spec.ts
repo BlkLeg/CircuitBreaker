@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { expectNoErrorBoundary, stubApi, waitForRouteSettled } from './fixtures/api';
 
 /**
@@ -196,6 +196,9 @@ test.describe('topology map', () => {
 });
 
 test.describe('topology map hover telemetry card', () => {
+  // Hover is a mouse interaction; touch devices never fire it. SKIP-050.
+  test.skip(({ hasTouch }) => hasTouch, 'Hover needs a mouse');
+
   const CHILDREN = Array.from({ length: 6 }, (_, index) => ({
     id: `hardware-${index + 2}`,
     type: 'hardware',
@@ -346,7 +349,10 @@ test.describe('topology map node panels', () => {
     await expect(close).toBeHidden();
   });
 
-  test('dragging the node details panel moves it with the pointer', async ({ page }) => {
+  test('dragging the node details panel moves it with the pointer', async ({ page, isMobile }) => {
+    // The 340px panel nearly fills a phone viewport, leaving no room to drag it
+    // 60px. SKIP-051.
+    test.skip(isMobile, 'No room to drag the panel on a phone');
     await stubApi(page, POPULATED);
     await page.goto('/map');
     await waitForRouteSettled(page);
@@ -376,28 +382,74 @@ test.describe('topology map node panels', () => {
     expect(Math.round(after.y - before.y)).toBe(0);
   });
 
-  for (const [where, clickOutside] of [
-    [
-      'empty canvas',
-      (page) => page.locator('.react-flow__pane').click({ position: { x: 900, y: 150 } }),
+  // The node the menu opens on, plus several others so that at least one stays
+  // clear of the menu and of the bottom dock whatever the viewport's layout.
+  const MENU_GRAPH = {
+    nodes: [
+      { id: 'hardware-1', type: 'hardware', label: 'edge-router', data: { entity_id: 1 } },
+      ...Array.from({ length: 5 }, (_, index) => ({
+        id: `hardware-${index + 2}`,
+        type: 'hardware',
+        label: `switch-${index + 2}`,
+        data: { entity_id: index + 2 },
+      })),
     ],
-    ['another node', (page) => page.locator('.react-flow__node', { hasText: 'nas-01' }).click()],
-    ['the page header', (page) => page.getByText('Topology', { exact: true }).click()],
+    edges: Array.from({ length: 5 }, (_, index) => ({
+      id: `menu-edge-${index}`,
+      source: 'hardware-1',
+      target: `hardware-${index + 2}`,
+      type: 'smart',
+    })),
+  };
+
+  // A point on one of `targets` where that element is topmost, so not under the
+  // open menu and, for the canvas, not under a node.
+  const uncoveredPoint = (targets: Locator) =>
+    targets.evaluateAll((elements) => {
+      for (const el of elements) {
+        const r = el.getBoundingClientRect();
+        const left = Math.max(r.left, 0);
+        const top = Math.max(r.top, 0);
+        const right = Math.min(r.right, window.innerWidth);
+        const bottom = Math.min(r.bottom, window.innerHeight);
+        for (let row = 1; row < 12; row += 1) {
+          for (let col = 1; col < 24; col += 1) {
+            const x = left + ((right - left) * col) / 24;
+            const y = top + ((bottom - top) * row) / 12;
+            const hit = document.elementFromPoint(x, y);
+            if (hit && (hit === el || el.contains(hit))) return { x, y };
+          }
+        }
+      }
+      return null;
+    });
+
+  for (const [where, targets, onPhones] of [
+    ['empty canvas', (page: Page) => page.locator('.react-flow__pane'), true],
+    [
+      'another node',
+      (page: Page) => page.locator('.react-flow__node:not([data-id="hardware-1"])'),
+      false,
+    ],
+    ['the page header', (page: Page) => page.getByText('Topology', { exact: true }), false],
   ] as const) {
-    test(`a left click on ${where} closes the node context menu`, async ({ page }) => {
-      await stubApi(page, POPULATED);
+    test(`a left click on ${where} closes the node context menu`, async ({ page, isMobile }) => {
+      // On a phone the menu covers nearly the whole screen, so only the
+      // empty-canvas case can reach an uncovered target there. SKIP-052.
+      test.skip(isMobile && !onPhones, 'The open menu covers this target on a phone');
+      await stubApi(page, { graph: MENU_GRAPH, 'graph/topology': MENU_GRAPH });
       await page.goto('/map');
       await waitForRouteSettled(page);
 
-      await page
-        .locator('.react-flow__node', { hasText: 'edge-router' })
-        .click({ button: 'right' });
+      await page.locator('.react-flow__node[data-id="hardware-1"]').click({ button: 'right' });
       const menu = page.locator('.context-menu');
       await expect(menu).toBeVisible();
 
       // React Flow's pan/zoom stops mousedown from propagating off the canvas
       // and nodes, and MapCanvas's pane handler threw before closing anything.
-      await clickOutside(page);
+      const point = await uncoveredPoint(targets(page));
+      expect(point, `no part of ${where} is clear of the open menu`).not.toBeNull();
+      await page.mouse.click(point!.x, point!.y);
       await expect(menu).toBeHidden();
     });
   }
