@@ -732,6 +732,15 @@ DOCKER_AVAILABLE=false
 INSTALL_DOCKER=true
 SKIP_CHECKSUM=false
 SKIP_SIGNATURE=false
+# Installer policy (not in the shared library): the last release that shipped
+# without SHA256SUMS.sig. Only this release, or an older one the operator asked
+# for with --version, may be installed unsigned.
+CB_LAST_UNSIGNED_RELEASE="0.4.6"
+# True only when the operator passed --version; CB_VERSION is later overwritten
+# from the release tag, which is not operator intent.
+CB_VERSION_EXPLICIT=false
+# Private temp dir for downloaded release metadata; removed by _cb_on_exit.
+CB_PRIVATE_TMP=""
 DOCKER_MODE=false
 
 # UI Functions
@@ -985,6 +994,11 @@ _cb_note_err() {
 _cb_on_exit() {
   local status=$?
   trap - ERR
+  # Private download directory (see stage0_download_bundle).
+  if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
+    rm -rf -- "$CB_PRIVATE_TMP"
+    CB_PRIVATE_TMP=""
+  fi
 
   if [[ "${status}" -eq 0 ]] || [[ "${_CB_EXIT_REPORTED:-false}" == "true" ]]; then
     if declare -f cb_ui_teardown >/dev/null 2>&1; then
@@ -1610,7 +1624,7 @@ cb_pick_release() {
 # The history of why verification fails closed (the 404 on a never-published
 # ".sha256" asset, and why `--ignore-missing` is not used) lives above
 # cb_verify_sums_entry in the inlined library.
-# Download one release asset to /tmp/cb-<name>. 0: downloaded. 1: the release
+# Download one release asset to <dest-dir>/<name> ($3, a private directory). 0: downloaded. 1: the release
 # does not publish it (the caller decides whether that is fatal). A failed
 # download stops the install: it is a network fault, not a verdict.
 #
@@ -1618,12 +1632,12 @@ cb_pick_release() {
 # ending the install silently under `set -euo pipefail`; it falls through to
 # "not published", which cb_check_bundle then refuses out loud.
 cb_fetch_release_asset() {
-  local release_json="$1" name="$2" url
+  local release_json="$1" name="$2" dest_dir="$3" url
   url=$(printf '%s' "$release_json" | jq -r --arg n "$name" '.assets[] | select(.name==$n) | .browser_download_url' 2>/dev/null || true)
   if [[ -z "$url" ]] || [[ "$url" == "null" ]]; then
     return 1
   fi
-  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 -o "/tmp/cb-${name}" "$url" \
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 -o "${dest_dir}/${name}" "$url" \
     || cb_fail "Could not download ${name} for release v${CB_VERSION}" \
                "Check internet connectivity and re-run"
 }
@@ -1646,6 +1660,23 @@ cb_check_attestation() {
   else
     cb_warn "Build provenance could not be verified with gh (offline, or this release has no attestation); the signature above still verified"
   fi
+}
+
+# Whether a release with no SHA256SUMS.sig may be installed. $1 version.
+# Only a canonical X.Y.Z (no leading zeros, after one leading v) qualifies, because the tag is
+# attacker-influenced and non-canonical forms (0.4.6.1, 00.4.7) mis-order under
+# version sorting. Then: the operator asked for that older version with
+# --version, or it is exactly the last release that shipped unsigned.
+cb_unsigned_release_allowed() {
+  local v="${1#v}"
+  [[ "$v" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || return 1
+  if [[ "$v" == "$CB_LAST_UNSIGNED_RELEASE" ]]; then
+    return 0
+  fi
+  if [[ "$CB_VERSION_EXPLICIT" == "true" ]] && ! cb_release_requires_signature "$v"; then
+    return 0
+  fi
+  return 1
 }
 
 # Decide whether a bundle may be installed: signature first, then hash.
@@ -1679,6 +1710,12 @@ cb_check_bundle() {
 
   if [[ -n "$sig" ]] && [[ "$SKIP_SIGNATURE" != "true" ]]; then
     cb_step "Verifying release signature"
+    local ssl_version
+    ssl_version="$(openssl version 2>/dev/null || true)"
+    if [[ ! "$ssl_version" =~ ^OpenSSL\ ([0-9]+)\. ]] || (( BASH_REMATCH[1] < 3 )); then
+      cb_fail "OpenSSL 3 is required to verify the release signature (found: ${ssl_version:-no openssl})" \
+        "Upgrade OpenSSL to 3.x, or pass --skip-signature only for a bundle you already trust"
+    fi
     tried="$(cb_release_keys | cut -d' ' -f1 | paste -sd, -)"
     if key_id="$(cb_verify_sums_signature "$sums" "$sig")"; then
       cb_ok "Signature verified (key ${key_id})"
@@ -1697,9 +1734,9 @@ cb_check_bundle() {
     fi
   elif [[ "$SKIP_SIGNATURE" == "true" ]]; then
     cb_warn "Skipping signature verification (--skip-signature); the SHA256 is still checked"
-  elif [[ "$origin" == "download" ]] && cb_release_requires_signature "$version"; then
+  elif [[ "$origin" == "download" ]] && ! cb_unsigned_release_allowed "$version"; then
     cb_fail "Release v${version} publishes no SHA256SUMS.sig" \
-      "Every release from v${CB_FIRST_SIGNED_RELEASE} on is signed; refusing an unsigned one. Pass --skip-signature only for a bundle you already trust"
+      "Every release from v${CB_FIRST_SIGNED_RELEASE} on is signed, and the newest release must be signed too; refusing an unsigned one. For a deliberate older install pass --version <x> (x below ${CB_FIRST_SIGNED_RELEASE}), or pass --skip-signature only for a bundle you already trust"
   elif [[ "$origin" == "download" ]]; then
     cb_warn "Release v${version} predates bundle signing (v${CB_FIRST_SIGNED_RELEASE}); checking its SHA256 only"
   else
@@ -1815,17 +1852,21 @@ stage0_download_bundle() {
     cb_ok "Downloaded $(du -h "/tmp/${tarball_name}" | cut -f1)"
 
     local sums_path="" sig_path=""
-    rm -f /tmp/cb-SHA256SUMS /tmp/cb-SHA256SUMS.sig
     if [[ "$SKIP_CHECKSUM" != "true" ]]; then
-      if cb_fetch_release_asset "$release_json" SHA256SUMS; then
-        sums_path=/tmp/cb-SHA256SUMS
+      # Private (0700) directory, removed by _cb_on_exit on every exit path.
+      CB_PRIVATE_TMP="$(mktemp -d)"
+      if cb_fetch_release_asset "$release_json" SHA256SUMS "$CB_PRIVATE_TMP"; then
+        sums_path="${CB_PRIVATE_TMP}/SHA256SUMS"
       fi
-      if [[ "$SKIP_SIGNATURE" != "true" ]] && cb_fetch_release_asset "$release_json" SHA256SUMS.sig; then
-        sig_path=/tmp/cb-SHA256SUMS.sig
+      if [[ "$SKIP_SIGNATURE" != "true" ]] && cb_fetch_release_asset "$release_json" SHA256SUMS.sig "$CB_PRIVATE_TMP"; then
+        sig_path="${CB_PRIVATE_TMP}/SHA256SUMS.sig"
       fi
     fi
     cb_check_bundle "/tmp/${tarball_name}" "$sums_path" "$sig_path" download "$CB_VERSION"
-    rm -f /tmp/cb-SHA256SUMS /tmp/cb-SHA256SUMS.sig
+    if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
+      rm -rf -- "$CB_PRIVATE_TMP"
+      CB_PRIVATE_TMP=""
+    fi
 
     CB_BUNDLE_TARBALL="/tmp/${tarball_name}"
   fi
@@ -2019,6 +2060,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --version)
       CB_VERSION="$2"
+      CB_VERSION_EXPLICIT=true
       shift 2
       ;;
     --channel)

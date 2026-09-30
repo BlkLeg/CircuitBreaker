@@ -31,6 +31,12 @@ def _function(name: str) -> str:
     return body.group(0)
 
 
+def _last_unsigned() -> str:
+    line = re.search(r'^CB_LAST_UNSIGNED_RELEASE="[^"]*"$', INSTALL_SH.read_text(), re.MULTILINE)
+    assert line, "CB_LAST_UNSIGNED_RELEASE assignment not found in install.sh"
+    return line.group(0)
+
+
 def _library() -> str:
     text = INSTALL_SH.read_text()
     return text[text.index(BEGIN) : text.index(END)]
@@ -72,7 +78,7 @@ class Setup:
 
     def check(self, sums: str, sig: str, origin: str, version: str, *,
               skip_checksum: bool = False, skip_signature: bool = False,
-              airgap: bool = True, keys: Path | None = None) -> subprocess.CompletedProcess[str]:
+              airgap: bool = True, keys: Path | None = None, explicit: bool = False) -> subprocess.CompletedProcess[str]:
         script = "\n".join([
             "set -euo pipefail",
             STUBS,
@@ -80,9 +86,12 @@ class Setup:
             f'_cb_embedded_release_keys() {{ cat "{keys or self.keys}"; }}',
             f"SKIP_CHECKSUM={'true' if skip_checksum else 'false'}",
             f"SKIP_SIGNATURE={'true' if skip_signature else 'false'}",
+            _last_unsigned(),
+            f"CB_VERSION_EXPLICIT={'true' if explicit else 'false'}",
             f"CB_AIRGAP={'true' if airgap else 'false'}",
             'CB_GITHUB_REPO="BlkLeg/CircuitBreaker"',
             _function("cb_check_attestation"),
+            _function("cb_unsigned_release_allowed"),
             _function("cb_check_bundle"),
             'cb_check_bundle "$1" "$2" "$3" "$4" "$5"',
         ])
@@ -250,3 +259,66 @@ def test_the_option_is_parsed_and_documented() -> None:
     assert re.search(r"^\s+--skip-signature\)\n\s+SKIP_SIGNATURE=true", text, re.MULTILINE)
     assert "--skip-signature" in _function("show_help")
     assert re.search(r"^SKIP_SIGNATURE=false$", text, re.MULTILINE)
+
+
+def test_default_path_accepts_only_the_last_unsigned_release(s: Setup) -> None:
+    r = s.check(str(s.sums), "", "download", "0.4.3")
+    assert r.returncode == 1
+    assert "publishes no SHA256SUMS.sig" in r.stdout
+    assert "--version" in r.stdout and "--skip-signature" in r.stdout
+
+
+def test_explicit_version_below_the_first_signed_release_may_be_unsigned(s: Setup) -> None:
+    r = s.check(str(s.sums), "", "download", "0.4.3", explicit=True)
+    assert r.returncode == 0, r.stdout
+    assert "predates bundle signing" in r.stdout
+    assert "SHA256 checksum verified" in r.stdout
+
+
+@pytest.mark.parametrize("version", ["0.4.6.1", "00.4.7", "0.4.6-rc.1", ""])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_a_non_canonical_version_is_never_accepted_unsigned(s: Setup, version: str, explicit: bool) -> None:
+    r = s.check(str(s.sums), "", "download", version, explicit=explicit)
+    assert r.returncode == 1
+    assert "publishes no SHA256SUMS.sig" in r.stdout
+
+
+def test_explicit_version_at_or_above_the_first_signed_release_still_needs_a_signature(s: Setup) -> None:
+    assert s.check(str(s.sums), "", "download", "0.4.7", explicit=True).returncode == 1
+
+
+def test_openssl_before_3_fails_with_the_found_version(s: Setup) -> None:
+    openssl = s.bin / "openssl"
+    openssl.write_text('#!/bin/sh\n[ "$1" = version ] && echo "OpenSSL 1.1.1w  11 Sep 2023"\nexit 1\n')
+    openssl.chmod(openssl.stat().st_mode | stat.S_IEXEC)
+    r = s.check(str(s.sums), str(s.sig), "download", "0.4.7")
+    assert r.returncode == 1
+    assert "OpenSSL 3 is required to verify the release signature" in r.stdout
+    assert "1.1.1w" in r.stdout
+
+
+def test_an_unreachable_sums_download_stops_the_install(s: Setup) -> None:
+    curl = s.bin / "curl"
+    curl.write_text("#!/bin/sh\nexit 22\n")
+    curl.chmod(curl.stat().st_mode | stat.S_IEXEC)
+    release = '{"assets":[{"name":"SHA256SUMS","browser_download_url":"https://example.invalid/SHA256SUMS"}]}'
+    script = "\n".join([
+        "set -euo pipefail", STUBS, 'CB_VERSION=0.4.7',
+        _function("cb_fetch_release_asset"),
+        f"cb_fetch_release_asset '{release}' SHA256SUMS \"{s.tmp}\"",
+        'echo REACHED',
+    ])
+    env = {**os.environ, "PATH": f"{s.bin}:{os.environ['PATH']}"}
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+    assert r.returncode != 0
+    assert "FAIL: Could not download SHA256SUMS" in r.stdout
+    assert "REACHED" not in r.stdout
+
+
+def test_a_release_not_publishing_the_asset_returns_1_without_failing(s: Setup) -> None:
+    script = "\n".join([
+        "set -euo pipefail", STUBS, 'CB_VERSION=0.4.7', _function("cb_fetch_release_asset"),
+        "rc=0", f"cb_fetch_release_asset '{{\"assets\":[]}}' SHA256SUMS \"{s.tmp}\" || rc=$?", 'echo "RC=$rc"',
+    ])
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert "RC=1" in r.stdout

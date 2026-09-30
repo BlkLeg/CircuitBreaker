@@ -33,7 +33,7 @@ OUTBOUND = re.compile(
         curl\s+-|wget\s+-|wget\s+http|docker\s+pull|dig\s+\+|
         apt-get\s+(?:install|update)|\$\{?PKG_MGR\}?\s+(?:install|update)|
         dnf\s+(?:install|config-manager)|pacman\s+-S|apk\s+add|
-        add-apt-repository|rpm\s+--import
+        add-apt-repository|rpm\s+--import|gh\s+(?:auth|attestation|api)
     )"""
 )
 DOUBLE_QUOTED = re.compile(r'"[^"]*"')

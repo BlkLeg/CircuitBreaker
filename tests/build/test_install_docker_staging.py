@@ -476,7 +476,7 @@ def test_an_unparseable_release_is_reported_as_not_published_not_a_crash(home):
             "CB_VERSION=1.2.3",
             _extract("cb_fetch_release_asset"),
             "rc=0",
-            "cb_fetch_release_asset '{}' SHA256SUMS || rc=$?",
+            "cb_fetch_release_asset '{}' SHA256SUMS /tmp || rc=$?",
             'echo "RC=$rc"',
         ]
     )

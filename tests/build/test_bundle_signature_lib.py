@@ -132,6 +132,13 @@ def test_an_unlisted_tarball_is_its_own_failure(rel: Release) -> None:
     assert bash('cb_verify_sums_entry "$1" "$2"', str(rel.sums), str(renamed)).returncode == 3
 
 
+def test_an_asc_entry_does_not_stand_in_for_the_tarball(rel: Release) -> None:
+    """`./x.tar.gz.asc` contains `./x.tar.gz`; a substring match would pass."""
+    digest = hashlib.sha256(rel.tarball.read_bytes()).hexdigest()
+    rel.sums.write_text(f"{digest}  ./{TARBALL}.asc\n")
+    assert bash('cb_verify_sums_entry "$1" "$2"', str(rel.sums), str(rel.tarball)).returncode == 3
+
+
 @pytest.mark.parametrize(
     ("version", "required"),
     [("0.4.6", False), ("0.4.6-rc.1", False), ("0.3.9", False), ("", False),

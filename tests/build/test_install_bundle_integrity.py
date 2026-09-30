@@ -6,18 +6,13 @@ release has ever published such an asset: release.yml builds one
 -name SHA256SUMS -exec sha256sum {} + > SHA256SUMS``) and uploads it with the
 rest of ``dist/release/``. So the fetch 404'd on every install.
 
-The skip was silent, which is what made a drifted asset name fatal rather than
-merely noisy: the verification lived in an ``elif curl ...`` with no ``else``,
-so a failed download of the checksum file meant the whole check was skipped and
-nothing was printed. Every ``curl | bash`` install unpacked and ran an
-unverified tarball as root while reporting success.
+The skip was silent: the verification lived in an ``elif curl ...`` with no
+``else``, so a failed download of the checksum file skipped the whole check.
 
-Two things are pinned here. The first is the asset name, checked against
-release.yml rather than hard-coded, because name drift between the workflow and
-the installer is the drift that killed this check. The second is that
-verification fails closed: no SHA256SUMS asset, an unreachable one, one that
-does not list our tarball, or a hash that does not match must each stop the
-install. Only --skip-checksum may waive it, and it says so out loud.
+Pinned here: the asset name install.sh fetches, checked against release.yml
+rather than hard-coded, because name drift between the workflow and the
+installer is the drift that killed this check. The fail-closed behaviour itself
+lives in test_install_bundle_verification.py.
 
 install.sh runs ``main`` at import time, so the functions under test are
 extracted and eval'd in a clean bash subshell rather than sourced -- the same
@@ -26,13 +21,8 @@ approach test_install_release_selection.py uses for cb_pick_release.
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 import re
 import shutil
-import subprocess
-import uuid
 from pathlib import Path
 
 import pytest
