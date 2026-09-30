@@ -83,6 +83,7 @@ export default function ProxmoxIntegrationSection() {
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const [fieldErrors, setFieldErrors] = useState({});
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
 
   const load = useCallback(async () => {
@@ -109,6 +110,15 @@ export default function ProxmoxIntegrationSection() {
 
   const handleSave = async () => {
     setSaveError(null);
+    // Save used to be disabled while a required field was empty, with nothing
+    // saying which one — and the name's placeholder reads like a filled-in
+    // value, so the form looked complete and the button just did nothing.
+    const missing = {};
+    if (!form.name.trim()) missing.name = 'Name missing';
+    if (!form.config_url.trim()) missing.config_url = 'URL missing';
+    if (!editId && !form.api_token.trim()) missing.api_token = 'API token missing';
+    setFieldErrors(missing);
+    if (Object.keys(missing).length > 0) return;
     setSaving(true);
     try {
       const payload = { ...form };
@@ -192,6 +202,7 @@ export default function ProxmoxIntegrationSection() {
 
   const handleEdit = (c) => {
     setEditId(c.id);
+    setFieldErrors({});
     setForm({
       name: c.name,
       config_url: c.config_url,
@@ -203,7 +214,15 @@ export default function ProxmoxIntegrationSection() {
     setShowAdd(true);
   };
 
-  const set = (k, v) => setForm((p) => ({ ...p, [k]: v }));
+  const set = (k, v) => {
+    setForm((p) => ({ ...p, [k]: v }));
+    setFieldErrors((p) => {
+      if (!(k in p)) return p;
+      const rest = { ...p };
+      delete rest[k];
+      return rest;
+    });
+  };
 
   return (
     <>
@@ -215,6 +234,7 @@ export default function ProxmoxIntegrationSection() {
             onClick={() => {
               setEditId(null);
               setSaveError(null);
+              setFieldErrors({});
               setForm({
                 name: '',
                 config_url: '',
@@ -649,16 +669,20 @@ export default function ProxmoxIntegrationSection() {
               {editId ? 'Edit Proxmox Cluster' : 'Add Proxmox Cluster'}
             </h4>
 
-            <SettingField label="Name" hint="A label for this cluster">
+            <SettingField label="Name" hint="A label for this cluster" error={fieldErrors.name}>
               <input
                 className="form-control"
                 value={form.name}
                 onChange={(e) => set('name', e.target.value)}
-                placeholder="Main Cluster"
+                placeholder="e.g. Main Cluster"
               />
             </SettingField>
 
-            <SettingField label="URL" hint="Proxmox API endpoint, e.g. https://proxmox.local:8006">
+            <SettingField
+              label="URL"
+              hint="Proxmox API endpoint, e.g. https://proxmox.local:8006"
+              error={fieldErrors.config_url}
+            >
               <input
                 className="form-control"
                 value={form.config_url}
@@ -674,6 +698,7 @@ export default function ProxmoxIntegrationSection() {
                   ? 'Leave blank to keep current token. Format: user@realm!tokenname=secret-uuid'
                   : 'Full API token string — e.g. user@pam!tokenname=secret-uuid'
               }
+              error={fieldErrors.api_token}
             >
               <input
                 className="form-control"
@@ -753,11 +778,7 @@ export default function ProxmoxIntegrationSection() {
             )}
 
             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-              <button
-                className="btn btn-sm btn-primary"
-                onClick={handleSave}
-                disabled={saving || !form.name || !form.config_url || (!editId && !form.api_token)}
-              >
+              <button className="btn btn-sm btn-primary" onClick={handleSave} disabled={saving}>
                 {saving ? 'Saving...' : editId ? 'Update' : 'Save'}
               </button>
               <button
@@ -766,6 +787,7 @@ export default function ProxmoxIntegrationSection() {
                   setShowAdd(false);
                   setEditId(null);
                   setSaveError(null);
+                  setFieldErrors({});
                 }}
               >
                 Cancel

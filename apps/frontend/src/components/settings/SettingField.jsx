@@ -31,6 +31,13 @@ const S = {
   content: {
     marginTop: 2,
   },
+  error: {
+    display: 'block',
+    marginTop: 6,
+    fontSize: 12,
+    fontWeight: 600,
+    color: 'var(--color-danger, #ef4444)',
+  },
 };
 
 SettingField.propTypes = {
@@ -38,9 +45,11 @@ SettingField.propTypes = {
   hint: PropTypes.string,
   children: PropTypes.node.isRequired,
   action: PropTypes.node,
+  /** Validation message shown under the control; marks the control invalid. */
+  error: PropTypes.string,
 };
 
-export default function SettingField({ label, hint, children, action }) {
+export default function SettingField({ label, hint, children, action, error }) {
   // ACC-10: the <label> had no htmlFor and the control is a sibling inside
   // S.content, so nothing associated them — every input and select wrapped in a
   // SettingField came back as an axe `label` / `select-name` violation, i.e.
@@ -51,13 +60,16 @@ export default function SettingField({ label, hint, children, action }) {
   // aria-label is touched, so callers that label themselves keep doing so.
   const controlId = useId();
   const hintId = hint ? `${controlId}-hint` : undefined;
+  const errorId = error ? `${controlId}-error` : undefined;
+  const describedBy = [hintId, errorId].filter(Boolean).join(' ') || undefined;
 
   const isLabelable =
     React.isValidElement(children) && !children.props.id && !children.props['aria-label'];
   const control = isLabelable
     ? React.cloneElement(children, {
         id: controlId,
-        'aria-describedby': hintId ?? children.props['aria-describedby'],
+        'aria-describedby': describedBy ?? children.props['aria-describedby'],
+        ...(error ? { 'aria-invalid': true } : {}),
       })
     : children;
 
@@ -77,6 +89,11 @@ export default function SettingField({ label, hint, children, action }) {
         {action && <div style={{ flexShrink: 0 }}>{action}</div>}
       </div>
       <div style={S.content}>{control}</div>
+      {error && (
+        <span id={errorId} role="alert" style={S.error}>
+          {error}
+        </span>
+      )}
     </div>
   );
 }
