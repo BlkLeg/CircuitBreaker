@@ -48,6 +48,18 @@ if str(ROOT) not in sys.path:
 from tests.build.test_cb_cli_contract import _bash  # noqa: E402
 
 
+def _missing_identity(tmp_path: Path) -> str:
+    """An install-identity path that does not exist, so cb uses this test's config.
+
+    Unset, cb searches /etc/circuitbreaker/install-identity.json and friends. On a
+    host with Circuit Breaker installed it found the real identity, switched to
+    native mode and sourced the root-only /etc/circuitbreaker/.env, and these
+    tests failed with "Unknown mode 'native'". An explicit path that is missing
+    makes cb skip that search, as on a host with nothing installed.
+    """
+    return str(tmp_path / "no-install-identity.json")
+
+
 def _harness(
     tmp_path: Path, *, env_file: bool, healthy: bool, docker_fail: str = ""
 ) -> tuple[Path, dict[str, str]]:
@@ -96,6 +108,7 @@ def _harness(
         "HOME": str(tmp_path),
         "PATH": f"{stubs}:/usr/bin:/bin",
         "CB_CONFIG_DIR": str(conf_dir),
+        "CB_IDENTITY_PATH": _missing_identity(tmp_path),
         "CB_TEST_DOCKER_FAIL": docker_fail,
     }
     return log, env
@@ -473,6 +486,7 @@ def _run_restore(tmp_path: Path, free_kb: str) -> tuple[subprocess.CompletedProc
             "HOME": str(tmp_path),
             "PATH": f"{stubs}:/usr/bin:/bin",
             "CB_CONFIG_DIR": str(conf_dir),
+            "CB_IDENTITY_PATH": _missing_identity(tmp_path),
             "CB_TEST_LOG": str(log),
             "CB_TEST_FREE_KB": free_kb,
         },
