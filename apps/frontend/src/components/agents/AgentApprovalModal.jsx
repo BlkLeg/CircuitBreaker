@@ -1,7 +1,8 @@
 /* eslint-disable security/detect-object-injection -- capability keys come from the CAPABILITY_INFO literal at the top of this file, never from input */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import PropTypes from 'prop-types';
-import { approveAgent, getAgent, getCapabilityDefaults } from '../../api/agents';
+import { approveAgent, getAgent, getCapabilityDefaults, rejectAgent } from '../../api/agents';
 import { hardwareApi } from '../../api/client';
 import { useToast } from '../common/Toast';
 import AgentIdentityComparison from './AgentIdentityComparison';
@@ -45,12 +46,13 @@ const HOST_LINK_SELECT = 'select';
 const HOST_LINK_CREATE = 'create';
 const HOST_LINK_UNLINKED = 'unlinked';
 
-export default function AgentApprovalModal({ agentId, onApproved, onClose }) {
+export default function AgentApprovalModal({ agentId, onApproved, onRejected, onClose }) {
   const toast = useToast();
   const [agent, setAgent] = useState(null);
   const [capabilities, setCapabilities] = useState({});
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const panelRef = useRef(null);
 
   const [hostLinkAction, setHostLinkAction] = useState(HOST_LINK_UNLINKED);
   const [hardwareOptions, setHardwareOptions] = useState(null);
@@ -103,6 +105,20 @@ export default function AgentApprovalModal({ agentId, onApproved, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostLinkAction]);
 
+  // Esc closes, like the other dialogs; not mid-submit, where closing would
+  // hide the outcome of a request that is still in flight.
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === 'Escape' && !submitting) onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose, submitting]);
+
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, []);
+
   const resolveHardwareId = async () => {
     switch (hostLinkAction) {
       case HOST_LINK_ACCEPT:
@@ -119,6 +135,19 @@ export default function AgentApprovalModal({ agentId, onApproved, onClose }) {
       case HOST_LINK_UNLINKED:
       default:
         return null;
+    }
+  };
+
+  const handleReject = async () => {
+    setSubmitting(true);
+    try {
+      await rejectAgent(agentId);
+      toast.success(`${agent?.hostname ?? 'Agent'} rejected`);
+      (onRejected ?? onClose)();
+    } catch {
+      toast.error('Reject failed');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -140,130 +169,197 @@ export default function AgentApprovalModal({ agentId, onApproved, onClose }) {
     }
   };
 
-  return (
-    <div role="dialog" aria-modal="true" className="agent-approval-modal">
-      <div className="agent-approval-modal__panel">
-        <h2>Approve agent</h2>
-        {loading && <p>Loading…</p>}
-        {!loading && agent && (
-          <>
-            {/* The fingerprint comparison and the duplicate-machine
-                alert moved into a shared component because AddAgentPanel's inline
-                approve step must render the same control — a second, hand-rolled
-                copy of an anti-impostor check is how one of them drifts. This
-                modal stays the wrapper for the Review-a-pinned-row path. */}
-            <AgentIdentityComparison agent={agent} />
+  const hostOption = (value, label, extra = null) => (
+    <div
+      className="agent-approval-modal__option"
+      data-selected={hostLinkAction === value ? 'true' : undefined}
+    >
+      <label>
+        <input
+          type="radio"
+          name="hostLinkAction"
+          value={value}
+          checked={hostLinkAction === value}
+          onChange={() => setHostLinkAction(value)}
+        />
+        <span>{label}</span>
+      </label>
+      {hostLinkAction === value && extra}
+    </div>
+  );
 
-            <fieldset>
-              <legend>Hardware link</legend>
-              {agent.proposed_hardware_id != null && (
-                <label>
-                  <input
-                    type="radio"
-                    name="hostLinkAction"
-                    value={HOST_LINK_ACCEPT}
-                    checked={hostLinkAction === HOST_LINK_ACCEPT}
-                    onChange={() => setHostLinkAction(HOST_LINK_ACCEPT)}
-                  />
-                  Accept proposed hardware: {agent.proposed_hardware_name}
-                </label>
-              )}
-              <label>
-                <input
-                  type="radio"
-                  name="hostLinkAction"
-                  value={HOST_LINK_SELECT}
-                  checked={hostLinkAction === HOST_LINK_SELECT}
-                  onChange={() => setHostLinkAction(HOST_LINK_SELECT)}
-                />
-                Select another hardware record
-              </label>
-              {hostLinkAction === HOST_LINK_SELECT && (
-                <select
-                  aria-label="Hardware record"
-                  value={selectedHardwareId}
-                  onChange={(e) => setSelectedHardwareId(e.target.value)}
-                  disabled={hardwareOptionsLoading}
-                >
-                  <option value="">
-                    {hardwareOptionsLoading ? 'Loading…' : 'Choose a hardware record'}
-                  </option>
-                  {(hardwareOptions ?? []).map((hw) => (
-                    <option key={hw.id} value={hw.id}>
-                      {hw.name}
-                    </option>
+  // Portalled to <body>: rendered in place it inherited the page's layout and
+  // sat under the app's top bar, and the agents page's scoped control styles
+  // do not reach it there, so it styles its own controls (agents.css).
+  const dialog = (
+    <div
+      className="agent-approval-modal"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !submitting) onClose();
+      }}
+    >
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="agent-approval-title"
+        tabIndex={-1}
+        className="agent-approval-modal__panel"
+      >
+        <header className="agent-approval-modal__head">
+          <div>
+            <h2 id="agent-approval-title">Approve agent</h2>
+            {agent && (
+              <p className="agent-approval-modal__subtitle">
+                {agent.hostname ?? 'This agent'} is waiting to join this Circuit Breaker.
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            className="agent-approval-modal__close"
+            onClick={onClose}
+            disabled={submitting}
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </header>
+
+        <div className="agent-approval-modal__body">
+          {loading && <p className="agent-approval-modal__status">Loading…</p>}
+          {!loading && !agent && (
+            <p className="agent-approval-modal__status">
+              The agent&rsquo;s details could not be loaded. Close this and try Review again.
+            </p>
+          )}
+          {!loading && agent && (
+            <>
+              {/* The fingerprint comparison and the duplicate-machine
+                  alert live in a shared component so every path that approves
+                  an agent renders the same anti-impostor check. */}
+              <section className="agent-approval-modal__section">
+                <h3 className="agent-approval-modal__label">Identity</h3>
+                <AgentIdentityComparison agent={agent} />
+              </section>
+
+              <fieldset className="agent-approval-modal__section">
+                <legend className="agent-approval-modal__label">Hardware link</legend>
+                <div className="agent-approval-modal__options">
+                  {agent.proposed_hardware_id != null &&
+                    hostOption(
+                      HOST_LINK_ACCEPT,
+                      <>
+                        Accept proposed hardware: <b>{agent.proposed_hardware_name}</b>
+                      </>
+                    )}
+                  {hostOption(
+                    HOST_LINK_SELECT,
+                    'Select another hardware record',
+                    <select
+                      aria-label="Hardware record"
+                      className="agent-approval-modal__field"
+                      value={selectedHardwareId}
+                      onChange={(e) => setSelectedHardwareId(e.target.value)}
+                      disabled={hardwareOptionsLoading}
+                    >
+                      <option value="">
+                        {hardwareOptionsLoading ? 'Loading…' : 'Choose a hardware record'}
+                      </option>
+                      {(hardwareOptions ?? []).map((hw) => (
+                        <option key={hw.id} value={hw.id}>
+                          {hw.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  {hostOption(
+                    HOST_LINK_CREATE,
+                    'Create a new hardware record from reported facts',
+                    <input
+                      aria-label="New hardware name"
+                      type="text"
+                      className="agent-approval-modal__field"
+                      value={newHardwareName}
+                      onChange={(e) => setNewHardwareName(e.target.value)}
+                    />
+                  )}
+                  {hostOption(HOST_LINK_UNLINKED, 'Leave unlinked')}
+                </div>
+              </fieldset>
+
+              <fieldset className="agent-approval-modal__section">
+                <legend className="agent-approval-modal__label">Capabilities</legend>
+                <div className="agent-approval-modal__options">
+                  {CAPABILITY_INFO.map(({ key, label, description }) => (
+                    <label key={key} className="agent-approval-modal__capability">
+                      <input
+                        type="checkbox"
+                        role="switch"
+                        checked={capabilities[key]?.enabled ?? false}
+                        onChange={(e) =>
+                          setCapabilities((prev) => ({
+                            ...prev,
+                            [key]: { ...prev[key], enabled: e.target.checked },
+                          }))
+                        }
+                      />
+                      <span>
+                        <span className="agent-approval-modal__capability-name">{label}</span>
+                        <span className="agent-approval-modal__capability-description">
+                          {description}
+                        </span>
+                      </span>
+                    </label>
                   ))}
-                </select>
-              )}
-              <label>
-                <input
-                  type="radio"
-                  name="hostLinkAction"
-                  value={HOST_LINK_CREATE}
-                  checked={hostLinkAction === HOST_LINK_CREATE}
-                  onChange={() => setHostLinkAction(HOST_LINK_CREATE)}
-                />
-                Create a new hardware record from reported facts
-              </label>
-              {hostLinkAction === HOST_LINK_CREATE && (
-                <input
-                  aria-label="New hardware name"
-                  type="text"
-                  value={newHardwareName}
-                  onChange={(e) => setNewHardwareName(e.target.value)}
-                />
-              )}
-              <label>
-                <input
-                  type="radio"
-                  name="hostLinkAction"
-                  value={HOST_LINK_UNLINKED}
-                  checked={hostLinkAction === HOST_LINK_UNLINKED}
-                  onChange={() => setHostLinkAction(HOST_LINK_UNLINKED)}
-                />
-                Leave unlinked
-              </label>
-            </fieldset>
+                </div>
+              </fieldset>
+            </>
+          )}
+        </div>
 
-            <fieldset>
-              <legend>Capabilities</legend>
-              {CAPABILITY_INFO.map(({ key, label, description }) => (
-                <label key={key} className="agent-approval-modal__capability">
-                  <input
-                    type="checkbox"
-                    checked={capabilities[key]?.enabled ?? false}
-                    onChange={(e) =>
-                      setCapabilities((prev) => ({
-                        ...prev,
-                        [key]: { ...prev[key], enabled: e.target.checked },
-                      }))
-                    }
-                  />
-                  {label}
-                  <span className="agent-approval-modal__capability-description">
-                    {description}
-                  </span>
-                </label>
-              ))}
-            </fieldset>
-
-            <div className="agent-approval-modal__actions">
-              <button type="button" onClick={onClose} disabled={submitting}>
-                Cancel
-              </button>
-              <button type="button" onClick={handleApprove} disabled={submitting}>
-                {submitting ? 'Approving…' : 'Approve'}
-              </button>
-            </div>
-          </>
-        )}
+        <footer className="agent-approval-modal__actions">
+          {agent && (
+            <button
+              type="button"
+              className="agent-approval-modal__button agent-approval-modal__button--danger"
+              onClick={handleReject}
+              disabled={submitting}
+            >
+              Reject
+            </button>
+          )}
+          <span className="agent-approval-modal__spacer" />
+          <button
+            type="button"
+            className="agent-approval-modal__button"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            Cancel
+          </button>
+          {agent && (
+            <button
+              type="button"
+              className="agent-approval-modal__button agent-approval-modal__button--primary"
+              onClick={handleApprove}
+              disabled={submitting}
+            >
+              {submitting ? 'Working…' : 'Approve agent'}
+            </button>
+          )}
+        </footer>
       </div>
     </div>
   );
+
+  return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body);
 }
 
 AgentApprovalModal.propTypes = {
   agentId: PropTypes.number.isRequired,
   onApproved: PropTypes.func,
+  /** Called after a successful reject; falls back to onClose. */
+  onRejected: PropTypes.func,
   onClose: PropTypes.func.isRequired,
 };

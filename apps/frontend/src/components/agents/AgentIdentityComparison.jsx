@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 
 /**
@@ -24,9 +24,23 @@ import PropTypes from 'prop-types';
  * the detail first rather than render this with the flag silently absent.
  */
 export default function AgentIdentityComparison({ agent }) {
+  const [copyState, setCopyState] = useState('idle');
+
+  // Copying is a convenience for pasting next to the agent's own output. It must
+  // never throw: the clipboard API is absent on plain http and in older browsers,
+  // and the fingerprint stays on screen to compare by eye either way.
+  const copyFingerprint = async () => {
+    try {
+      await navigator.clipboard.writeText(agent.fingerprint ?? '');
+      setCopyState('copied');
+    } catch {
+      setCopyState('unavailable');
+    }
+  };
+
   return (
     <>
-      <dl>
+      <dl className="agent-approval-modal__facts">
         <dt>Hostname</dt>
         <dd>{agent.hostname ?? 'unknown'}</dd>
         <dt>OS / Arch</dt>
@@ -34,7 +48,17 @@ export default function AgentIdentityComparison({ agent }) {
           {agent.os} / {agent.arch}
         </dd>
         <dt>Fingerprint</dt>
-        <dd className="agent-approval-modal__fingerprint">{agent.fingerprint}</dd>
+        <dd className="agent-approval-modal__fingerprint-row">
+          <span className="agent-approval-modal__fingerprint">{agent.fingerprint}</span>
+          <button
+            type="button"
+            className="agent-approval-modal__copy"
+            onClick={copyFingerprint}
+            aria-label="Copy fingerprint"
+          >
+            {copyState === 'copied' ? 'Copied' : copyState === 'unavailable' ? 'Select it' : 'Copy'}
+          </button>
+        </dd>
       </dl>
       <p className="agent-approval-modal__warning">
         Compare this fingerprint against the one printed by the agent before approving.
