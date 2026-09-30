@@ -92,3 +92,12 @@ test('the validator understands every keyword the schema uses', () => {
   Object.values(SCHEMA.properties).forEach(walk);
   assert.deepEqual([...used].filter((k) => !supported.has(k)), []);
 });
+
+test('runtime field with valid enum values is accepted', () => {
+  assert.deepEqual(validateIdentity({ ...VALID, runtime: 'pbs' }), []);
+  assert.deepEqual(validateIdentity({ ...VALID, runtime: 'pyinstaller' }), []);
+});
+
+test('runtime field with invalid enum value is rejected', () => {
+  assert.match(validateIdentity({ ...VALID, runtime: 'docker' }).join(), /runtime/);
+});

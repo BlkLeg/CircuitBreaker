@@ -17,11 +17,22 @@ export async function checkTrustedFile(
   } catch (error) {
     return { ok: false, reason: `${path} cannot be resolved (${error.code})`, code: error.code };
   }
-  const file = await stat(real);
+  let file;
+  try {
+    file = await stat(real);
+  } catch (error) {
+    return { ok: false, reason: `${real} cannot be inspected (${error.code})`, code: error.code };
+  }
   if (!file.isFile()) return { ok: false, reason: `${real} is not a regular file` };
   if (executable && (file.mode & 0o111) === 0) return { ok: false, reason: `${real} is not executable` };
   const parent = dirname(real);
-  for (const [label, target, info] of [['file', real, file], ['directory', parent, await stat(parent)]]) {
+  let parentInfo;
+  try {
+    parentInfo = await stat(parent);
+  } catch (error) {
+    return { ok: false, reason: `${parent} cannot be inspected (${error.code})`, code: error.code };
+  }
+  for (const [label, target, info] of [['file', real, file], ['directory', parent, parentInfo]]) {
     if (!trustedUids.includes(info.uid)) {
       return { ok: false, reason: `${label} ${target} is owned by uid ${info.uid}, not ${trustedUids.join(' or ')}` };
     }

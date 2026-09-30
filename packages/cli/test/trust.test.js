@@ -70,3 +70,15 @@ test('a missing file is refused with its error code', async () => {
   assert.equal(result.ok, false);
   assert.equal(result.code, 'ENOENT');
 });
+
+test('a file that cannot be inspected is refused with its error code', async () => {
+  const { file } = await sandbox();
+  const statError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+  const failingStat = async () => {
+    throw statError;
+  };
+  const result = await checkTrustedFile(file, { trustedUids: me, stat: failingStat });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /cannot be inspected/);
+  assert.equal(result.code, 'EACCES');
+});
