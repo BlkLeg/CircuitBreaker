@@ -60,7 +60,7 @@ pycparser==3.0
 pydantic==2.13.5
 pydantic-core==2.46.5
 pydantic-settings==2.15.0
-pyjwt==2.14.0
+pyjwt==2.15.1
 pyotp==2.10.0
 pysnmp==7.1.29
 python-dateutil==2.9.0.post0
