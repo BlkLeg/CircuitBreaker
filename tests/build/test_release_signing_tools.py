@@ -88,3 +88,37 @@ def test_sign_fails_loudly_on_a_bad_key(tmp_path: Path) -> None:
     )
     assert result.returncode != 0
     assert not (tmp_path / "out.sig").exists()
+
+
+def test_sign_does_not_leave_stale_signature_on_failure(tmp_path: Path) -> None:
+    key, _ = _keygen(tmp_path)
+    sums = tmp_path / "SHA256SUMS"
+    sums.write_text("ab" * 32 + "  ./circuit-breaker_0.4.7_linux_amd64.tar.gz\n")
+    sig = tmp_path / "SHA256SUMS.sig"
+    # Pre-create an old signature
+    sig.write_text("old\n")
+    bad = tmp_path / "bad.pem"
+    bad.write_text("not a key\n")
+    # Try to sign with a bad key
+    result = subprocess.run(
+        ["bash", str(SIGN), str(bad), str(sums), str(sig)],
+        capture_output=True, text=True,
+    )
+    # Should fail and remove the stale signature
+    assert result.returncode != 0
+    assert not sig.exists()
+
+
+def test_keygen_refuses_dangling_symlink(tmp_path: Path) -> None:
+    key = tmp_path / "k.pem"
+    target = tmp_path / "nonexistent"
+    # Create a dangling symlink at the output path
+    key.symlink_to(target)
+    result = subprocess.run(
+        ["bash", str(KEYGEN), str(key), "0.4.7"], capture_output=True, text=True
+    )
+    # Should refuse to overwrite the symlink
+    assert result.returncode != 0
+    assert "refusing to overwrite" in result.stderr
+    # The target should not have been created
+    assert not target.exists()

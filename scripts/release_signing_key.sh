@@ -15,7 +15,7 @@ out="${1:?usage: release_signing_key.sh <private-key-out> <first-version> [comme
 first="${2:?usage: release_signing_key.sh <private-key-out> <first-version> [comment]}"
 comment="${3:-release bundle key}"
 
-if [[ -e "$out" ]]; then
+if [[ -e "$out" || -L "$out" ]]; then
   echo "refusing to overwrite $out" >&2
   exit 1
 fi
