@@ -190,7 +190,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-in-release-image build-release build-from-source release-candidate release-stage-only release-promote version-sync release-untag agent-signing-key docker-build docker-push sign sbom
+.PHONY: build build-deps build-in-release-image build-release build-from-source release-candidate release-stage-only release-promote version-sync release-untag agent-signing-key release-signing-key docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -209,6 +209,11 @@ build-in-release-image: ## Build packages inside the ubuntu-22.04 image the rele
 
 agent-signing-key: ## Generate an Ed25519 agent-update signing keypair (operators who build their own agents)
 	.venv/bin/python scripts/agent_signing_key.py
+
+release-signing-key: ## Generate the release-bundle Ed25519 key pair (maintainer, once; see docs/release/bundle-signing.md)
+	@[ -n "$(OUT)" ] || (echo "usage: make release-signing-key OUT=/path/outside/the/repo/release-bundle.pem FIRST=0.4.7"; exit 1)
+	@[ -n "$(FIRST)" ] || (echo "usage: make release-signing-key OUT=... FIRST=<first version this key signs>"; exit 1)
+	bash scripts/release_signing_key.sh "$(OUT)" "$(FIRST)" "release bundle key, created $$(date -u +%F)"
 
 build-release: ## Install build deps then build all packages
 	$(MAKE) --no-print-directory build-deps
