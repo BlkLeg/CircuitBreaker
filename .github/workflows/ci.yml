@@ -572,6 +572,29 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # Same job as dev-ci.yml's npm-cli: both rulesets require its two check names,
+  # so the main-branch gate has to produce them too.
+  npm-cli:
+    name: npm CLI (Node ${{ matrix.node }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Unit tests
+        run: node --test packages/cli/test/*.test.js
+
+      - name: Packed-tarball smoke
+        run: scripts/ci/cli_packed_smoke.sh
+
   # The Playwright suite itself lives in browser-e2e.yml so that this workflow,
   # dev-ci.yml and release.yml share one definition. The aggregate below stays
   # here on purpose: a called workflow's jobs report as `<caller> / <job>`, so

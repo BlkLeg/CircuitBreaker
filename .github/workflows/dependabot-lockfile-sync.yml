@@ -107,7 +107,7 @@ jobs:
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       # The commit above was pushed with GITHUB_TOKEN, so GitHub starts no
-      # `push`/`pull_request` run for it and none of the 21 required checks
+      # `push`/`pull_request` run for it and none of the 23 required checks
       # would ever appear on the new head SHA — the PR would be unmergeable.
       # `workflow_dispatch` is permitted from GITHUB_TOKEN, and a dispatched
       # run's check runs attach to the head SHA of the ref it runs on.

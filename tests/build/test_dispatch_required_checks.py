@@ -1,7 +1,7 @@
 """scripts/ci/dispatch_required_checks.sh puts every required check on a branch.
 
 A commit pushed with GITHUB_TOKEN triggers no `push`/`pull_request` workflow,
-so the rulesets' 21 required checks never appear on it and the PR can never
+so the rulesets' 23 required checks never appear on it and the PR can never
 merge. The script dispatches the workflows instead. Its whole value is that
 the set it dispatches is complete, so that is what these tests pin:
 
@@ -144,9 +144,9 @@ def _producers(workflows: list[str]) -> dict[str, tuple[str, str, dict[str, Any]
     return produced
 
 
-def test_the_required_list_has_the_twenty_one_ruleset_checks() -> None:
-    assert len(REQUIRED_CHECKS) == 21
-    assert len(set(REQUIRED_CHECKS)) == 21, "duplicate name in REQUIRED_CHECKS"
+def test_the_required_list_has_the_twenty_three_ruleset_checks() -> None:
+    assert len(REQUIRED_CHECKS) == 23
+    assert len(set(REQUIRED_CHECKS)) == 23, "duplicate name in REQUIRED_CHECKS"
 
 
 def test_script_is_strict_bash_and_executable() -> None:

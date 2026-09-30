@@ -1,6 +1,6 @@
 name: Dependabot auto-merge
 
-# Patch and minor Dependabot updates into `dev` merge themselves once the 21
+# Patch and minor Dependabot updates into `dev` merge themselves once the 23
 # required checks pass; nothing else does. `gh pr merge --auto` only *queues*
 # the merge: the `dev` ruleset still decides, so a red check leaves the PR open
 # exactly as it would for a human.
