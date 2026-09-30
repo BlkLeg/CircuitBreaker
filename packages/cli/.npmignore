@@ -1,0 +1,9 @@
+test/
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.map
+*.log
+node_modules/

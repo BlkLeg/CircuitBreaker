@@ -1,0 +1,45 @@
+{
+  "name": "@blkleg/circuitbreaker",
+  "version": "0.4.6",
+  "private": true,
+  "description": "Linux management CLI for a self-hosted Circuit Breaker install.",
+  "type": "module",
+  "bin": {
+    "circuitbreaker": "bin/circuitbreaker.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "schemas/",
+    "compat/"
+  ],
+  "os": [
+    "linux"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "circuitbreaker",
+    "homelab",
+    "self-hosted",
+    "cli"
+  ],
+  "author": {
+    "name": "Shawnji",
+    "url": "https://github.com/BlkLeg"
+  },
+  "license": "MIT",
+  "homepage": "https://circuitbreaker.shawnji.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BlkLeg/CircuitBreaker.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/BlkLeg/CircuitBreaker/issues"
+  }
+}
