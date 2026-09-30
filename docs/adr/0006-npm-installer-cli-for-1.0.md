@@ -29,8 +29,8 @@ On 2026-09-30 the maintainer decided to include npm in the journey to 1.0 and an
    It is a way into the same install that `install.sh` performs, not a second product.
 2. **It installs signed releases, fail-closed.** The CLI downloads the signed server release
    bundle for the host, verifies its checksum, signature and provenance before anything is
-   installed, and refuses on any mismatch (NPM-03). It exposes install, status, update, rollback and
-   uninstall. Its `preinstall`/`postinstall` scripts download nothing and change nothing on the
+   installed, and refuses on any mismatch (NPM-03). It carries every native `cb` command, plus
+   install and rollback (see below). Its `preinstall`/`postinstall` scripts download nothing and change nothing on the
    system; every system change follows an explicit command (NPM-10).
 3. **It respects air-gap.** With `CB_AIRGAP=true` it makes no outbound request and installs only
    from a bundle it is handed, as `install.sh --local-bundle --airgap` does.
@@ -46,20 +46,35 @@ On 2026-09-30 the maintainer decided to include npm in the journey to 1.0 and an
    that — private manifests, no publish workflow, no npm install path in the docs — and is revised
    deliberately in the same change that first publishes the package.
 
-## To settle before implementation
+## Approved before implementation (2026-09-30)
 
-NPM-01's acceptance asks for these to be approved before any code is written:
+NPM-01's acceptance asks for the name, commands, platforms, versioning and relationship to the
+server artifacts to be approved before any code is written. The maintainer approved them on
+2026-09-30 (evidence: `specs/1.0.0/evidence/npm-01-installer-cli-approval-2026-09-30.md`):
 
-- **Package name.** `@blkleg/circuitbreaker` is the working name (NPM-02's example); confirm it and
-  reserve the scope.
-- **Commands.** At least install, status, update, rollback and uninstall (NPM-03).
-- **Platforms.** Circuit Breaker's server runs on Linux only, so the CLI's install command targets
-  Linux hosts. Every platform the CLI claims must be smoke-tested (NPM-08); claim only what is
-  tested.
-- **Versioning.** Lockstep with `VERSION`, the Git tag and the release artifacts (NPM-11).
-- **Maintainers.** NPM-12 asks for two maintainers with organization MFA and recovery ownership.
-  The project has one maintainer today, so before the first publish this needs either a second
-  maintainer or recovery owner, or a recorded exception with a compensating control.
+- **Package name:** `@blkleg/circuitbreaker`. The `@blkleg` scope is reserved before the first
+  publish (NPM-12).
+- **Commands:** every command the native `cb` CLI has carries over — `info`, `status`,
+  `resources`, `doctor`, `diag bundle`, `setup`, `setup-token`, `logs`, `restart`, `backup`,
+  `restore`, `migrate`, `token`, `user`, `agent`, `config validate`, `vault-recover`, `version`,
+  `uninstall` and `help` — plus `install` and `rollback`, which NPM-03 requires. `update` performs
+  the native upgrade (`install.sh --upgrade`), where the native `cb update` only points at the
+  installer today.
+- **Platforms:** Linux only for 1.0, matching the server. Windows development and testing begins
+  after v0.5.0; until then Windows is not a claimed platform, and nothing is claimed that NPM-08's
+  smoke tests do not cover.
+- **Versioning:** lockstep with `VERSION` and the release tags; the package version, tag, GitHub
+  Release, downloaded artifacts and reported version agree exactly (NPM-11).
+- **Relationship to the server artifacts:** the CLI downloads and verifies the same signed release
+  bundles `install.sh` installs; it ships no server code of its own (NPM-03, NPM-05).
+- **Maintainers:** one. NPM-12's two-maintainer clause is excepted under **EXC-005**. The
+  maintainer's npm account has two-factor authentication; npm organization MFA, documented
+  recovery ownership and periodic access review are still required.
+- **Publishing credentials:** releases publish through GitHub Actions trusted publishing (OIDC)
+  with provenance, from the protected `release` environment (NPM-13). Where OIDC cannot be used —
+  npm only allows trusted publishing for a package that already exists, so most likely the first
+  publish — a granular access token is used: publish-only, scoped to `@blkleg/circuitbreaker`,
+  short-lived, and revoked once trusted publishing is configured.
 
 ## Consequences
 
@@ -70,10 +85,10 @@ NPM-01's acceptance asks for these to be approved before any code is written:
 - The release gate grows too: allowlisted, size-budgeted tarball contents (NPM-05, NPM-07), smoke
   tests of the packed `.tgz` on every claimed platform (NPM-08), failure-path tests (NPM-09) and a
   version-parity gate (NPM-11).
-- In the release-control records: EXC-003 closes; NPM-01 is in progress (purpose chosen, the
-  items above still to approve); NPM-02, NPM-03 and NPM-05 to NPM-15 are not started; NPM-04 is
-  excepted under EXC-004; RISK-009 stays open, retargeted from "keep npm off the surface" to "ship
-  the CLI through its gates, and keep it off the surface until then". EXEC-06, which NPM-01 blocks,
-  stays blocked until NPM-01 is accepted.
+- In the release-control records: EXC-003 closes; NPM-01 passes on the 2026-09-30 approvals
+  above; NPM-02, NPM-03 and NPM-05 to NPM-15 are not started; NPM-04 is
+  excepted under EXC-004; NPM-12's two-maintainer clause is excepted under EXC-005; RISK-009 stays open, retargeted from "keep npm off the surface" to "ship
+  the CLI through its gates, and keep it off the surface until then". EXEC-06 is no longer blocked
+  on NPM-01.
 - `specs/1.0.0/08-npm-distribution.md` becomes the requirement set for 1.0 work rather than the
   design for a future channel.
