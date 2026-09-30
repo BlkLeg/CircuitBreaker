@@ -149,6 +149,34 @@ def test_the_embedded_list_is_the_key_file_byte_for_byte() -> None:
     assert r.stdout == KEYS.read_text()
 
 
+def test_cb_verify_sums_entry_returns_3_when_sums_file_is_missing_under_set_e(rel: Release) -> None:
+    # Under set -euo pipefail, missing sums file should return 3, not awk's error code 2
+    r = bash('cb_verify_sums_entry "$1" "$2"', "/nonexistent/SHA256SUMS", str(rel.tarball))
+    assert r.returncode == 3, f"Expected rc=3 for missing sums, got rc={r.returncode}\nstderr: {r.stderr}"
+
+
+def test_cb_verify_sums_entry_returns_1_when_tarball_is_missing_under_set_e(rel: Release) -> None:
+    # Remove the tarball file but keep its entry in sums; should return 1 (mismatch)
+    rel.tarball.unlink()
+    r = bash('cb_verify_sums_entry "$1" "$2"', str(rel.sums), str(rel.tarball))
+    assert r.returncode == 1, f"Expected rc=1 for missing tarball, got rc={r.returncode}\nstderr: {r.stderr}"
+
+
+def test_cb_release_keys_tolerates_crlf_key_lines(tmp_path: Path, rel: Release) -> None:
+    # A key line with CRLF should be parsed correctly
+    key_id, rest = rel.keys.read_text().splitlines()[-1].split(" ", 1)
+    crlf_keys = tmp_path / "crlf.txt"
+    # Write a key line with CRLF line ending
+    crlf_keys.write_bytes((f"{key_id} {rest}\r\n").encode())
+    r = bash('cb_release_keys "$1"', str(crlf_keys))
+    assert r.returncode == 0
+    assert f"{key_id} " in r.stdout
+    # Now verify that a signature from this key verifies even with CRLF key lines
+    r = bash('cb_verify_sums_signature "$1" "$2" "$3"', str(rel.sums), str(rel.sig), str(crlf_keys))
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == key_id
+
+
 def test_every_committed_key_line_is_well_formed() -> None:
     import base64
 

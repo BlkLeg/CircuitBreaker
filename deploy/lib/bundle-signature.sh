@@ -36,6 +36,7 @@ cb_release_keys() {
     src="$(_cb_embedded_release_keys)"
   fi
   while IFS= read -r line; do
+    line="${line%$'\r'}"
     [[ -z "${line//[[:space:]]/}" || "$line" == \#* ]] && continue
     read -r key_id key _rest <<<"$line"
     [[ "$key_id" =~ ^[0-9a-f]{16}$ ]] || continue
@@ -85,9 +86,9 @@ cb_verify_sums_signature() {
 cb_verify_sums_entry() {
   local sums="$1" tarball="$2" name expected actual
   name="$(basename -- "$tarball")"
-  expected="$(awk -v want="./${name}" '$2 == want { print $1; exit }' "$sums")"
+  expected="$(awk -v want="./${name}" '$2 == want { print $1; exit }' "$sums" 2>/dev/null)" || return 3
   [[ -n "$expected" ]] || return 3
-  actual="$(sha256sum -- "$tarball" | cut -d' ' -f1)"
+  actual="$(sha256sum -- "$tarball" | cut -d' ' -f1)" || return 1
   [[ "$actual" == "$expected" ]] || return 1
 }
 
