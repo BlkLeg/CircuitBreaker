@@ -4,7 +4,7 @@ import { EXIT } from './exit-codes.js';
 import { CLI_VERSION } from './package-info.js';
 import { findNativeCommand } from './inventory.js';
 import { managementCompatibility } from './compat.js';
-import { loadIdentity } from './identity.js';
+import { loadIdentityFor } from './identity.js';
 import { checkTrustedFile } from './trust.js';
 import { forwardToNative, FORWARD_MARKER } from './bridge.js';
 import { renderHelp } from './help.js';
@@ -33,7 +33,10 @@ function refuse(deps, code, message) {
 }
 
 async function identityForForwarding(deps) {
-  const lookup = await loadIdentity(deps);
+  const lookup = await loadIdentityFor(deps);
+  if (lookup.status === 'untrusted') {
+    return refuse(deps, EXIT.TRUST, `refusing ${lookup.path} as root: ${lookup.reason}`);
+  }
   if (lookup.status === 'missing') {
     return refuse(deps, EXIT.UNSUPPORTED,
       `no install identity found (searched: ${lookup.searched.join(', ')}). ` +
@@ -44,11 +47,6 @@ async function identityForForwarding(deps) {
   }
   if (lookup.status === 'invalid') {
     return refuse(deps, EXIT.UNSUPPORTED, `${lookup.path} is not a valid install identity: ${lookup.problems.join('; ')}`);
-  }
-  if (deps.euid === 0) {
-    // Root must not run a cli_path that an unprivileged user could have written.
-    const trusted = await checkTrustedFile(lookup.path, { stat: deps.stat, realpath: deps.realpath, trustedUids: [0] });
-    if (!trusted.ok) return refuse(deps, EXIT.TRUST, `refusing ${lookup.path} as root: ${trusted.reason}`);
   }
   return lookup;
 }
@@ -82,7 +80,7 @@ async function dispatch(argv, deps) {
   }
   const [command = 'help', ...rest] = argv;
   if (command === 'help' || command === '--help' || command === '-h') {
-    deps.out(renderHelp(await loadIdentity(deps)));
+    deps.out(renderHelp(await loadIdentityFor(deps)));
     return EXIT.OK;
   }
   if (command === 'version' || command === '--version') return runVersion(rest, deps);

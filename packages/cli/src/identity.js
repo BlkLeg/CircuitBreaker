@@ -1,5 +1,6 @@
 import { readFile as fsReadFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { checkTrustedFile } from './trust.js';
 
 // A byte copy of specs/install/identity.schema.json; tests/build/test_cli_package.py
 // fails if the two diverge.
@@ -71,4 +72,28 @@ export async function loadIdentity({ env, home, readFile = fsReadFile }) {
     return problems.length ? { status: 'invalid', path, problems } : { status: 'found', path, identity: doc };
   }
   return unreadable ? { status: 'unreadable', path: unreadable, searched } : { status: 'missing', searched };
+}
+
+// Under root an identity file is trusted before it is read, and the bytes come from the
+// resolved path that was judged, so a path component swapped between check and read
+// cannot make root believe a file an unprivileged user wrote. A refusal surfaces as
+// status 'untrusted'; non-root lookups are plain loadIdentity.
+export async function loadIdentityFor(deps) {
+  if (deps.euid !== 0) return loadIdentity(deps);
+  const readFile = async (candidate, encoding) => {
+    const trusted = await checkTrustedFile(candidate, { stat: deps.stat, realpath: deps.realpath, trustedUids: [0] });
+    if (!trusted.ok) {
+      if (trusted.code === 'ENOENT' || trusted.code === 'ENOTDIR') {
+        throw Object.assign(new Error(trusted.reason), { code: trusted.code });
+      }
+      throw Object.assign(new Error(trusted.reason), { code: 'EUNTRUSTED', path: candidate });
+    }
+    return deps.readFile(trusted.path, encoding);
+  };
+  try {
+    return await loadIdentity({ ...deps, readFile });
+  } catch (error) {
+    if (error.code === 'EUNTRUSTED') return { status: 'untrusted', path: error.path, reason: error.message };
+    throw error;
+  }
 }

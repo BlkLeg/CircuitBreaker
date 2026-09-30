@@ -1,5 +1,5 @@
 import { EXIT } from './exit-codes.js';
-import { loadIdentity } from './identity.js';
+import { loadIdentityFor } from './identity.js';
 import { managementCompatibility } from './compat.js';
 
 export function buildVersionReport(cliVersion, lookup) {
@@ -29,7 +29,7 @@ export async function runVersion(args, deps) {
     deps.err(`circuitbreaker version: unknown option '${unknown[0]}'\n`);
     return EXIT.USAGE;
   }
-  const report = buildVersionReport(deps.cliVersion, await loadIdentity(deps));
+  const report = buildVersionReport(deps.cliVersion, await loadIdentityFor(deps));
   deps.out(args.includes('--json') ? `${JSON.stringify(report)}\n` : renderVersion(report));
   return EXIT.OK;
 }

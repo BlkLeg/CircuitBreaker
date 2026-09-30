@@ -181,3 +181,70 @@ test('identity read errors during forwarding become EXIT.UNSUPPORTED', async () 
   assert.equal(await run(['status'], deps), EXIT.UNSUPPORTED);
   assert.match(output.err, /ELOOP/);
 });
+
+function rootFakes(files) {
+  // files: resolved path -> text. Fake fs where every judged entry is a root-owned 0644 file.
+  const calls = { readFile: [], realpath: [], stat: [] };
+  const info = (isFile) => ({ uid: 0, mode: isFile ? 0o100644 : 0o040755, isFile: () => isFile });
+  return {
+    calls,
+    realpath: async (p) => { calls.realpath.push(p); return p; },
+    stat: async (p) => { calls.stat.push(p); return info(p in files); },
+    readFile: async (p) => { calls.readFile.push(p); if (p in files) return files[p]; throw Object.assign(new Error('x'), { code: 'ENOENT' }); },
+  };
+}
+
+test('as root, the bytes read are those of the resolved path that was trust-checked', async () => {
+  const { deps } = await host({ identity: {} });
+  const good = JSON.stringify({ schema_version: 1, mode: 'native', version: '0.4.7', installed_at: '2026-09-30T00:00:00Z' });
+  const fakes = rootFakes({ '/etc/circuitbreaker/checked.json': good });
+  let n = 0;
+  deps.euid = 0;
+  deps.trustedUids = [0];
+  deps.env = { PATH: '', CB_IDENTITY_PATH: '/home/u/.circuit-breaker/install-identity.json' };
+  deps.stat = fakes.stat;
+  deps.readFile = fakes.readFile;
+  deps.realpath = async (p) => { fakes.calls.realpath.push(p); n += 1; return n === 1 ? '/etc/circuitbreaker/checked.json' : '/home/u/evil.json'; };
+  const { output } = { output: { out: '' } };
+  deps.out = (t) => { output.out += t; };
+  assert.equal(await run(['version', '--json'], deps), EXIT.OK);
+  assert.deepEqual(fakes.calls.readFile, ['/etc/circuitbreaker/checked.json']);
+  assert.equal(JSON.parse(output.out).identity_path, '/home/u/.circuit-breaker/install-identity.json');
+});
+
+test('as root, help and version show an untrusted identity as status untrusted', async () => {
+  const { deps, output } = await host({ identity: {} });
+  deps.euid = 0;
+  deps.trustedUids = [0];
+  assert.equal(await run(['version', '--json'], deps), EXIT.OK);
+  assert.equal(JSON.parse(output.out).identity, 'untrusted');
+  output.out = '';
+  assert.equal(await run(['help'], deps), EXIT.OK);
+  assert.match(output.out, /Identity: untrusted/);
+});
+
+test('as root, a missing first candidate still finds a trusted second candidate', async () => {
+  const { deps, output } = await host({ identity: {} });
+  const good = JSON.stringify({ schema_version: 1, mode: 'native', version: '0.4.7', installed_at: '2026-09-30T00:00:00Z' });
+  const fakes = rootFakes({ '/etc/circuit-breaker/install-identity.json': good });
+  deps.euid = 0;
+  deps.env = { PATH: '' };
+  deps.home = undefined;
+  deps.stat = fakes.stat;
+  deps.readFile = fakes.readFile;
+  deps.realpath = async (p) => {
+    if (p === '/etc/circuitbreaker/install-identity.json') throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+    return p;
+  };
+  assert.equal(await run(['version', '--json'], deps), EXIT.OK);
+  assert.equal(JSON.parse(output.out).identity, 'found');
+  assert.deepEqual(fakes.calls.readFile, ['/etc/circuit-breaker/install-identity.json']);
+});
+
+test('a non-root run never trust-checks the identity file', async () => {
+  const { deps, identityPath } = await host({ identity: {} });
+  const seen = [];
+  deps.realpath = async (p) => { seen.push(p); return realpath(p); };
+  assert.equal(await run(['status'], deps), EXIT.OK);
+  assert.ok(!seen.includes(identityPath), 'identity path must not be realpath-checked');
+});
