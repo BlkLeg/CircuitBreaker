@@ -1,6 +1,6 @@
 # ADR 0004: npm Is Not a Supported 1.0 Distribution Channel
 
-**Status:** Accepted for 1.0 planning
+**Status:** Superseded by [ADR 0006](0006-npm-installer-cli-for-1.0.md) on 2026-09-30 — npm ships an installer CLI for 1.0
 **Date:** 2026-08-19
 **Requirements:** NPM-01 through NPM-15, RC-03, EXEC-06
 **Decision owners:** Distribution, security, release

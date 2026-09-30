@@ -1,5 +1,7 @@
 # npm Distribution Specification
 
+> **Decision (2026-09-30):** [ADR 0006](../../docs/adr/0006-npm-installer-cli-for-1.0.md) puts npm in scope for 1.0 as an **installer CLI**, answering NPM-01. NPM-02, NPM-03 and NPM-05 to NPM-15 are open 1.0 work; NPM-04 (SDK) is out of scope under EXC-004.
+
 **Status:** Draft; product decision required
 
 ## Outcome
