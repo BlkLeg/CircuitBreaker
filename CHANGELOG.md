@@ -15,7 +15,9 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
-## [0.4.6] — unreleased
+## [0.4.7] — unreleased
+
+## [0.4.6] — 2026-09-30
 
 A security fix for session tokens, and a topology map patch: panels and menus
 that would not close, a map that re-rendered continuously, and zoom that could
