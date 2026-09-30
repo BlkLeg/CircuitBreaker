@@ -1,7 +1,7 @@
 # Release bundle signing — design
 
 **Date:** 2026-09-30
-**Status:** Approved design, awaiting spec review
+**Status:** Approved 2026-09-30; implementation plan: [plans/2026-09-30-release-bundle-signing.md](../../plans/2026-09-30-release-bundle-signing.md)
 **Owner:** shawnji (release, security)
 **Requirements served:** NPM-03 (checksum, signature and provenance verification), and the
 air-gap and supply-chain principles in `CLAUDE.md`
