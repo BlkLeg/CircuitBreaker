@@ -17,10 +17,11 @@ next round.
 
 ## [0.4.6] — unreleased
 
-A topology map patch: panels and menus that would not close, a map that
-re-rendered continuously, and zoom that could not show a large map whole.
-Also clearer errors when adding a Proxmox cluster and a readable
-`cb resources`.
+A security fix for session tokens, and a topology map patch: panels and menus
+that would not close, a map that re-rendered continuously, and zoom that could
+not show a large map whole. Also a themed approval dialog for new agents,
+styling that had silently stopped applying across the app, clearer errors when
+adding a Proxmox cluster, and a readable `cb resources`.
 
 ### Fixed
 
@@ -46,9 +47,25 @@ Also clearer errors when adding a Proxmox cluster and a readable
 - Adding a Proxmox cluster with the name, URL or API token left empty now says
   which field is missing. The Save button used to be disabled with no
   explanation, and the name's placeholder looked like a value already entered.
+- The create-node dialog opens centred above the page. It fell into the lower
+  half of the screen and needed a scroll, sat under the top bar and dock, and
+  had bevelled buttons and inputs.
+- Hover, focus and disabled states, translucent theme colours and borders apply
+  again across the app. 35 style classes in 11 files, most of them in the map's
+  menus and dialogs, were written in a form that produced no CSS at all, and
+  bordered elements drew no border or the browser's bevel instead of the theme.
+- The upgrade instructions for native and Proxmox LXC installs give the command
+  that works, `install.sh --upgrade`. Several pages said `cb update`, which only
+  updates the single-container image and refuses on a native install.
 
 ### Changed
 
+- Approving a new agent happens in a themed dialog, from both the Add agent
+  flow and Review on a pending row. It shows the agent's identity with a copyable
+  fingerprint, flags a duplicate machine ID, and offers the hardware link and
+  capability choices; it can also reject the agent. The approve step in Add
+  agent used to approve with default capabilities only, and both screens
+  rendered with unstyled browser controls.
 - `cb resources` is readable. Output is grouped into usage, components, shared
   limits, attention, notices and what was not measured; CPU and memory show a
   capacity bar; each component's own RAM and CPU caps sit in its row instead of
@@ -60,9 +77,19 @@ Also clearer errors when adding a Proxmox cluster and a readable
 
 ### Security
 
+- Updated PyJWT to 2.15.1 for CVE-2026-101918. PyJWT signs and verifies the
+  session tokens every sign-in issues, so this is the reason to upgrade.
 - Updated `undici` (7.30.0) and `brace-expansion` (1.1.21, 5.0.12), both
   frontend development dependencies, for published denial-of-service and
   TLS-validation advisories. Neither ships in the application bundle.
+
+### Documentation
+
+- The README is rewritten around the current product, with new screenshots,
+  the one-line install first, and the upgrade and `cb` command references
+  corrected.
+- ADR 0006 puts an npm installer CLI, `@blkleg/circuitbreaker`, on the road to
+  1.0, superseding ADR 0004. Nothing is published to npm yet.
 
 ## [0.4.5] — 2026-09-29
 
