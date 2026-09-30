@@ -17,6 +17,12 @@ carries a status column.
 - **Superseded** — a later plan replaced it.
 - **Reference** — never a work item; a review, an index, or a deferred-item list.
 
+## cb-agent on macOS and Windows (2026-09-30)
+
+| Plan | Date | Status |
+|---|---|---|
+| [cb-agent on macOS and Windows](./2026-09-30-agent-macos-windows.md) | 2026-09-30 | **Active** — planned; no task started. Agent only; the server stays Linux-only. Platform seams first, then Windows after v0.5.0 on the maintainer's hardware, then macOS on a rented Apple silicon server with a performance target against the Linux arm64 baseline. Preview until a new ADR supersedes ADR 0001's line on macOS and Windows. |
+
 ## Map console and connection walkthrough (2026-09-29)
 
 | Plan | Date | Status |
