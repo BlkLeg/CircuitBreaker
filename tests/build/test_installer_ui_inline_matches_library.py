@@ -17,59 +17,75 @@ asserts it equals deploy/lib/ui.sh exactly, byte for byte.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = REPO_ROOT / "install.sh"
-UI_SH = REPO_ROOT / "deploy" / "lib" / "ui.sh"
 
-BEGIN_MARKER = (
-    "# --- BEGIN INLINED deploy/lib/ui.sh "
-    "— regenerate with scripts/ci/sync_installer_ui.py ---"
+# scripts/ is not a package, so load the sync script by path; it is the single
+# source of truth for which libraries are inlined and between which markers.
+_spec = importlib.util.spec_from_file_location(
+    "sync_installer_ui", REPO_ROOT / "scripts" / "ci" / "sync_installer_ui.py"
 )
-END_MARKER = "# --- END INLINED deploy/lib/ui.sh ---"
-
-_BLOCK_RE = re.compile(
-    re.escape(BEGIN_MARKER) + r"\n(.*)^" + re.escape(END_MARKER),
-    re.DOTALL | re.MULTILINE,
-)
+assert _spec is not None and _spec.loader is not None
+_sync = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_sync)
+BLOCKS: list[tuple[Path, str, str]] = _sync.BLOCKS
 
 _SYNC_COMMAND = ".venv/bin/python scripts/ci/sync_installer_ui.py"
 
 
-def test_the_inlining_markers_exist() -> None:
+def _block_re(begin: str, end: str) -> re.Pattern[str]:
+    return re.compile(
+        re.escape(begin) + r"\n(.*)^" + re.escape(end), re.DOTALL | re.MULTILINE
+    )
+
+
+_PARAMS = pytest.mark.parametrize(
+    ("library", "begin", "end"), BLOCKS, ids=[lib.name for lib, _, _ in BLOCKS]
+)
+
+
+@_PARAMS
+def test_the_inlining_markers_exist(library: Path, begin: str, end: str) -> None:
     """Guards the guard: if someone deletes the markers, the identity test
     below must not pass vacuously by finding nothing to compare."""
     text = INSTALL_SH.read_text(encoding="utf-8")
-    assert BEGIN_MARKER in text, (
-        f"install.sh is missing the marker {BEGIN_MARKER!r} — the inlined "
+    assert begin in text, (
+        f"install.sh is missing the marker {begin!r} — the inlined "
         f"renderer block can no longer be located, so run '{_SYNC_COMMAND}' "
         "and restore the marker comments around it."
     )
-    assert END_MARKER in text, (
-        f"install.sh is missing the marker {END_MARKER!r} — the inlined "
+    assert end in text, (
+        f"install.sh is missing the marker {end!r} — the inlined "
         f"renderer block can no longer be located, so run '{_SYNC_COMMAND}' "
         "and restore the marker comments around it."
     )
-    assert _BLOCK_RE.search(text), (
+    assert _block_re(begin, end).search(text), (
         "install.sh has both marker strings but not in the expected "
-        f"'{BEGIN_MARKER} ... {END_MARKER}' order/shape — the block between "
+        f"'{begin} ... {end}' order/shape — the block between "
         f"them cannot be extracted. Run '{_SYNC_COMMAND}' to regenerate it."
     )
 
 
-def test_the_inlined_block_matches_the_library_byte_for_byte() -> None:
+@_PARAMS
+def test_the_inlined_block_matches_the_library_byte_for_byte(
+    library: Path, begin: str, end: str
+) -> None:
     installer_text = INSTALL_SH.read_text(encoding="utf-8")
-    match = _BLOCK_RE.search(installer_text)
+    match = _block_re(begin, end).search(installer_text)
     assert match, (
-        f"could not find the inlined deploy/lib/ui.sh block in {INSTALL_SH} "
+        f"could not find the inlined {library.name} block in {INSTALL_SH} "
         f"— run '{_SYNC_COMMAND}' to regenerate it."
     )
     inlined = match.group(1)
-    library = UI_SH.read_text(encoding="utf-8")
-    assert inlined == library, (
-        "install.sh's inlined copy of deploy/lib/ui.sh has drifted from the "
+    library_text = library.read_text(encoding="utf-8")
+    assert inlined == library_text, (
+        f"install.sh's inlined copy of {library.name} has drifted from the "
         f"library. Run '{_SYNC_COMMAND}' to resync it, then commit the "
         "result."
     )
