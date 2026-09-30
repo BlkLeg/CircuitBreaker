@@ -322,3 +322,10 @@ def test_a_release_not_publishing_the_asset_returns_1_without_failing(s: Setup) 
     ])
     r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert "RC=1" in r.stdout
+
+
+def test_a_double_v_tag_is_not_read_as_the_last_unsigned_release(s: Setup) -> None:
+    """Tag vv0.4.6 leaves CB_VERSION=v0.4.6 after the installer's single strip."""
+    assert s.check(str(s.sums), "", "download", "v0.4.6").returncode == 1
+    assert s.check(str(s.sums), "", "download", "v0.4.3", explicit=True).returncode == 1
+    assert s.check(str(s.sums), "", "download", "0.4.6").returncode == 0

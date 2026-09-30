@@ -1663,12 +1663,12 @@ cb_check_attestation() {
 }
 
 # Whether a release with no SHA256SUMS.sig may be installed. $1 version.
-# Only a canonical X.Y.Z (no leading zeros, after one leading v) qualifies, because the tag is
+# Only a canonical X.Y.Z (no leading zeros, no v: the caller has already stripped the tag's one v) qualifies, because the tag is
 # attacker-influenced and non-canonical forms (0.4.6.1, 00.4.7) mis-order under
 # version sorting. Then: the operator asked for that older version with
 # --version, or it is exactly the last release that shipped unsigned.
 cb_unsigned_release_allowed() {
-  local v="${1#v}"
+  local v="$1"
   [[ "$v" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || return 1
   if [[ "$v" == "$CB_LAST_UNSIGNED_RELEASE" ]]; then
     return 0
