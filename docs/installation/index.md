@@ -23,7 +23,7 @@ from the same pins and must share the same `runtime_digest`.
 ## What to do
 
 Install and upgrade as before — [Quick Install](quick-install.md),
-`install.sh --upgrade` / `cb update`, or your package manager. No new
+`install.sh --upgrade` (see [Upgrading](upgrading.md)), or your package manager. No new
 operator steps for the hermetic cutover.
 
 ## Rollback
