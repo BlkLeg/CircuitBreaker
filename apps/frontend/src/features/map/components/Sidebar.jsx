@@ -509,24 +509,33 @@ export default function Sidebar({
 
   const startDrag = (event) => {
     if (event.button !== 0) return;
+    // Buttons in the header (close) are not drag handles.
+    if (event.target.closest('button')) return;
     const panel = panelRef.current;
     if (!panel) return;
 
+    // `position` is relative to the panel's parent, not the viewport. Dragging
+    // in viewport coordinates jumped the panel by the parent's offset on the
+    // first pixel of movement.
     const rect = panel.getBoundingClientRect();
+    const parent = panel.parentElement;
+    const parentRect = parent?.getBoundingClientRect() ?? { left: 0, top: 0 };
+    const originX = parentRect.left + (parent?.clientLeft ?? 0);
+    const originY = parentRect.top + (parent?.clientTop ?? 0);
+    const parentWidth = parent?.clientWidth || globalThis.innerWidth;
+    const parentHeight = parent?.clientHeight || globalThis.innerHeight;
     dragRef.current.offsetX = event.clientX - rect.left;
     dragRef.current.offsetY = event.clientY - rect.top;
     dragRef.current.dragging = true;
 
     const onMove = (moveEvent) => {
-      const width = rect.width;
-      const height = rect.height;
       const minX = 8;
       const minY = 8;
-      const maxX = Math.max(8, globalThis.innerWidth - width - 8);
-      const maxY = Math.max(8, globalThis.innerHeight - height - 8);
-      const x = Math.min(maxX, Math.max(minX, moveEvent.clientX - dragRef.current.offsetX));
-      const y = Math.min(maxY, Math.max(minY, moveEvent.clientY - dragRef.current.offsetY));
-      setPosition({ x, y });
+      const maxX = Math.max(8, parentWidth - rect.width - 8);
+      const maxY = Math.max(8, parentHeight - rect.height - 8);
+      const x = moveEvent.clientX - dragRef.current.offsetX - originX;
+      const y = moveEvent.clientY - dragRef.current.offsetY - originY;
+      setPosition({ x: Math.min(maxX, Math.max(minX, x)), y: Math.min(maxY, Math.max(minY, y)) });
     };
 
     const onUp = () => {

@@ -1037,6 +1037,28 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: gh workflow run release-followup.yml --ref dev -f version="${VERSION}"
 
+      # The website mirrors this repo's docs and changelog, and reads its
+      # releases from the API, so a publication is exactly when it needs to
+      # rebuild. site-sync.yml's push trigger never sees this: the promote
+      # published with GITHUB_TOKEN, and an event caused by GITHUB_TOKEN starts
+      # no workflow. A missing token only costs freshness — the site has an
+      # hourly schedule behind this — so it must never fail the release.
+      - name: Tell the site a release was published
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::No SITE_DISPATCH_TOKEN, so the site will publish v${VERSION} on its schedule instead."
+            exit 0
+          fi
+          # No sha: the site takes releases from the API and its docs from
+          # main, which is where this release's notes pages already live.
+          printf '{"event_type":"app-content-changed","client_payload":{"tag":"v%s"}}' "${VERSION}" \
+            | gh api repos/BlkLeg/circuitbreaker-site/dispatches --method POST --input -
+          echo "told the site about v${VERSION}"
+
       - name: Announce the release
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

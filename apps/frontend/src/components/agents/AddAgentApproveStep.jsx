@@ -1,112 +1,86 @@
 import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
-import { approveAgent, getAgent, getCapabilityDefaults, rejectAgent } from '../../api/agents';
+import { getAgent } from '../../api/agents';
 import { agentDisplayName } from '../../lib/agentLabel';
-import { useToast } from '../common/Toast';
-import AgentIdentityComparison from './AgentIdentityComparison';
+import AgentApprovalModal from './AgentApprovalModal';
+
+/** `SHA256:9f3c7b1e…bb61a71e` — enough to recognise, not to compare; the dialog shows it whole. */
+function shortFingerprint(fingerprint) {
+  if (!fingerprint || fingerprint.length <= 24) return fingerprint ?? '';
+  return `${fingerprint.slice(0, 15)}…${fingerprint.slice(-8)}`;
+}
 
 /**
  * Step 3 of the guided add-agent flow: the machine has checked in, so decide.
  *
- * One card per pending agent, each fetching its own `AgentRead`. The pending
- * row the page holds is an `AgentSummary` — it carries no `duplicate_machine_id`
- * and no `proposed_hardware_*`, so rendering the identity comparison straight
- * off it would drop the duplicate-machine alert without anything looking wrong.
+ * One compact card per pending agent. The decision itself happens in
+ * AgentApprovalModal — the same dialog "Review" on a pending fleet row opens —
+ * so onboarding gets the full identity check, hardware link and capability
+ * choices instead of a second, thinner approve path. The pending row the page
+ * holds is an `AgentSummary`, which carries no `duplicate_machine_id`, so the
+ * card fetches the `AgentRead` to flag a duplicate before the dialog is opened.
  */
 function PendingApprovalCard({ agent, onResolved, onReview }) {
-  const toast = useToast();
   const [detail, setDetail] = useState(null);
-  const [capabilities, setCapabilities] = useState(null);
   const [hasLoadFailed, setHasLoadFailed] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isReviewing, setIsReviewing] = useState(false);
   const label = agentDisplayName(agent, agent.id);
 
   useEffect(() => {
     let cancelled = false;
-    // Both reads must land before this card can approve anything: the detail
-    // carries the security signals, and the capability grant that approval
-    // sends comes from the server registry (see the note at the top of
-    // AgentApprovalModal) — never from a preset written on this side.
-    const loadDetail = async () => {
-      try {
-        const [{ data }, { data: defaults }] = await Promise.all([
-          getAgent(agent.id),
-          getCapabilityDefaults(),
-        ]);
-        if (cancelled) return;
-        setDetail(data);
-        setCapabilities(defaults ?? {});
-      } catch {
-        // Approving with a guessed preset is exactly what the defaults endpoint
-        // exists to prevent, so the inline path steps aside rather than
-        // improvising: the operator gets the full modal instead.
+    getAgent(agent.id)
+      .then(({ data }) => {
+        if (!cancelled) setDetail(data);
+      })
+      .catch(() => {
         if (!cancelled) setHasLoadFailed(true);
-      }
-    };
-    loadDetail();
+      });
     return () => {
       cancelled = true;
     };
   }, [agent.id]);
 
-  const submitDecision = async (decide, successMessage, failureMessage) => {
-    setIsSubmitting(true);
-    try {
-      await decide();
-      toast.success(successMessage);
-      onResolved?.();
-    } catch {
-      toast.error(failureMessage);
-    } finally {
-      setIsSubmitting(false);
-    }
+  // The agents page owns one approval dialog and passes onReview to open it;
+  // without one (the panel on its own) the card opens its own.
+  const review = () => (onReview ? onReview(agent.id) : setIsReviewing(true));
+  const resolved = () => {
+    setIsReviewing(false);
+    onResolved?.();
   };
-
-  if (hasLoadFailed) {
-    return (
-      <li className="add-agent__pending">
-        <p role="alert" className="add-agent__error">
-          Could not load the details for {label}. Review it before approving.
-        </p>
-        <button type="button" onClick={() => onReview?.(agent.id)}>
-          Review
-        </button>
-      </li>
-    );
-  }
-
-  if (!detail) return <li className="add-agent__pending">Loading {label}…</li>;
 
   return (
     <li className="add-agent__pending">
-      <h4>{label}</h4>
-      <AgentIdentityComparison agent={detail} />
-      <button
-        type="button"
-        disabled={isSubmitting}
-        onClick={() =>
-          submitDecision(
-            () => approveAgent(agent.id, { capabilities }),
-            `${detail.hostname ?? 'Agent'} approved`,
-            'Approval failed'
-          )
-        }
-      >
-        {isSubmitting ? 'Approving…' : 'Approve'}
+      <div className="add-agent__pending-summary">
+        <div className="add-agent__pending-title">
+          <span className="add-agent__pending-name">{label}</span>
+          <span className="add-agent__pending-chip">awaiting approval</span>
+          {detail?.duplicate_machine_id && (
+            <span className="add-agent__pending-chip add-agent__pending-chip--danger">
+              same machine ID as an enrolled agent
+            </span>
+          )}
+        </div>
+        <div className="add-agent__pending-meta">
+          {detail && (
+            <>
+              {detail.os} / {detail.arch} · {shortFingerprint(detail.fingerprint)}
+            </>
+          )}
+          {!detail && !hasLoadFailed && 'Loading details…'}
+          {hasLoadFailed && 'Details could not be loaded here; the review shows them.'}
+        </div>
+      </div>
+      <button type="button" className="add-agent__review" onClick={review}>
+        Review &amp; approve
       </button>
-      <button
-        type="button"
-        disabled={isSubmitting}
-        onClick={() =>
-          submitDecision(
-            () => rejectAgent(agent.id),
-            `${detail.hostname ?? 'Agent'} rejected`,
-            'Reject failed'
-          )
-        }
-      >
-        Reject
-      </button>
+      {isReviewing && (
+        <AgentApprovalModal
+          agentId={agent.id}
+          onApproved={resolved}
+          onRejected={resolved}
+          onClose={() => setIsReviewing(false)}
+        />
+      )}
     </li>
   );
 }

@@ -88,6 +88,7 @@ nav:
 #     MkDocs' not_in_nav globbing follows gitignore semantics, where a bare `*`
 #     does not cross a `/`: `/design/*.md` only reaches files directly under
 #     design/, not these two subdirectories, so they need their own glob line.
+#   - design/assets/ — READMEs beside design mockups (HTML/PNG), describing them
 #   - assets/screenshots/MANIFEST.md — provenance record for the image assets
 #   - installation/docker-compose-prod.md — redirect stub kept for old bookmarks
 #     (its content moved into installation/docker-compose.md); a dead sidebar
@@ -113,6 +114,7 @@ not_in_nav: |
   /design/*.md
   /design/approved-ui/*.md
   /design/backend-functions/*.md
+  /design/assets/**/*.md
   /plans/*.md
   /superpowers/plans/*.md
   /superpowers/specs/*.md

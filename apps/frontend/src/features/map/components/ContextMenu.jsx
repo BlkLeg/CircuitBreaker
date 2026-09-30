@@ -140,7 +140,7 @@ IconPickerPanel.propTypes = {
 
 function SubMenu({ title, items, type, nodeId, onAction, onClose, direction }) {
   const submenuRowClass =
-    'tw-group tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-text tw-flex tw-items-center tw-gap-2 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary tw-hover:tw-translate-x-0.5 tw-focus-visible:tw-outline-none tw-focus-visible:tw-ring-1 tw-focus-visible:tw-ring-cb-primary';
+    'tw-group tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-text tw-flex tw-items-center tw-gap-2 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary hover:tw-translate-x-0.5 focus-visible:tw-outline-none focus-visible:tw-ring-1 focus-visible:tw-ring-cb-primary';
   const submenuSideClass =
     direction === 'left'
       ? 'tw-absolute tw-right-full tw-top-0 tw-mr-1'
@@ -148,7 +148,7 @@ function SubMenu({ title, items, type, nodeId, onAction, onClose, direction }) {
 
   return (
     <div
-      className={`${submenuSideClass} tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}
+      className={`${submenuSideClass} tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden`}
     >
       <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider">
         Select {title}
@@ -169,7 +169,7 @@ function SubMenu({ title, items, type, nodeId, onAction, onClose, direction }) {
               }}
               className={submenuRowClass}
             >
-              <span className="tw-w-2 tw-h-2 tw-rounded-full tw-bg-cb-primary tw-transition-transform tw-duration-150 tw-group-hover:tw-scale-125" />
+              <span className="tw-w-2 tw-h-2 tw-rounded-full tw-bg-cb-primary tw-transition-transform tw-duration-150 group-hover:tw-scale-125" />
               <span className="tw-truncate">{item.data?.alias || item.data?.label || item.id}</span>
             </button>
           ))
@@ -335,14 +335,17 @@ function ContextMenu({
     };
   }, [node, position.x, position.y, avoidRectRef, avoidRectRef2]);
 
+  // pointerdown in the capture phase: React Flow's pan/zoom (d3-zoom) stops
+  // mousedown from propagating off the canvas and its nodes, so a bubbling
+  // mousedown listener never heard a left click there.
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (menuRef.current && !menuRef.current.contains(event.target)) {
         onClose();
       }
     };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    document.addEventListener('pointerdown', handleClickOutside, true);
+    return () => document.removeEventListener('pointerdown', handleClickOutside, true);
   }, [onClose]);
 
   if (!node) return null;
@@ -396,17 +399,17 @@ function ContextMenu({
         n.originalType === 'docker_network')
   );
   const menuRowClass =
-    'tw-group tw-relative tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-text tw-flex tw-items-center tw-gap-3 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary tw-hover:tw-translate-x-0.5 tw-focus-visible:tw-outline-none tw-focus-visible:tw-ring-1 tw-focus-visible:tw-ring-cb-primary';
+    'tw-group tw-relative tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-text tw-flex tw-items-center tw-gap-3 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary hover:tw-translate-x-0.5 focus-visible:tw-outline-none focus-visible:tw-ring-1 focus-visible:tw-ring-cb-primary';
   const menuRowDangerClass =
-    'context-menu-danger tw-group tw-relative tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-flex tw-items-center tw-gap-3 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary tw-hover:tw-translate-x-0.5 tw-focus-visible:tw-outline-none tw-focus-visible:tw-ring-1 tw-focus-visible:tw-ring-cb-primary';
+    'context-menu-danger tw-group tw-relative tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-flex tw-items-center tw-gap-3 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary hover:tw-translate-x-0.5 focus-visible:tw-outline-none focus-visible:tw-ring-1 focus-visible:tw-ring-cb-primary';
   const iconClass =
-    'tw-w-4 tw-h-4 tw-text-cb-text tw-transition-colors tw-duration-150 tw-group-hover:tw-text-cb-primary';
+    'tw-w-4 tw-h-4 tw-text-cb-text tw-transition-colors tw-duration-150 group-hover:tw-text-cb-primary';
 
   return (
     <div
       ref={menuRef}
       style={{ top: menuPosition.y, left: menuPosition.x, zIndex: 10000 }}
-      className="context-menu tw-fixed tw-w-64 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-visible tw-animate-in tw-fade-in tw-zoom-in-95 tw-duration-100"
+      className="context-menu tw-fixed tw-w-64 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-visible"
     >
       <div className="tw-px-4 tw-py-3 tw-border-b tw-border-cb-border tw-bg-cb-secondary tw-rounded-t-lg">
         <div className="tw-font-mono tw-font-bold tw-text-cb-text tw-text-sm">
@@ -456,7 +459,7 @@ function ContextMenu({
         {node.data?.docs?.length > 0 && (
           <>
             <div className="tw-my-1 tw-border-t tw-border-cb-border" />
-            <div className="tw-px-4 tw-py-1.5 tw-text-xs tw-font-semibold tw-text-cb-text-muted tw-uppercase tw-tracking-wider">
+            <div className="tw-px-4 tw-py-1.5 tw-text-xs tw-font-semibold tw-text-cb-muted tw-uppercase tw-tracking-wider">
               Documents
             </div>
             {node.data.docs.slice(0, 8).map((doc) => (
@@ -473,11 +476,11 @@ function ContextMenu({
                     ? `${(doc.title || 'Untitled').slice(0, 24)}…`
                     : doc.title || 'Untitled'}
                 </span>
-                <ExternalLink className="tw-w-3.5 tw-h-3.5 tw-text-cb-text-muted tw-flex-shrink-0" />
+                <ExternalLink className="tw-w-3.5 tw-h-3.5 tw-text-cb-muted tw-flex-shrink-0" />
               </a>
             ))}
             {node.data.docs.length > 8 && (
-              <div className="tw-px-4 tw-py-1 tw-text-xs tw-text-cb-text-muted">
+              <div className="tw-px-4 tw-py-1 tw-text-xs tw-text-cb-muted">
                 +{node.data.docs.length - 8} more in sidebar
               </div>
             )}
@@ -595,7 +598,7 @@ function ContextMenu({
                     <span
                       className={
                         node.data.monitor_enabled === false
-                          ? 'tw-text-cb-text-muted tw-text-xs'
+                          ? 'tw-text-cb-muted tw-text-xs'
                           : 'tw-text-cb-online tw-flex tw-items-center tw-gap-1 tw-text-xs'
                       }
                     >
@@ -646,7 +649,7 @@ function ContextMenu({
               <Server className={iconClass} />
               Link to Compute
             </div>
-            <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 tw-group-hover:tw-text-cb-primary tw-group-hover:tw-translate-x-0.5" />
+            <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 group-hover:tw-text-cb-primary group-hover:tw-translate-x-0.5" />
           </button>
           {activeSubmenu === 'compute' && (
             <SubMenu
@@ -671,7 +674,7 @@ function ContextMenu({
               <HardDrive className={iconClass} />
               Link to Storage
             </div>
-            <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 tw-group-hover:tw-text-cb-primary tw-group-hover:tw-translate-x-0.5" />
+            <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 group-hover:tw-text-cb-primary group-hover:tw-translate-x-0.5" />
           </button>
           {activeSubmenu === 'storage' && (
             <SubMenu
@@ -696,7 +699,7 @@ function ContextMenu({
               <Network className={iconClass} />
               Link to Network
             </div>
-            <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 tw-group-hover:tw-text-cb-primary tw-group-hover:tw-translate-x-0.5" />
+            <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 group-hover:tw-text-cb-primary group-hover:tw-translate-x-0.5" />
           </button>
           {activeSubmenu === 'network' && (
             <SubMenu
@@ -766,10 +769,10 @@ function ContextMenu({
                 >
                   <Layers className={iconClass} />
                   Move to map
-                  <ChevronRight className="tw-w-3 tw-h-3 tw-ml-auto tw-text-cb-text-muted" />
+                  <ChevronRight className="tw-w-3 tw-h-3 tw-ml-auto tw-text-cb-muted" />
                   {activeSubmenu === 'move_map' && (
                     <div
-                      className={`tw-absolute ${submenuDirection === 'left' ? 'tw-right-full tw-mr-1' : 'tw-left-full tw-ml-1'} tw-top-0 tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}
+                      className={`tw-absolute ${submenuDirection === 'left' ? 'tw-right-full tw-mr-1' : 'tw-left-full tw-ml-1'} tw-top-0 tw-w-48 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-overflow-hidden`}
                     >
                       <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider">
                         Select Map
@@ -838,11 +841,11 @@ function ContextMenu({
                   <Shapes className={iconClass} />
                   Node Icon
                 </div>
-                <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 tw-group-hover:tw-text-cb-primary tw-group-hover:tw-translate-x-0.5" />
+                <ChevronRight className="tw-w-3 tw-h-3 tw-text-cb-text tw-transition-all tw-duration-150 group-hover:tw-text-cb-primary group-hover:tw-translate-x-0.5" />
               </button>
               {activeSubmenu === 'shape' && (
                 <div
-                  className={`${submenuDirection === 'left' ? 'tw-absolute tw-right-full tw-mr-1' : 'tw-absolute tw-left-full tw-ml-1'} ${iconPickerVDir === 'up' ? 'tw-bottom-0' : 'tw-top-0'} tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl tw-animate-in tw-fade-in tw-slide-in-from-left-2 tw-duration-100`}
+                  className={`${submenuDirection === 'left' ? 'tw-absolute tw-right-full tw-mr-1' : 'tw-absolute tw-left-full tw-ml-1'} ${iconPickerVDir === 'up' ? 'tw-bottom-0' : 'tw-top-0'} tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-xl`}
                   style={{ width: 220 }}
                 >
                   <div className="tw-px-3 tw-py-2 tw-bg-cb-secondary tw-border-b tw-border-cb-border tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider tw-rounded-t-xl">
@@ -867,7 +870,7 @@ function ContextMenu({
           }}
           className={menuRowDangerClass}
         >
-          <Trash2 className="tw-w-4 tw-h-4 tw-text-cb-danger tw-transition-transform tw-duration-150 tw-group-hover:tw-scale-110" />
+          <Trash2 className="tw-w-4 tw-h-4 tw-text-cb-danger tw-transition-transform tw-duration-150 group-hover:tw-scale-110" />
           Delete Node
         </button>
       </div>

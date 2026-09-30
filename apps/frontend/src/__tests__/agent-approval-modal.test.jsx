@@ -5,11 +5,13 @@ import AgentApprovalModal from '../components/agents/AgentApprovalModal.jsx';
 
 const mockGetAgent = vi.fn();
 const mockApproveAgent = vi.fn();
+const mockRejectAgent = vi.fn();
 const mockGetCapabilityDefaults = vi.fn();
 
 vi.mock('../api/agents', () => ({
   getAgent: (...args) => mockGetAgent(...args),
   approveAgent: (...args) => mockApproveAgent(...args),
+  rejectAgent: (...args) => mockRejectAgent(...args),
   getCapabilityDefaults: (...args) => mockGetCapabilityDefaults(...args),
 }));
 
@@ -61,7 +63,11 @@ async function renderModal(agentOverrides = {}) {
   const onApproved = vi.fn();
   const onClose = vi.fn();
   render(<AgentApprovalModal agentId={7} onApproved={onApproved} onClose={onClose} />);
-  await waitFor(() => expect(screen.getByText(/box7/i)).toBeInTheDocument());
+  // The hostname appears in both the subtitle and the facts, so wait on the
+  // control that only renders once the agent has loaded.
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Approve agent' })).toBeInTheDocument()
+  );
   return { onApproved, onClose };
 }
 
@@ -212,5 +218,32 @@ describe('AgentApprovalModal', () => {
         },
       })
     );
+  });
+
+  it('rejects the agent and hands the outcome to onRejected', async () => {
+    mockRejectAgent.mockResolvedValue({ data: {} });
+    mockGetAgent.mockResolvedValue({ data: BASE_AGENT });
+    const onRejected = vi.fn();
+    const onClose = vi.fn();
+    render(<AgentApprovalModal agentId={7} onRejected={onRejected} onClose={onClose} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Reject' }));
+
+    await waitFor(() => expect(mockRejectAgent).toHaveBeenCalledWith(7));
+    expect(onRejected).toHaveBeenCalled();
+    expect(mockApproveAgent).not.toHaveBeenCalled();
+  });
+
+  it('falls back to closing when no onRejected is given', async () => {
+    mockRejectAgent.mockResolvedValue({ data: {} });
+    const { onClose } = await renderModal();
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('closes on Escape', async () => {
+    const { onClose } = await renderModal();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
   });
 });

@@ -24,12 +24,12 @@ function VisualLineContextMenu({ position, lineType, onChangeType, onDelete, onC
     const handleClick = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) onClose();
     };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
+    document.addEventListener('pointerdown', handleClick, true);
+    return () => document.removeEventListener('pointerdown', handleClick, true);
   }, [onClose]);
 
   const rowDanger =
-    'tw-group tw-relative tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-danger tw-bg-cb-surface tw-flex tw-items-center tw-gap-3 tw-transition-all tw-duration-150 tw-ease-out tw-hover:bg-cb-secondary tw-hover:tw-translate-x-0.5';
+    'tw-group tw-relative tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-danger tw-bg-cb-surface tw-flex tw-items-center tw-gap-3 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary hover:tw-translate-x-0.5';
 
   return (
     <div
@@ -37,7 +37,7 @@ function VisualLineContextMenu({ position, lineType, onChangeType, onDelete, onC
       role="menu"
       tabIndex={-1}
       style={{ top: menuPos.y, left: menuPos.x }}
-      className="tw-fixed tw-z-50 tw-w-56 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-hidden tw-animate-in tw-fade-in tw-zoom-in-95 tw-duration-100"
+      className="tw-fixed tw-z-50 tw-w-56 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-hidden"
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="tw-px-4 tw-py-2 tw-border-b tw-border-cb-border tw-bg-cb-secondary">
@@ -100,7 +100,7 @@ function VisualLineContextMenu({ position, lineType, onChangeType, onDelete, onC
           }}
           className={rowDanger}
         >
-          <Trash2 className="tw-w-4 tw-h-4 tw-text-cb-danger tw-transition-transform tw-duration-150 tw-group-hover:tw-scale-110" />
+          <Trash2 className="tw-w-4 tw-h-4 tw-text-cb-danger tw-transition-transform tw-duration-150 group-hover:tw-scale-110" />
           Delete Line
         </button>
       </div>

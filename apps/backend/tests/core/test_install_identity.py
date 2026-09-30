@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import app.core.install_identity as install_identity_module
 from app.core.install_identity import (
     InstallIdentityError,
     find_install_identity_path,
@@ -15,6 +16,9 @@ from app.core.install_identity import (
     repair_hint_for_mode,
     validate_install_identity,
 )
+
+# The real search paths, kept before any test redirects them.
+_REAL_SYSTEM_IDENTITY_PATHS = install_identity_module._SYSTEM_IDENTITY_PATHS
 
 
 def _minimal_identity(**overrides: object) -> dict[str, object]:
@@ -76,9 +80,19 @@ def test_candidate_order_includes_system_paths(
 ) -> None:
     monkeypatch.delenv("CB_IDENTITY_PATH", raising=False)
     paths = identity_candidate_paths(data_dir="/data", home=tmp_path)
-    assert Path("/etc/circuitbreaker/install-identity.json") in paths
+    # The fixture points the system paths at tmp_path; the order must still
+    # consult them, first.
+    assert paths[0] == install_identity_module._SYSTEM_IDENTITY_PATHS[0]
     assert Path("/data/install-identity.json") in paths
     assert tmp_path / ".circuit-breaker" / "install-identity.json" in paths
+
+
+def test_system_identity_paths_are_the_etc_locations() -> None:
+    """Captured at import, before the autouse fixture redirects them."""
+    assert _REAL_SYSTEM_IDENTITY_PATHS == (
+        Path("/etc/circuitbreaker/install-identity.json"),
+        Path("/etc/circuit-breaker/install-identity.json"),
+    )
 
 
 def test_repair_hint_is_mode_specific() -> None:

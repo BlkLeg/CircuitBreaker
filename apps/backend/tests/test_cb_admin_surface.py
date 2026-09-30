@@ -51,7 +51,15 @@ def _run(script: Path, args: list[str], env: dict[str, str]) -> subprocess.Compl
         ["bash", str(script), *args],
         capture_output=True,
         text=True,
-        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": env.get("HOME", "/"), **env},
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": env.get("HOME", "/"),
+            # A missing, explicit identity path keeps cb off the host's real
+            # /etc/circuitbreaker install, which otherwise wins over CB_CONFIG_DIR
+            # ("Unknown mode 'native'" on a machine with Circuit Breaker installed).
+            "CB_IDENTITY_PATH": str(Path(env.get("HOME", "/")) / "no-install-identity.json"),
+            **env,
+        },
     )
 
 

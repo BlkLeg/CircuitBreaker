@@ -20,10 +20,12 @@ the tree; your `.env`, data directory, vault key and TLS material stay put.
 
 Nothing new. Upgrade the same way you always have:
 
-- Native / Proxmox: `cb update` or `install.sh --upgrade`
+- Native / Proxmox LXC: re-run the installer with `--upgrade` (see [below](#native-proxmox-lxc)).
+  `cb update` does not upgrade a native install; it only updates the single-container (mono) image
 - Packages: `apt upgrade` / `dnf upgrade` once signed repos exist; until then
   reinstall the newer package the same way you installed
-- Docker: pull the image tag you pin (see channels below)
+- Docker Compose: pull the image tag you pin (see channels below)
+- Single Docker container (mono): `cb update`
 
 ## Rollback
 
@@ -63,26 +65,74 @@ Or in the UI: **Settings → About**.
 
 ## Native / Proxmox LXC
 
-If you installed natively with `install.sh` or via the Proxmox LXC helper (`cb-proxmox-deploy.sh`), upgrade with:
+If you installed natively with `install.sh` or with the Proxmox LXC helper
+(`cb-proxmox-deploy.sh`), upgrade by re-running the installer in upgrade mode:
 
 ```bash
-cb update
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash -s -- --upgrade
 ```
 
-This re-runs the installer in upgrade mode, which pulls the latest release, restarts the `circuitbreaker.target` units, and runs migrations automatically.
+Running the installer on a host that already has Circuit Breaker detects the
+install and upgrades it anyway; `--upgrade` just makes that explicit. In order,
+it:
 
-**For Proxmox LXC:** SSH into the container first, then run `cb update`:
+1. **Backs up the database** to `${CB_DATA_DIR}/backups/pre-upgrade-<stamp>.sql`,
+   and stops if that backup cannot be taken (see
+   [Rollback procedures](#rollback-procedures)). If the database is not running
+   there is nothing to lose, so it warns and continues.
+2. **Stops the services** and swaps in the new release, keeping the old
+   application tree as `python.prev` until the new one is healthy.
+3. **Applies configuration and database migrations.**
+4. **Restarts** `circuitbreaker.target` and waits for `/readyz`. If the new
+   release never reports healthy, it puts the previous one back.
+
+`cb update` is not the way to do this. On a native install it stops and prints
+the command above; it upgrades only the single-container (mono) image.
+
+### Upgrade options
+
+| Option | Use it to |
+|---|---|
+| `--version <version>` | Install a specific release instead of the latest, e.g. `--version 0.4.6` (no leading `v`) |
+| `--channel candidate` | Allow published pre-releases; the default, `stable`, never picks one |
+| `--local-bundle <path>` | Upgrade from a release tarball you downloaded yourself |
+| `--airgap` | Make no outbound request at all; needs `--local-bundle` and dependencies already installed |
+| `--unattended` | Skip every prompt (scripts, Proxmox LXC) |
+| `--force-deps` | Reinstall system dependencies as well |
+
+For an offline or air-gapped host, download the release tarball
+(`circuit-breaker_<version>_linux_<arch>.tar.gz`) and the release's `SHA256SUMS`
+from [GitHub Releases](https://github.com/BlkLeg/CircuitBreaker/releases) on a
+connected machine, and check it there:
+
+```bash
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+The installer verifies a bundle it downloads itself, but not one you hand it,
+so this check is yours. Then copy the tarball and `install.sh` to the host and
+run:
+
+```bash
+sudo bash install.sh --local-bundle circuit-breaker_<version>_linux_amd64.tar.gz --airgap --unattended
+```
+
+### Proxmox LXC
+
+Run the same command inside the container, either over SSH:
 
 ```bash
 ssh root@<container-ip>
-cb update
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --upgrade
 ```
 
-Or from the PVE host:
+or from the Proxmox host:
 
 ```bash
-pct exec <CTID> -- cb update
+pct exec <CTID> -- bash -c "curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --upgrade --unattended"
 ```
+
+Inside the container you are already root, so `sudo` is not needed.
 
 ### What persists across upgrades
 
@@ -153,7 +203,7 @@ reinstall the previous release:
 
 ```bash
 sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${CB_DATA_DIR}/backups/pre-upgrade-<stamp>.sql
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --version 0.3.5
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash -s -- --version <previous-version>
 ```
 
 Give `--version` **without** the leading `v` — the installer adds it when
@@ -248,4 +298,4 @@ before it stops the services. Two things about it are worth knowing before you n
 ## Related
 
 - [Backup & Restore](../backup-restore.md) — recommended before major upgrades
-- [cb CLI Tool](../cb-cli.md) — `cb update` and `cb version` reference
+- [cb CLI Tool](../cb-cli.md) — `cb version`, `cb backup` and `cb update` (single-container installs)

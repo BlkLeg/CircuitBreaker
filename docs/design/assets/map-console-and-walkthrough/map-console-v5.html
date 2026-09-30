@@ -1,0 +1,581 @@
+<!DOCTYPE html><html lang="en"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1912, height=983">
+  <title>Circuit Breaker - Topology</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+  <script src="https://unpkg.com/petite-vue" defer init></script>
+  <style>
+    :root {
+      --bg-gruvbox: #282828;
+      --surface-gruvbox: #3c3836;
+      --border-gruvbox: #504945;
+      --accent-orange: #fe8019;
+      --text-gruvbox: #ebdbb2;
+      --text-muted: #a89984;
+      --color-online: #b8bb26;
+      --color-hardware: #00f0ff;
+      --color-danger: #fb4934;
+      --color-info: #83a598;
+      --color-warning: #d79921;
+    }
+    
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: var(--bg-gruvbox);
+      color: var(--text-gruvbox);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      overflow: hidden;
+    }
+
+    .gruvbox-select {
+      background: var(--bg-gruvbox);
+      border: 1px solid var(--border-gruvbox);
+      color: var(--text-gruvbox);
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .toolbar-btn {
+      background: var(--surface-gruvbox);
+      border: 1px solid var(--border-gruvbox);
+      border-radius: 6px;
+      padding: 2px 10px;
+      font-size: 11px;
+      color: var(--text-gruvbox);
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .toolbar-btn:hover {
+      background: var(--border-gruvbox);
+    }
+
+    .toolbar-btn.active {
+      background: var(--accent-orange);
+      color: #282828;
+      border-color: var(--accent-orange);
+    }
+
+    .node-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-align: center;
+      margin-top: 4px;
+      max-width: 100px;
+      line-height: 1.1;
+    }
+
+    .node-ip {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 9px;
+      color: var(--accent-orange);
+      margin-top: 2px;
+    }
+
+    .hardware-node {
+      color: var(--color-hardware);
+      filter: drop-shadow(0 0 4px var(--color-hardware));
+    }
+
+    .edge-label {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 8px;
+      background: rgba(40, 40, 40, 0.8);
+      padding: 1px 4px;
+      border-radius: 4px;
+      border: 1px solid var(--border-gruvbox);
+      color: var(--text-muted);
+    }
+
+    .topology-container {
+      background-image: radial-gradient(circle, #3c3836 1px, transparent 1px);
+      background-size: 30px 30px;
+    }
+
+    /* Panel animations */
+    .panel-transition {
+      transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease-out;
+    }
+    
+    .drawer-hidden {
+      transform: translateY(100%);
+      opacity: 0;
+      pointer-events: none;
+      height: 0;
+    }
+    
+    .inspector-hidden {
+      transform: translateX(100%);
+      opacity: 0;
+      pointer-events: none;
+      width: 0;
+    }
+
+    .console-hidden-btn {
+      display: none;
+    }
+    
+    .console-active .console-hidden-btn {
+      display: flex;
+    }
+
+    /* Chart styling */
+    .chart-grid-line {
+      stroke: var(--border-gruvbox);
+      stroke-width: 1;
+      stroke-dasharray: 4 4;
+    }
+    .chart-axis-text {
+      fill: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+    }
+    .chart-line {
+      fill: none;
+      stroke-width: 1.5;
+    }
+    .chart-area {
+      opacity: 0.1;
+    }
+  </style>
+  <script>
+    function MapStore() {
+      return {
+        consoleVisible: true,
+        inspectorVisible: true,
+        telemetryVisible: true,
+        telemetryCollapsed: false,
+        walkthroughVisible: false,
+        
+        toggleConsole() {
+          this.consoleVisible = !this.consoleVisible;
+        },
+        toggleInspector() {
+          this.inspectorVisible = !this.inspectorVisible;
+        },
+        toggleTelemetry() {
+          this.telemetryVisible = !this.telemetryVisible;
+        },
+        showWalkthrough() {
+          this.walkthroughVisible = true;
+        },
+        hideWalkthrough() {
+          this.walkthroughVisible = false;
+        }
+      }
+    }
+  </script>
+<style>
+    @view-transition { navigation: auto; }
+    :root {
+      --color-bg: #282828;
+      --color-surface: #3c3836;
+      --color-surface-alt: #32302f;
+      --color-secondary: #3c3836;
+      --color-border: #504945;
+      --color-primary: #fe8019;
+      --color-primary-rgb: 254, 128, 25;
+      --color-danger: #fb4934;
+      --color-text: #ebdbb2;
+      --color-text-muted: #c8bfb0;
+      --color-online: #b8bb26;
+      --color-warning: #d79921;
+      --color-info: #83a598;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --radius: 6px;
+    }
+
+    body {
+      background-color: var(--color-bg);
+      color: var(--color-text);
+      font-family: system-ui, -apple-system, sans-serif;
+      overflow: hidden;
+      margin: 0;
+    }
+
+    .mono { font-family: var(--font-mono); }
+
+    .tech-grid {
+      background-image: radial-gradient(var(--color-border) 1px, transparent 1px);
+      background-size: 32px 32px;
+    }
+
+    .equipment-tile {
+      background: var(--color-surface-alt);
+      border: 1px solid var(--color-border);
+      border-radius: 4px;
+      transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.2s;
+    }
+
+    .equipment-tile:hover {
+      border-color: var(--color-primary);
+      transform: translateY(-1px);
+    }
+
+    .equipment-tile.active {
+      border-color: var(--color-primary);
+      box-shadow: 0 0 12px rgba(var(--color-primary-rgb), 0.2);
+    }
+
+    .region-boundary {
+      border: 1px dashed var(--color-border);
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    .region-title {
+      color: var(--color-text-muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .connector-path {
+      fill: none;
+      stroke: var(--color-border);
+      stroke-width: 1.5;
+    }
+
+    .connector-backbone {
+      stroke-width: 2.5;
+      stroke: var(--color-primary);
+      opacity: 0.6;
+    }
+
+    .connector-dashed {
+      stroke-dasharray: 4 4;
+      stroke: var(--color-text-muted);
+      opacity: 0.4;
+    }
+
+    .chart-grid line { stroke: #3c3836; }
+    .chart-trace { fill: none; stroke-width: 1.2; }
+    .chart-area { opacity: 0.1; }
+    .chart-trace-cpu { stroke: var(--color-primary); }
+    .chart-area-cpu { fill: var(--color-primary); }
+    .chart-trace-mem { stroke: var(--color-info); }
+    .chart-area-mem { fill: var(--color-info); }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+
+    .scroll-hide::-webkit-scrollbar { display: none; }
+    .scroll-hide { -ms-overflow-style: none; scrollbar-width: none; }
+  
+.noc-diagram{position:relative;flex:1;min-height:0;background-color:color-mix(in srgb,var(--color-bg) 82%,black);overflow:hidden}.noc-network{width:100%;height:100%;display:block}.noc-region-title{font-weight:650;letter-spacing:1.1px}.noc-device-name{font-weight:600}.noc-device{cursor:pointer}.noc-device:hover rect:first-child{stroke:var(--color-primary)}.noc-canvas-tools{position:absolute;right:18px;bottom:10px;display:flex;gap:5px}.noc-canvas-tools button,.noc-analysis-head button{color:var(--color-text);background:var(--color-surface);border:1px solid var(--color-border);border-radius:4px;padding:4px 9px;font-size:12px}.noc-analysis{height:248px;flex-shrink:0;display:grid;grid-template-columns:245px minmax(0,1fr) 255px;border-top:1px solid var(--color-border);background:color-mix(in srgb,var(--color-bg) 92%,black)}.noc-reading,.noc-throughput{padding:15px;border-right:1px solid var(--color-border)}.noc-throughput{border-left:1px solid var(--color-border);border-right:0}.noc-eyebrow{font-size:11px;color:var(--color-text-muted);letter-spacing:.6px;font-weight:650}.noc-reading h3{font-size:14px;margin:9px 0 5px;font-weight:600}.noc-source{font-size:11px;color:var(--color-text-muted)}.noc-value-pair{display:flex;justify-content:space-between;align-items:baseline;margin-top:15px;font-size:12px}.noc-value-pair strong{font-size:22px;color:var(--color-primary);font-weight:500}.noc-value-pair strong span{font-size:12px;color:var(--color-text-muted)}.noc-concept{margin-top:15px;font-size:10px;letter-spacing:1px;color:var(--color-info)}.noc-analysis-main{padding:11px 14px;min-width:0}.noc-analysis-head{display:flex;align-items:center;gap:10px;white-space:nowrap}.noc-analysis-head .noc-source{margin-left:auto;font-size:10px}.noc-history{width:100%;height:183px;display:block}.noc-chart-label{font-weight:600}.noc-inspection{font-size:11px;color:var(--color-primary);padding:7px 0 4px}.noc-inspection span{float:right;color:var(--color-text-muted);font-size:10px}.noc-rate-values{display:flex;justify-content:space-between;font-size:11px;margin:12px 0 4px}.noc-rate-values span:first-child{color:var(--color-online)}.noc-rate-values span:last-child{color:var(--color-info)}.noc-rate-values b{font-size:16px;font-weight:500}.noc-throughput svg{width:100%;height:155px}.noc-throughput .noc-source{font-size:10px;margin-top:4px}
+
+.noc-analysis{height:248px}.inspector-hidden,.drawer-hidden{display:none!important}.topology-container{background:#282828}.mono{font-family:ui-monospace,Menlo,Consolas,monospace}</style><style>
+.noc-analysis-main{padding:11px 0 0;overflow:hidden}
+.noc-analysis-head,.noc-inspection{padding-left:14px;padding-right:14px}
+.noc-history{width:100%;max-width:none;display:block}
+.noc-history text{paint-order:stroke;stroke:var(--color-bg);stroke-width:3px;stroke-linejoin:round}
+</style></head>
+<body v-scope="MapStore()">
+  <div class="flex flex-col h-screen w-full relative overflow-hidden">
+    
+    <!-- Persistent Header Component -->
+    <div v-show="consoleVisible">
+        <sd-component componentid="b051b7a2-a3f8-4f69-9e14-942af19bc47d" name="MapAppHeader"></sd-component>
+    </div>
+
+    <!-- Sub-header Command Strip -->
+    <div v-show="consoleVisible" class="flex flex-col border-b border-[#504945] bg-[#282828] px-4 py-2 gap-2 z-40 shadow-xl">
+      <div class="flex items-center gap-4">
+        <h2 class="text-lg font-bold tracking-tight text-[#ebdbb2] pr-2">Topology</h2>
+        
+        <div class="flex items-center gap-2">
+          <select class="gruvbox-select" aria-label="All Environments">
+            <option>All Environments</option>
+          </select>
+          <select class="gruvbox-select" aria-label="Group by">
+            <option>Group by...</option>
+          </select>
+          <input type="text" placeholder="Filter by tag..." class="bg-[#282828] border border-[#504945] rounded-md px-2 py-[2px] text-[12px] w-32 outline-none">
+        </div>
+
+        <div class="flex items-center gap-1 border-l border-[#504945] pl-3">
+          <span class="text-[10px] text-[#a89984] uppercase font-bold tracking-widest mr-1">Show:</span>
+          <button class="toolbar-btn active">Cluster</button>
+          <button class="toolbar-btn active">Hardware</button>
+          <button class="toolbar-btn active">Compute</button>
+          <button class="toolbar-btn active">Service</button>
+          <button class="toolbar-btn active">Storage</button>
+          <button class="toolbar-btn active">Network</button>
+          <button class="toolbar-btn">Misc</button>
+          <button class="toolbar-btn">External</button>
+          <button class="toolbar-btn active"><iconify-icon icon="logos:docker-icon" width="12"></iconify-icon> Docker</button>
+        </div>
+
+        <div class="flex items-center gap-1 border-l border-[#504945] pl-3">
+          <span class="text-[10px] text-[#a89984] uppercase font-bold tracking-widest mr-1">Role:</span>
+          <button class="toolbar-btn">Firewall</button>
+          <button class="toolbar-btn">Router</button>
+          <button class="toolbar-btn">Switch</button>
+        </div>
+
+        <!-- Operational situation facts -->
+        <div class="flex-1 flex justify-end items-center gap-3">
+           <div class="flex items-center gap-2 border border-[#504945] bg-[#3c3836] rounded px-2 py-1">
+               <div class="w-2 h-2 rounded-full bg-green-500"></div>
+               <span class="text-xs font-mono">Connected</span>
+               <span class="text-xs text-[#a89984] px-1">|</span>
+               <span class="text-xs font-mono">Last sample: <span class="text-[#ebdbb2]">Just now</span></span>
+           </div>
+           <button @click="showWalkthrough" class="toolbar-btn !bg-indigo-600/20 !border-indigo-500/50 !text-indigo-300 hover:!bg-indigo-600/40">
+               <iconify-icon icon="lucide:cable"></iconify-icon> Connection Walkthrough
+           </button>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+           <div class="flex items-center gap-2">
+            <button class="bg-orange-500/10 text-orange-500 border border-orange-500/20 rounded-md px-2 py-0.5 text-xs font-bold flex items-center gap-1">
+              <span class="w-2 h-2 rounded-full bg-orange-500"></span> Main
+            </button>
+            <span class="text-[11px] text-[#a89984]">Layout:</span>
+            <select class="gruvbox-select">
+              <option>Manual / Saved</option>
+              <option>Tree</option>
+              <option>Concentric Rings</option>
+            </select>
+          </div>
+
+          <div class="flex items-center gap-2 border-l border-[#504945] pl-3">
+            <span class="text-[11px] text-[#a89984]">Links:</span>
+            <select class="gruvbox-select">
+              <option>Bundled</option>
+            </select>
+            <span class="text-[11px] text-[#a89984]">Density:</span>
+            <select class="gruvbox-select">
+              <option>Normal</option>
+            </select>
+            <button class="toolbar-btn active bg-[#fe8019] text-[#282828]">Labels</button>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button class="toolbar-btn"><iconify-icon icon="lucide:maximize"></iconify-icon> Fullscreen</button>
+          <button class="toolbar-btn !bg-[#fe8019] !text-[#282828] !font-bold px-3">Save Positions</button>
+          <button class="toolbar-btn">Refresh</button>
+          <button class="toolbar-btn">Draw Tools <iconify-icon icon="lucide:chevron-down"></iconify-icon></button>
+          <button @click="toggleConsole" class="toolbar-btn text-[#a89984] hover:text-[#ebdbb2]">
+             <iconify-icon icon="lucide:panel-top-close"></iconify-icon> Hide Console
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Split View: Map + Inspector -->
+    <div class="flex-1 flex flex-row overflow-hidden relative">
+        
+        <!-- Map Canvas -->
+        <div class="flex-1 relative topology-container overflow-hidden">
+          
+          <svg class="absolute inset-0 w-full h-full" viewBox="350 174 1130 849" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Current native map screenshot: preserved branded nodes and hardware glyphs"><image href="https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/a44eac63-f5b5-4185-b1c9-18d768ecbc40/reference-assets/current-map-reference-1/current-map-reference-1.png" width="1810" height="1023"/></svg><span class="absolute top-3 left-3 text-[10px] text-[#a89984]">CURRENT NATIVE MAP · Screenshot reference, not a replacement renderer</span><!-- Restore Console FAB (Visible only when console hidden) -->
+          <button v-show="!consoleVisible" @click="toggleConsole" class="absolute top-4 right-4 z-50 bg-[#3c3836] border border-[#fe8019] text-[#ebdbb2] px-4 py-2 rounded-md shadow-lg flex items-center gap-2 hover:bg-[#504945]">
+              <iconify-icon icon="lucide:panel-bottom-open"></iconify-icon> Restore Console
+          </button>
+
+          <div v-show="consoleVisible" class="absolute top-3 right-3 z-40 flex gap-2 text-xs"><button v-show="!inspectorVisible" @click="toggleInspector">Restore inspector</button><button v-show="!telemetryVisible" @click="toggleTelemetry">Restore telemetry</button></div><!-- Floating Map Controls -->
+          <div class="absolute bottom-8 left-8 flex flex-col gap-2 z-30">
+            <button class="w-10 h-10 bg-[#3c3836] border border-[#504945] rounded-t-md text-[#ebdbb2] flex items-center justify-center hover:bg-[#504945]"><iconify-icon icon="lucide:plus"></iconify-icon></button>
+            <button class="w-10 h-10 bg-[#3c3836] border border-[#504945] text-[#ebdbb2] flex items-center justify-center hover:bg-[#504945]"><iconify-icon icon="lucide:minus"></iconify-icon></button>
+            <button class="w-10 h-10 bg-[#3c3836] border border-[#504945] rounded-b-md text-[#ebdbb2] flex items-center justify-center hover:bg-[#504945]"><iconify-icon icon="lucide:maximize"></iconify-icon></button>
+          </div>
+
+        </div>
+
+        <!-- Inspector Sidebar -->
+        <div class="w-80 bg-[#282828] border-l border-[#504945] flex flex-col z-20 panel-transition" :class="{ 'inspector-hidden': !inspectorVisible || !consoleVisible }">
+            <!-- Inspector Header -->
+            <div class="p-4 border-b border-[#504945] flex items-start justify-between">
+                <div>
+                    <div class="text-xs font-mono text-[#a89984] mb-1">Hardware Node</div>
+                    <h3 class="text-lg font-bold text-[#ebdbb2] leading-tight">pve3</h3>
+                    <div class="text-sm font-mono text-[#fe8019] mt-1">192.168.0.176</div>
+                </div>
+                <button @click="toggleInspector" class="text-[#a89984] hover:text-[#ebdbb2]"><iconify-icon icon="lucide:x"></iconify-icon></button>
+            </div>
+
+            <!-- Inspector Content -->
+            <div class="flex-1 overflow-y-auto p-4 space-y-6">
+                
+                <!-- Status / Identity -->
+                <div>
+                    <div class="flex items-center gap-2 mb-3">
+                        <span class="w-3 h-3 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"></span>
+                        <span class="text-sm font-bold text-[#ebdbb2]">Healthy</span>
+                        <span class="ml-auto text-xs text-[#a89984] font-mono">ID: c398x</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                        <div class="text-[#a89984]">Role</div>
+                        <div class="text-right">Virtualization Host</div>
+                        <div class="text-[#a89984]">OS</div>
+                        <div class="text-right">Proxmox VE 8.1</div>
+                        <div class="text-[#a89984]">Uptime</div>
+                        <div class="text-right font-mono">48d 12h</div>
+                    </div>
+                </div>
+
+                <!-- Quick Telemetry Summary -->
+                <div>
+                    <h4 class="text-xs font-bold text-[#a89984] uppercase tracking-wider mb-2 border-b border-[#504945] pb-1">Live Sensors</h4>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-[#3c3836] rounded p-2 border border-[#504945]">
+                            <div class="text-[10px] text-[#a89984] mb-1">CPU</div>
+                            <div class="text-sm font-mono text-[#ebdbb2]">34.8%</div>
+                            <div class="w-full h-1 bg-[#282828] mt-1 rounded overflow-hidden">
+                                <div class="h-full bg-[#83a598]" style="width: 34.8%"></div>
+                            </div>
+                        </div>
+                        <div class="bg-[#3c3836] rounded p-2 border border-[#504945]">
+                            <div class="text-[10px] text-[#a89984] mb-1">Memory</div>
+                            <div class="text-sm font-mono text-[#ebdbb2]">12.4 / 32 GB</div>
+                            <div class="w-full h-1 bg-[#282828] mt-1 rounded overflow-hidden">
+                                <div class="h-full bg-[#d79921]" style="width: 65%"></div>
+                            </div>
+                        </div>
+                        <div class="bg-[#3c3836] rounded p-2 border border-[#504945]">
+                            <div class="text-[10px] text-[#a89984] mb-1">Temp</div>
+                            <div class="text-sm font-mono text-[#ebdbb2]">Unavailable</div>
+                        </div>
+                        <div class="bg-[#3c3836] rounded p-2 border border-[#504945]">
+                            <div class="text-[10px] text-[#a89984] mb-1">Latency</div>
+                            <div class="text-sm font-mono text-[#b8bb26]">1.2ms</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Relationships -->
+                <div>
+                    <h4 class="text-xs font-bold text-[#a89984] uppercase tracking-wider mb-2 border-b border-[#504945] pb-1">Direct Links (5)</h4>
+                    <ul class="space-y-2 text-xs">
+                        <li class="flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <iconify-icon icon="lucide:server" class="text-[#83a598]"></iconify-icon>
+                                <span>pve4</span>
+                            </div>
+                            <span class="text-[10px] font-mono bg-[#3c3836] px-1 rounded text-[#a89984]">cluster_member</span>
+                        </li>
+                        <li class="flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <iconify-icon icon="lucide:database" class="text-purple-400"></iconify-icon>
+                                <span>HDD2-NFS</span>
+                            </div>
+                            <span class="text-[10px] font-mono bg-[#3c3836] px-1 rounded text-[#a89984]">has_storage</span>
+                        </li>
+                        <li class="flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <iconify-icon icon="logos:docker-icon"></iconify-icon>
+                                <span>Jellyfin</span>
+                            </div>
+                            <span class="text-[10px] font-mono bg-[#3c3836] px-1 rounded text-[#a89984]">hosts</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <section v-show="consoleVisible && telemetryVisible" class="shrink-0" style="background:#282828;border-top:1px solid #504945"><div style="height:30px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:11px"><span>TELEMETRY WORKBENCH · Illustrative data</span><div><button @click="telemetryCollapsed = !telemetryCollapsed" style="margin-right:18px">Collapse / expand telemetry</button><button @click="toggleTelemetry">Hide telemetry</button></div></div><div v-show="!telemetryCollapsed"><footer class="noc-analysis"><section class="noc-reading"><div class="noc-eyebrow">SELECTED HOST / TELEMETRY</div><h3>pve3</h3><div class="mono noc-source">Agent · 192.168.0.176 · sample age 3s</div><div class="noc-value-pair"><span>CPU utilization</span><strong class="mono">34.8<span>%</span></strong></div><div class="noc-value-pair"><span>Memory</span><strong class="mono">12.4 <span>/ 32 GB</span></strong></div><div class="noc-source">Temperature: unavailable</div><div class="noc-concept">ILLUSTRATIVE DATA</div></section><section class="noc-analysis-main"><div class="noc-analysis-head"><span class="noc-eyebrow">SYNCHRONIZED HOST HISTORY</span><span class="mono noc-source">10m · 5s cadence · 115/120 sample slots</span><button aria-label="Expand telemetry analysis">Expand ↗</button><button aria-label="Collapse telemetry analysis">⌄</button></div><div class="noc-inspection mono">20:46:50 · CPU 68.9% · MEM 39.0% <span>Missing samples shown as gaps</span></div><svg viewBox="0 0 1020 190" class="noc-history" preserveAspectRatio="none" role="img" aria-label="Illustrative CPU and memory histories with fixed percent scales, 120 sample slots and missing sample gap"><text x="16" y="12" class="noc-chart-label" fill="var(--color-primary)" font-size="11">CPU UTILIZATION · %</text><text x="500" y="12" class="mono" fill="var(--color-text-muted)" font-size="11">LAST 34.8 · MIN 8.9 · MAX 77.6%</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="73" y2="73" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="77" class="mono" fill="var(--color-text-muted)" font-size="11">0</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="59.75" y2="59.75" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="63.75" class="mono" fill="var(--color-text-muted)" font-size="11">25</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="46.5" y2="46.5" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="50.5" class="mono" fill="var(--color-text-muted)" font-size="11">50</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="33.25" y2="33.25" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="37.25" class="mono" fill="var(--color-text-muted)" font-size="11">75</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="20" y2="20" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="24" class="mono" fill="var(--color-text-muted)" font-size="11">100</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><rect x="528.4621848739496" y="20" width="39.6218487394958" height="53" fill="var(--color-border)" opacity=".22" vector-effect="non-scaling-stroke"/></g><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><path d="M53.00,65.05 L60.92,62.85 L68.85,64.30 L76.77,62.30 L84.70,63.53 L92.62,66.18 L100.55,65.11 L108.47,67.56 L116.39,67.61 L124.32,65.05 L132.24,66.09 L140.17,63.55 L148.09,62.18 L156.02,64.18 L163.94,62.54 L171.87,63.99 L179.79,64.99 L187.71,61.16 L195.64,59.53 L203.56,53.91 L211.49,46.50 L219.41,44.01 L227.34,40.33 L235.26,41.53 L243.18,47.78 L251.11,51.42 L259.03,58.32 L266.96,63.28 L274.88,63.41 L282.81,66.01 L290.73,64.68 L298.66,62.52 L306.58,64.17 L314.50,62.38 L322.43,63.33 L330.35,66.03 L338.28,64.61 L346.20,66.24 L354.13,65.53 L362.05,61.24 L369.97,59.99 L377.90,54.65 L385.82,49.22 L393.75,46.89 L401.67,40.72 L409.60,37.75 L417.52,36.20 L425.45,31.87 L433.37,32.57 L441.29,32.62 L449.22,32.37 L457.14,37.53 L465.07,40.28 L472.99,44.89 L480.92,52.36 L488.84,55.33 L496.76,60.53 L504.69,64.39 L512.61,63.55 L520.54,65.64      M568.08,66.49 L576.01,65.40 L583.93,67.33 L591.86,67.78 L599.78,64.82 L607.71,65.69 L615.63,63.69 L623.55,61.97 L631.48,64.38 L639.40,63.36 L647.33,64.96 L655.25,67.65 L663.18,65.96 L671.10,67.37 L679.03,66.68 L686.95,63.52 L694.87,64.61 L702.80,62.83 L710.72,62.29 L718.65,65.33 L726.57,64.51 L734.50,66.38 L742.42,68.18 L750.34,65.71 L758.27,66.61 L766.19,65.03 L774.12,61.81 L782.04,62.19 L789.97,57.62 L797.89,52.09 L805.82,46.93 L813.74,38.06 L821.66,36.47 L829.59,40.33 L837.51,45.02 L845.44,54.17 L853.36,58.56 L861.29,59.96 L869.21,63.83 L877.13,63.45 L885.06,64.90 L892.98,67.78 L900.91,66.04 L908.83,67.19 L916.76,66.71 L924.68,63.39 L932.61,64.45 L940.53,62.96 L948.45,62.24 L956.38,65.42 L964.30,64.73 L972.23,66.31 L980.15,68.28 L988.08,65.70 L996.00,54.56" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></g><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="821.6638655462185" x2="821.6638655462185" y1="20" y2="73" stroke="var(--color-primary)" opacity=".7" vector-effect="non-scaling-stroke"/></g><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><circle cx="821.6638655462185" cy="36.46552109960977" r="3" fill="var(--color-primary)" vector-effect="non-scaling-stroke"/></g><text x="16" y="104" class="noc-chart-label" fill="var(--color-info)" font-size="11">MEMORY · %</text><text x="500" y="104" class="mono" fill="var(--color-text-muted)" font-size="11">LAST 38.8 · MIN 36.9 · MAX 50.0%</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="165" y2="165" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="169" class="mono" fill="var(--color-text-muted)" font-size="11">0</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="151.75" y2="151.75" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="155.75" class="mono" fill="var(--color-text-muted)" font-size="11">25</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="138.5" y2="138.5" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="142.5" class="mono" fill="var(--color-text-muted)" font-size="11">50</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="125.25" y2="125.25" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="129.25" class="mono" fill="var(--color-text-muted)" font-size="11">75</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="53" x2="996" y1="112" y2="112" stroke="var(--color-border)" opacity=".55" vector-effect="non-scaling-stroke"/></g><text x="11" y="116" class="mono" fill="var(--color-text-muted)" font-size="11">100</text><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><rect x="528.4621848739496" y="112" width="39.6218487394958" height="53" fill="var(--color-border)" opacity=".22" vector-effect="non-scaling-stroke"/></g><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><path d="M53.00,144.86 L60.92,144.77 L68.85,144.69 L76.77,144.61 L84.70,144.53 L92.62,144.46 L100.55,144.40 L108.47,144.35 L116.39,144.32 L124.32,144.29 L132.24,144.28 L140.17,144.28 L148.09,144.29 L156.02,144.32 L163.94,144.36 L171.87,144.40 L179.79,144.46 L187.71,144.53 L195.64,144.60 L203.56,144.68 L211.49,144.76 L219.41,144.84 L227.34,144.92 L235.26,144.98 L243.18,145.04 L251.11,145.09 L259.03,145.11 L266.96,145.12 L274.88,145.10 L282.81,145.04 L290.73,144.95 L298.66,144.83 L306.58,144.66 L314.50,144.44 L322.43,144.18 L330.35,143.87 L338.28,143.51 L346.20,143.11 L354.13,142.66 L362.05,142.19 L369.97,141.70 L377.90,141.20 L385.82,140.70 L393.75,140.22 L401.67,139.78 L409.60,139.38 L417.52,139.05 L425.45,138.79 L433.37,138.61 L441.29,138.52 L449.22,138.52 L457.14,138.62 L465.07,138.80 L472.99,139.06 L480.92,139.39 L488.84,139.78 L496.76,140.21 L504.69,140.67 L512.61,141.15 L520.54,141.63      M568.08,144.06 L576.01,144.34 L583.93,144.59 L591.86,144.79 L599.78,144.96 L607.71,145.10 L615.63,145.21 L623.55,145.28 L631.48,145.34 L639.40,145.36 L647.33,145.37 L655.25,145.36 L663.18,145.33 L671.10,145.29 L679.03,145.23 L686.95,145.17 L694.87,145.09 L702.80,145.01 L710.72,144.93 L718.65,144.84 L726.57,144.75 L734.50,144.67 L742.42,144.59 L750.34,144.51 L758.27,144.45 L766.19,144.39 L774.12,144.34 L782.04,144.31 L789.97,144.29 L797.89,144.28 L805.82,144.28 L813.74,144.30 L821.66,144.33 L829.59,144.37 L837.51,144.42 L845.44,144.48 L853.36,144.55 L861.29,144.63 L869.21,144.71 L877.13,144.80 L885.06,144.88 L892.98,144.97 L900.91,145.06 L908.83,145.14 L916.76,145.21 L924.68,145.27 L932.61,145.33 L940.53,145.38 L948.45,145.41 L956.38,145.43 L964.30,145.44 L972.23,145.44 L980.15,145.42 L988.08,145.39 L996.00,144.46" fill="none" stroke="var(--color-info)" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></g><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><line x1="821.6638655462185" x2="821.6638655462185" y1="112" y2="165" stroke="var(--color-primary)" opacity=".7" vector-effect="non-scaling-stroke"/></g><g transform="matrix(1.0816542948038177 0 0 1 -57.32767762460234 0)"><circle cx="821.6638655462185" cy="144.3259784214588" r="3" fill="var(--color-info)" vector-effect="non-scaling-stroke"/></g><text x="16" y="187" class="mono" fill="var(--color-text-muted)" font-size="11">20:38:45</text><text x="290.7310924369748" y="187" class="mono" fill="var(--color-text-muted)" font-size="11">20:41:15</text><text x="528.4621848739496" y="187" class="mono" fill="var(--color-text-muted)" font-size="11">20:43:45</text><text x="766.1932773109244" y="187" class="mono" fill="var(--color-text-muted)" font-size="11">20:46:15</text><text x="941" y="187" class="mono" fill="var(--color-text-muted)" font-size="11">20:48:40</text></svg></section><section class="noc-throughput"><div class="noc-eyebrow">INTERFACE RATE · Mb/s</div><div class="noc-rate-values mono"><span>RX <b>842.1</b></span><span>TX <b>141.5</b></span></div><svg viewBox="0 0 260 145" role="img" aria-label="Illustrative receive and transmit histories in megabits per second"><g><line x1="38" x2="252" y1="120" y2="120" stroke="var(--color-border)"/><text x="0" y="124" class="mono" fill="var(--color-text-muted)" font-size="10">0</text><line x1="38" x2="252" y1="88.33333333333334" y2="88.33333333333334" stroke="var(--color-border)"/><text x="0" y="92.33333333333334" class="mono" fill="var(--color-text-muted)" font-size="10">500</text><line x1="38" x2="252" y1="56.66666666666667" y2="56.66666666666667" stroke="var(--color-border)"/><text x="0" y="60.66666666666667" class="mono" fill="var(--color-text-muted)" font-size="10">1000</text><line x1="38" x2="252" y1="25" y2="25" stroke="var(--color-border)"/><text x="0" y="29" class="mono" fill="var(--color-text-muted)" font-size="10">1500</text><path d="M38.00,91.50 L39.80,90.26 L41.60,89.05 L43.39,87.88 L45.19,86.79 L46.99,85.79 L48.79,84.90 L50.59,84.14 L52.39,83.52 L54.18,83.06 L55.98,82.76 L57.78,82.64 L59.58,82.69 L61.38,82.91 L63.18,83.30 L64.97,83.85 L66.77,84.55 L68.57,85.38 L70.37,86.34 L72.17,87.39 L73.97,88.53 L75.76,89.72 L77.56,90.95 L79.36,92.19 L81.16,93.40 L82.96,94.58 L84.76,95.68 L86.55,96.68 L88.35,97.56 L90.15,98.26 L91.95,98.77 L93.75,99.04 L95.55,99.02 L97.34,98.66 L99.14,97.92 L100.94,96.72 L102.74,95.02 L104.54,92.78 L106.34,89.96 L108.13,86.58 L109.93,82.65 L111.73,78.26 L113.53,73.53 L115.33,68.63 L117.13,63.75 L118.92,59.12 L120.72,54.98 L122.52,51.53 L124.32,48.96 L126.12,47.40 L127.92,46.89 L129.71,47.42 L131.51,48.92 L133.31,51.23 L135.11,54.17 L136.91,57.56 L138.71,61.19 L140.50,64.88 L142.30,68.50 L144.10,71.93      M154.89,87.01 L156.69,88.76 L158.49,90.38 L160.29,91.89 L162.08,93.29 L163.88,94.58 L165.68,95.77 L167.48,96.85 L169.28,97.80 L171.08,98.62 L172.87,99.29 L174.67,99.81 L176.47,100.16 L178.27,100.34 L180.07,100.35 L181.87,100.18 L183.66,99.85 L185.46,99.35 L187.26,98.69 L189.06,97.90 L190.86,96.98 L192.66,95.95 L194.45,94.84 L196.25,93.66 L198.05,92.44 L199.85,91.20 L201.65,89.97 L203.45,88.76 L205.24,87.61 L207.04,86.54 L208.84,85.56 L210.64,84.70 L212.44,83.97 L214.24,83.39 L216.03,82.97 L217.83,82.72 L219.63,82.63 L221.43,82.72 L223.23,82.99 L225.03,83.41 L226.82,84.00 L228.62,84.73 L230.42,85.60 L232.22,86.58 L234.02,87.66 L235.82,88.81 L237.61,90.02 L239.41,91.25 L241.21,92.49 L243.01,93.71 L244.81,94.89 L246.61,96.00 L248.40,97.02 L250.20,97.93 L252.00,66.67" stroke="var(--color-online)" fill="none" stroke-width="1.4"/><path d="M38.00,113.67 L39.80,113.27 L41.60,112.91 L43.39,112.59 L45.19,112.33 L46.99,112.16 L48.79,112.09 L50.59,112.11 L52.39,112.23 L54.18,112.43 L55.98,112.72 L57.78,113.06 L59.58,113.44 L61.38,113.84 L63.18,114.22 L64.97,114.57 L66.77,114.86 L68.57,115.08 L70.37,115.20 L72.17,115.23 L73.97,115.16 L75.76,114.98 L77.56,114.72 L79.36,114.38 L81.16,113.98 L82.96,113.53 L84.76,113.07 L86.55,112.60 L88.35,112.15 L90.15,111.73 L91.95,111.36 L93.75,111.02 L95.55,110.74 L97.34,110.49 L99.14,110.28 L100.94,110.08 L102.74,109.88 L104.54,109.66 L106.34,109.41 L108.13,109.11 L109.93,108.75 L111.73,108.33 L113.53,107.85 L115.33,107.31 L117.13,106.73 L118.92,106.13 L120.72,105.53 L122.52,104.96 L124.32,104.45 L126.12,104.03 L127.92,103.71 L129.71,103.52 L131.51,103.48 L133.31,103.60 L135.11,103.88 L136.91,104.31 L138.71,104.89 L140.50,105.60 L142.30,106.41 L144.10,107.31      M154.89,112.77 L156.69,113.43 L158.49,113.97 L160.29,114.36 L162.08,114.62 L163.88,114.74 L165.68,114.73 L167.48,114.60 L169.28,114.37 L171.08,114.08 L172.87,113.73 L174.67,113.37 L176.47,113.01 L178.27,112.68 L180.07,112.41 L181.87,112.21 L183.66,112.10 L185.46,112.08 L187.26,112.17 L189.06,112.34 L190.86,112.60 L192.66,112.92 L194.45,113.29 L196.25,113.68 L198.05,114.07 L199.85,114.44 L201.65,114.76 L203.45,115.01 L205.24,115.17 L207.04,115.25 L208.84,115.22 L210.64,115.10 L212.44,114.89 L214.24,114.60 L216.03,114.26 L217.83,113.88 L219.63,113.48 L221.43,113.10 L223.23,112.75 L225.03,112.46 L226.82,112.24 L228.62,112.12 L230.42,112.09 L232.22,112.15 L234.02,112.31 L235.82,112.56 L237.61,112.87 L239.41,113.24 L241.21,113.63 L243.01,114.02 L244.81,114.39 L246.61,114.72 L248.40,114.98 L250.20,115.16 L252.00,111.04" stroke="var(--color-info)" fill="none" stroke-width="1.4"/><text x="38" y="143" class="mono" fill="var(--color-text-muted)" font-size="10">20:38</text><text x="219" y="143" class="mono" fill="var(--color-text-muted)" font-size="10">20:48</text></g></svg><div class="noc-source">Source: selected agent host</div></section></footer></div></section><!-- Optional Connection Walkthrough Modal -->
+    <div v-show="walkthroughVisible" class="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" style="display: none;">
+        <div class="bg-[#282828] border border-[#504945] rounded-xl shadow-2xl w-[900px] flex flex-col">
+            <!-- Modal Header -->
+            <div class="flex justify-between items-center p-4 border-b border-[#504945]">
+                <h2 class="text-lg font-bold text-[#ebdbb2] flex items-center gap-2">
+                    <iconify-icon icon="lucide:cable" class="text-indigo-400"></iconify-icon>
+                    Structured Connection Walkthrough
+                </h2>
+                <button @click="hideWalkthrough" class="text-[#a89984] hover:text-white"><iconify-icon icon="lucide:x" class="text-xl"></iconify-icon></button>
+            </div>
+            
+            <!-- Walkthrough Content Area -->
+            <div class="p-6 flex flex-col gap-6">
+                
+                <!-- Step 1: Endpoint Selection -->
+                <div>
+                    <h3 class="text-sm font-bold text-[#ebdbb2] mb-3">1. Select Endpoints</h3>
+                    <div class="flex items-center gap-6">
+                        <div class="flex-1 bg-[#3c3836] border border-[#504945] p-3 rounded-lg flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 rounded-full border border-orange-500 bg-cyan-400/10 flex items-center justify-center">
+                                     <iconify-icon icon="lucide:server" class="text-cyan-400"></iconify-icon>
+                                </div>
+                                <div>
+                                    <div class="font-bold text-sm text-[#ebdbb2]">pve3</div>
+                                    <div class="font-mono text-xs text-[#a89984]">Hardware</div>
+                                </div>
+                            </div>
+                            <button class="text-[#fe8019] text-xs uppercase font-bold tracking-wider">Change</button>
+                        </div>
+
+                        <iconify-icon icon="lucide:arrow-right-left" class="text-[#a89984] text-xl"></iconify-icon>
+
+                        <div class="flex-1 bg-[#282828] border border-dashed border-[#504945] p-3 rounded-lg flex items-center justify-center cursor-pointer hover:bg-[#3c3836]">
+                            <span class="text-[#a89984] text-sm flex items-center gap-2">
+                                <iconify-icon icon="lucide:mouse-pointer-click"></iconify-icon> Select Target Node
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step 2: Relationship Definition -->
+                <div class="opacity-50 pointer-events-none">
+                    <h3 class="text-sm font-bold text-[#ebdbb2] mb-3">2. Define Relationship</h3>
+                    <div class="grid grid-cols-2 gap-6">
+                        <div>
+                            <label class="block text-xs font-bold text-[#a89984] mb-2">Semantic Role</label>
+                            <select class="w-full bg-[#3c3836] border border-[#504945] text-[#ebdbb2] rounded px-3 py-2 outline-none">
+                                <option>Select role...</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-[#a89984] mb-2">Physical Connection Type</label>
+                            <select class="w-full bg-[#3c3836] border border-[#504945] text-[#ebdbb2] rounded px-3 py-2 outline-none">
+                                <option>Select medium...</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Step 3: Layout Preview (Tiles used ONLY here) -->
+                <div class="border border-[#504945] rounded-lg p-6 bg-[#202020] opacity-50">
+                    <h4 class="text-xs text-center text-[#a89984] uppercase tracking-wider mb-6">Preview Draft</h4>
+                    <div class="flex items-center justify-center gap-12">
+                        <!-- Rectangular Tile (Workflow only) -->
+                        <div class="bg-[#3c3836] border border-[#504945] rounded p-3 w-40 flex flex-col items-center">
+                             <div class="text-xs font-bold text-[#ebdbb2]">pve3</div>
+                        </div>
+                        <div class="h-px w-24 border-b border-dashed border-[#a89984] relative">
+                             <div class="absolute -top-3 left-1/2 -translate-x-1/2 text-[10px] bg-[#202020] px-1 text-[#a89984]">Pending</div>
+                        </div>
+                        <div class="bg-[#282828] border border-dashed border-[#504945] rounded p-3 w-40 h-12">
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Modal Footer -->
+            <div class="p-4 border-t border-[#504945] flex justify-end gap-3 bg-[#3c3836] rounded-b-xl">
+                <button @click="hideWalkthrough" class="px-4 py-2 rounded text-sm font-bold text-[#a89984] hover:text-[#ebdbb2]">Cancel</button>
+                <button class="px-4 py-2 rounded text-sm font-bold bg-[#fe8019] text-[#282828] opacity-50 cursor-not-allowed">
+                    Present Layout
+                </button>
+            </div>
+        </div>
+    </div>
+
+  </div>
+</body></html>

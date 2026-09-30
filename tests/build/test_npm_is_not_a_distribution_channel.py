@@ -1,4 +1,9 @@
-"""RISK-009 / ADR 0004: npm is not a Circuit Breaker distribution channel.
+"""RISK-009 / ADR 0006: npm is not a Circuit Breaker distribution channel *yet*.
+
+ADR 0006 (2026-09-30, superseding ADR 0004) puts an npm installer CLI on the road
+to 1.0, and keeps ADR 0004's surface rules in force until that package ships and
+passes its NPM gates. This suite enforces those interim rules and is revised
+deliberately in the same change that first publishes the CLI.
 
 ADR 0004 decides that no Circuit Breaker package is published to npm for the
 1.0 line, and its Consequences add that documentation and release notes "must
@@ -35,7 +40,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-ADR = ROOT / "docs" / "adr" / "0004-npm-out-of-scope-for-1.0.md"
+ADR = ROOT / "docs" / "adr" / "0006-npm-installer-cli-for-1.0.md"
 MKDOCS = ROOT / "mkdocs.yml"
 SUPPORT_CONTRACT = ROOT / "docs" / "release" / "1.0.0-support-contract.md"
 INSTALL_INDEX = ROOT / "docs" / "installation" / "index.md"
@@ -246,15 +251,15 @@ def test_support_contract_does_not_offer_npm() -> None:
     for row in rows:
         status = row.split("|")[2].strip().lower()
         assert "supported" not in status, f"npm is listed as supported: {row}"
-        assert "0004-npm-out-of-scope-for-1.0.md" in row, (
-            f"the npm row does not cite ADR 0004: {row}"
+        assert "0006-npm-installer-cli-for-1.0.md" in row, (
+            f"the npm row does not cite ADR 0006: {row}"
         )
 
 
 def test_installation_overview_says_npm_is_not_a_channel() -> None:
     text = INSTALL_INDEX.read_text(encoding="utf-8")
-    assert "0004-npm-out-of-scope-for-1.0.md" in text, (
-        "docs/installation/index.md does not point at ADR 0004"
+    assert "0006-npm-installer-cli-for-1.0.md" in text, (
+        "docs/installation/index.md does not point at ADR 0006"
     )
     assert re.search(r"npm is not an installation channel", text, re.IGNORECASE), (
         "docs/installation/index.md no longer states that npm is not a channel"
@@ -264,8 +269,8 @@ def test_installation_overview_says_npm_is_not_a_channel() -> None:
 def test_adr_still_carries_the_rule_this_file_enforces() -> None:
     text = ADR.read_text(encoding="utf-8")
     assert "must not show `npm install` or `npx` as an installation path" in text, (
-        "ADR 0004's docs rule changed; revisit this suite rather than enforcing "
-        "a rule the ADR no longer states"
+        "ADR 0006's interim docs rule changed; revisit this suite rather than "
+        "enforcing a rule the ADR no longer states"
     )
 
 

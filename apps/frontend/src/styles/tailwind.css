@@ -1,3 +1,15 @@
 /* Tailwind utilities — scoped to discovery bulk-actions only.
    Preflight is disabled to avoid global reset conflicts. */
+
+/* The one part of preflight the tw-border* utilities depend on. They set only a
+   width and a colour, so without it a <div> with `tw-border` drew no border at
+   all (border-style: none), and a <button> or <input> fell back to the
+   browser's outset/inset bevel. Scoped to elements that use a tw-border class,
+   and declared before the utilities so `tw-border`, `tw-border-b` etc. still
+   set the width. */
+[class*='tw-border'] {
+  border-width: 0;
+  border-style: solid;
+}
+
 @tailwind utilities;

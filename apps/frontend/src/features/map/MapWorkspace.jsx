@@ -375,6 +375,20 @@ export default function MapWorkspace({
   // Telemetry sidebar state (hover card)
   const [telemetrySidebarNode, setTelemetrySidebarNode] = useState(null);
   const [telemetrySidebarPos, setTelemetrySidebarPos] = useState({ x: 0, y: 0 });
+  // Node the hover card was dismissed on top of. Unmounting the card uncovers
+  // that node, and the browser then fires mouseenter on it without the pointer
+  // having moved there — which re-armed the hover timer and reopened the card
+  // 400 ms after its close button was clicked. Hover-open stays suppressed for
+  // this node until the pointer actually leaves it.
+  const hoverSuppressedNodeIdRef = useRef(null);
+  const dismissTelemetrySidebar = useCallback((event) => {
+    const underneath = document
+      .elementsFromPoint(event.clientX, event.clientY)
+      .map((el) => el.closest('.react-flow__node'))
+      .find(Boolean);
+    hoverSuppressedNodeIdRef.current = underneath?.dataset.id ?? null;
+    setTelemetrySidebarNode(null);
+  }, []);
 
   // Sidebar bounding rect — kept in a ref (not state) so updates don't trigger re-renders.
   // The ContextMenu reads this ref on each position recalculation to avoid overlapping the panel.
@@ -692,14 +706,19 @@ export default function MapWorkspace({
       if (contextMenuOpenRef.current) return;
       // Don't show hover telemetry when the main (click) Sidebar is open — avoids overlap
       if (selectedNodeRef.current) return;
+      if (hoverSuppressedNodeIdRef.current === node.id) return;
       scheduleTelemetrySidebar(node, { x: event.clientX + 20, y: event.clientY - 30 });
     },
     [contextMenuOpenRef, scheduleTelemetrySidebar]
   );
 
-  const handleNodeMouseLeave = useCallback(() => {
-    cancelTelemetrySidebar();
-  }, [cancelTelemetrySidebar]);
+  const handleNodeMouseLeave = useCallback(
+    (event, node) => {
+      if (hoverSuppressedNodeIdRef.current === node?.id) hoverSuppressedNodeIdRef.current = null;
+      cancelTelemetrySidebar();
+    },
+    [cancelTelemetrySidebar]
+  );
 
   const handlePaneContextMenu = useCallback(
     (event) => {
@@ -771,12 +790,16 @@ export default function MapWorkspace({
     if (selectedNode) setSelectedNode(null);
   }, [contextMenuOpenRef, selectedNode, setBoundaryMenu, setContextMenu, setVisualLineMenu]);
 
+  // Keep the open panel's node in step with fresh node data. This reads the
+  // selection through the updater, not the closure: a closure copy could be
+  // stale by the time the effect ran and re-select a node the user had just
+  // closed, so the close button took several clicks.
   useEffect(() => {
-    if (!selectedNode) return;
-    const refreshed = nodes.find((node) => node.id === selectedNode.id);
-    if (!refreshed) return;
-    setSelectedNode(refreshed);
-  }, [nodes, selectedNode]);
+    setSelectedNode((current) => {
+      if (!current) return current;
+      return nodes.find((node) => node.id === current.id) ?? current;
+    });
+  }, [nodes]);
 
   const handleUplinkChange = useCallback(
     (nodeId, uplinkMbps) => {
@@ -1136,6 +1159,11 @@ export default function MapWorkspace({
   };
 
   const flow = {
+    // Pane clicks clear these. They live here, not on editorUi: reading them
+    // from editorUi got undefined, so every pane click threw before it could
+    // close the node context menu or anything else.
+    setEdgeMenu,
+    setPendingConnection,
     handleNodesChange,
     onEdgesChange,
     handleConnect,
@@ -1320,6 +1348,7 @@ export default function MapWorkspace({
             />
             <MapCanvas
               SigmaMap={SigmaMap}
+              mapId={mapId}
               nodes={nodes}
               edges={edges}
               nodeTypes={NODE_TYPES}
@@ -1372,6 +1401,7 @@ export default function MapWorkspace({
                 node={telemetrySidebarNode}
                 position={telemetrySidebarPos}
                 onClose={() => setTelemetrySidebarNode(null)}
+                onDismiss={dismissTelemetrySidebar}
                 onBoundsChange={handleTelemetrySidebarBoundsChange}
               />
             )}

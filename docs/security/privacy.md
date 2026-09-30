@@ -67,7 +67,7 @@ every possible outbound protocol or requests made directly by a user's browser.
 | 5 | Your OAuth/OIDC provider | Only if you configure OAuth — GitHub, Google or a custom OIDC provider | Whatever the OAuth flow requires: the authorization exchange, and a profile/email read for the signing-in user | One-time `code` and `state` values are scrubbed from access logs before anything is written. |
 | 6 | Your SMTP server | Only if you configure SMTP | Invite emails | There is no self-service password reset, so no reset mail is sent. |
 | 7 | Let's Encrypt | Only when you request or renew a certificate | The domain name being validated and `CB_TLS_EMAIL` as the ACME account address | See [TLS Certificates](../tls-certificates.md). |
-| 8 | `raw.githubusercontent.com` | Only when you run `cb update` on a native install | The installer download | |
+| 8 | `raw.githubusercontent.com` | Only when you install or upgrade by running `install.sh` from its URL | The installer download | |
 
 ### From the browser, not from the server
 

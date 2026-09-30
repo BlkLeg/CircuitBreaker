@@ -812,7 +812,7 @@ function HardwarePage() {
                         )}
                       <button
                         type="button"
-                        className="text-btn tw-text-cb-text-muted"
+                        className="text-btn tw-text-cb-muted"
                         onClick={() => setSelection(clearSelection(selection))}
                       >
                         Clear

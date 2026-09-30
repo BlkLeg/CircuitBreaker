@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef } from 'react';
 import { graphApi } from '../../../api/client';
 import { normalizeMapLabel, normalizeBoundaryName } from '../model/mapConstants';
 import { applyEdgeSides, parseLayoutData } from '../../../utils/mapGeometryUtils';
-import { groupDockerIntoBoundaries, proxmoxClusterDetected } from '../../../utils/mapDataUtils';
+import { groupDockerIntoBoundaries } from '../../../utils/mapDataUtils';
 import { buildIncludeCSV } from '../../../utils/mapHelpers';
 import { adaptTopology } from '../model/graphAdapter';
 import { getDagreLayout, getDagreViewportOptions } from '../../../utils/layouts';
 import { recalculateAllEdges } from '../../../utils/bandwidthCalculator';
 import { groupNodesIntoCloud } from '../../../utils/cloudView';
-import { VIEWPORT_FIT_DEFAULTS } from '../../../utils/viewportFit';
+import { getMapViewportStorageKey, VIEWPORT_FIT_DEFAULTS } from '../../../utils/viewportFit';
 import {} from '../../../lib/constants';
 
 /**
@@ -69,8 +69,7 @@ export function useMapDataLoad({
   const setViewportRef = useRef(setViewport);
   setViewportRef.current = setViewport;
 
-  // Viewport-restore timers scheduled by fetchData: one at 50ms, and a nested
-  // one at 900ms for the Proxmox hypervisor fit. Both outlive the request that
+  // Viewport-restore timers scheduled by fetchData outlive the request that
   // scheduled them, so leaving the map inside that window left a callback
   // reaching for a ReactFlow instance that had already gone away. The
   // `unmountedRef?.current` guards inside them only shrink the blast radius,
@@ -209,7 +208,6 @@ export function useMapDataLoad({
           }))
       );
 
-      let nodesForProxmox = null;
       if (savedNodePositions) {
         const mergedNodes = rawNodesWithOverrides.map((n) => {
           const shapeData = savedNodeShapes[n.id]
@@ -249,12 +247,11 @@ export function useMapDataLoad({
         const nextEdgesAuto = applyEdgeSides(initialNodes, layout.edges, {});
         setEdges(recalculateAllEdges(initialNodes, nextEdgesAuto));
         setLayoutEngine(settings?.graph_default_layout || 'dagre');
-        nodesForProxmox = initialNodes;
       }
 
       scheduleViewportTimer(() => {
         if (unmountedRef?.current) return;
-        const saved = localStorage.getItem('cb_map_viewport');
+        const saved = localStorage.getItem(getMapViewportStorageKey(mapId));
         if (saved && !hasRestoredViewport.current) {
           try {
             setViewportRef.current(JSON.parse(saved));
@@ -271,21 +268,6 @@ export function useMapDataLoad({
             ...VIEWPORT_FIT_DEFAULTS,
             padding: isMobile ? 0.35 : VIEWPORT_FIT_DEFAULTS.padding,
           });
-          if (nodesForProxmox && proxmoxClusterDetected(nodesForProxmox)) {
-            const hypervisorNodes = nodesForProxmox.filter((n) => n.data?.role === 'hypervisor');
-            if (hypervisorNodes.length > 0) {
-              scheduleViewportTimer(() => {
-                if (unmountedRef?.current) return;
-                fitViewRef.current({
-                  nodes: hypervisorNodes,
-                  padding: 0.15,
-                  duration: 1200,
-                  minZoom: VIEWPORT_FIT_DEFAULTS.minZoom,
-                  maxZoom: VIEWPORT_FIT_DEFAULTS.maxZoom,
-                });
-              }, 900);
-            }
-          }
         }
       }, 50);
     } catch (err) {

@@ -1,0 +1,61 @@
+name: Site sync
+
+# Tells the public website (BlkLeg/circuitbreaker-site) that the content it
+# mirrors from this repo has changed, so it rebuilds within minutes instead of
+# waiting for its hourly safety net.
+#
+# The site reads its docs, changelog, brand assets and install command from
+# this repo's committed tree, and its releases from the GitHub API. Only the
+# paths it actually reads are watched: anything else would rebuild and redeploy
+# the site for nothing.
+#
+# A published release is dispatched from release.yml's post-publish job
+# instead. The promote publishes with GITHUB_TOKEN, and an event caused by
+# GITHUB_TOKEN starts no workflow, so neither a `release: published` trigger
+# nor the `push` above would ever see it.
+#
+# Needs repository secret SITE_DISPATCH_TOKEN: a token with contents: write on
+# BlkLeg/circuitbreaker-site, which is what its repository_dispatch API
+# requires. Without it every run is a logged no-op and the site falls back to
+# its schedule, so a missing secret costs freshness, never a red release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - mkdocs.yml
+      - CHANGELOG.md
+      - install.sh
+      - apps/frontend/public/CB-AZ_Final.png
+      - apps/frontend/public/icons/vendors/**
+  workflow_dispatch:
+
+permissions: {}
+
+# The site deploys the newest content it is told about and cancels the run it
+# supersedes, so only the last dispatch of a burst is worth sending.
+concurrency:
+  group: site-sync
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    name: Tell the site its content changed
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch app-content-changed
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::No SITE_DISPATCH_TOKEN, so the site will pick this up on its schedule instead."
+            exit 0
+          fi
+          # The exact commit, so the site builds the tree that changed rather
+          # than whatever main happens to be by the time it starts.
+          printf '{"event_type":"app-content-changed","client_payload":{"sha":"%s"}}' "${SHA}" \
+            | gh api repos/BlkLeg/circuitbreaker-site/dispatches --method POST --input -
+          echo "dispatched app-content-changed for ${SHA}"

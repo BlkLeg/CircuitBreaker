@@ -288,7 +288,7 @@ What still requires egress when you use the feature, and what to disable if you 
 Getting the software onto the host still requires downloading artifacts and dependencies. There is
 no signed offline bundle in this release, and `ACC-8` has not passed. Staging the artifacts yourself
 on a connected machine and carrying them across may well work; it is simply not a supported,
-evidenced path, and `cb update` on a native install fetches the installer over the internet.
+evidenced path, and a native upgrade (`install.sh --upgrade`) fetches the installer over the internet unless you run it with `--local-bundle --airgap`.
 
 ---
 

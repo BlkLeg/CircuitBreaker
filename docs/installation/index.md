@@ -23,7 +23,7 @@ from the same pins and must share the same `runtime_digest`.
 ## What to do
 
 Install and upgrade as before — [Quick Install](quick-install.md),
-`install.sh --upgrade` / `cb update`, or your package manager. No new
+`install.sh --upgrade` (see [Upgrading](upgrading.md)), or your package manager. No new
 operator steps for the hermetic cutover.
 
 ## Rollback
@@ -88,11 +88,12 @@ Two files look like a split stack and are not one:
 If another document tells you split Compose is a supported 1.0 channel, that
 document is wrong — please open an issue.
 
-### npm is not an installation channel
+### npm is not an installation channel yet
 
-No Circuit Breaker package is published to npm, and none is planned for the
-1.0 line: [ADR 0004](../adr/0004-npm-out-of-scope-for-1.0.md) records the
-decision. Native and mono are the only supported installation methods;
+No Circuit Breaker package is published to npm today. An npm installer CLI is
+planned for 1.0 ([ADR 0006](../adr/0006-npm-installer-cli-for-1.0.md)), and
+this page will document it once it ships and has passed its release gates.
+Until then, native and mono are the only supported installation methods;
 `install.sh` is the scripted entry point. The frontend's `package.json` exists
 to build the bundled UI and is marked private, so it cannot be published.
 
