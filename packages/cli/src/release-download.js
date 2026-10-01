@@ -24,6 +24,14 @@ async function attempt(asset, part, start, { fetchImpl, timeoutMs }) {
   const controller = new AbortController();
   const response = await request(asset.url, { fetchImpl, timeoutMs, headers, signal: controller.signal });
   const appending = start > 0 && response.status === 206;
+  if (appending) {
+    const range = /^bytes (\d+)-(\d+)\/(\d+|\*)$/.exec(response.headers.get('content-range') ?? '');
+    if (!range || Number(range[1]) !== start || (range[3] !== '*' && Number(range[3]) !== asset.size)) {
+      await response.body?.cancel().catch(() => {});
+      await rm(part, { force: true });
+      throw new DownloadError(`${asset.name}: the server's partial answer does not continue the bytes already downloaded`);
+    }
+  }
   const handle = await open(part, appending ? 'a' : 'w', 0o600);
   let written = appending ? start : 0;
   // request() bounds connect + headers only, so the body gets a stall timeout:

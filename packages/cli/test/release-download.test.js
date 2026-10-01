@@ -10,7 +10,7 @@ const asset = { id: 7, name: 'bundle.tar.gz', size: BODY.length, url: 'https://d
 const roomy = async () => ({ bavail: 1e9, bsize: 4096 });
 const noSleep = async () => {};
 
-function server({ failFirst = 0, status = 200, body = BODY, honourRange = true } = {}) {
+function server({ failFirst = 0, status = 200, body = BODY, honourRange = true, contentRangeFor } = {}) {
   const calls = [];
   let failures = failFirst;
   const fetchImpl = async (url, init) => {
@@ -18,7 +18,12 @@ function server({ failFirst = 0, status = 200, body = BODY, honourRange = true }
     if (failures > 0) { failures -= 1; throw new TypeError('fetch failed'); }
     if (status !== 200) return new Response('x', { status });
     const m = /bytes=(\d+)-/.exec(init.headers.range ?? '');
-    if (m && honourRange) return new Response(body.subarray(Number(m[1])), { status: 206 });
+    if (m && honourRange) {
+      const from = Number(m[1]);
+      const contentRange = contentRangeFor ? contentRangeFor(from) : `bytes ${from}-${body.length - 1}/${body.length}`;
+      const headers = contentRange === null ? {} : { 'content-range': contentRange };
+      return new Response(body.subarray(from), { status: 206, headers });
+    }
     return new Response(body, { status: 200 });
   };
   return { fetchImpl, calls };
@@ -108,7 +113,7 @@ test('a body that stalls after some bytes is aborted, retried with Range, and co
   const fetchImpl = async (url, init) => {
     calls.push(init.headers.range ?? null);
     const m = /bytes=(\d+)-/.exec(init.headers.range ?? '');
-    if (m) return new Response(BODY.subarray(Number(m[1])), { status: 206 });
+    if (m) return new Response(BODY.subarray(Number(m[1])), { status: 206, headers: { 'content-range': `bytes ${m[1]}-1023/1024` } });
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(new Uint8Array(BODY.subarray(0, 300)));
@@ -129,3 +134,28 @@ test('an invalid declared size is refused before any request', async () => {
   }
   assert.equal(s.calls.length, 0);
 });
+
+for (const [label, contentRangeFor] of [
+  ['wrong start', (from) => `bytes ${from + 5}-1023/1024`],
+  ['missing header', () => null],
+  ['mismatched total', (from) => `bytes ${from}-1023/2048`],
+]) {
+  test(`a 206 with ${label} in Content-Range is discarded and the download restarts from zero`, async () => {
+    const d = await dir();
+    await writeFile(join(d, 'bundle.tar.gz.part'), BODY.subarray(0, 300));
+    await writeFile(join(d, 'bundle.tar.gz.asset.json'), JSON.stringify({ id: 7, size: 1024, url: asset.url }));
+    // First resumed answer carries wrong bytes (a mixed file would be 1024 long); later ones are honest.
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push(init.headers.range ?? null);
+      if (calls.length === 1) {
+        const headers = contentRangeFor(300) === null ? {} : { 'content-range': contentRangeFor(300) };
+        return new Response(Buffer.from('Z'.repeat(724)), { status: 206, headers });
+      }
+      return new Response(BODY, { status: 200 });
+    };
+    const path = await downloadAsset(asset, d, { fetchImpl, statfs: roomy, sleep: noSleep });
+    assert.deepEqual(calls, ['bytes=300-', null]);
+    assert.deepEqual(await readFile(path), BODY);
+  });
+}
