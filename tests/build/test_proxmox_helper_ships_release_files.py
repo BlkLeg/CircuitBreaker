@@ -84,7 +84,7 @@ esac
         f"build_installer_cmd '{TARBALL}'",
     ])
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"}
-    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, check=False)
     return r, container, host
 
 

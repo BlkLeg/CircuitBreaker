@@ -114,7 +114,7 @@ class Setup:
         ])
         env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}"}
         return subprocess.run(["bash", "-c", script, "bash", str(self.tarball), sums, sig, origin, version],
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=env, check=False)
 
 
 @pytest.fixture
@@ -352,7 +352,7 @@ def test_an_unreachable_sums_download_stops_the_install(s: Setup) -> None:
         'echo REACHED',
     ])
     env = {**os.environ, "PATH": f"{s.bin}:{os.environ['PATH']}"}
-    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, check=False)
     assert r.returncode != 0
     assert "FAIL: Could not download SHA256SUMS" in r.stdout
     assert "REACHED" not in r.stdout
@@ -363,7 +363,7 @@ def test_a_release_not_publishing_the_asset_returns_1_without_failing(s: Setup) 
         "set -euo pipefail", STUBS, 'CB_VERSION=0.4.7', _function("cb_fetch_release_asset"),
         "rc=0", f"cb_fetch_release_asset '{{\"assets\":[]}}' SHA256SUMS \"{s.tmp}\" || rc=$?", 'echo "RC=$rc"',
     ])
-    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
     assert "RC=1" in r.stdout
 
 
@@ -385,7 +385,7 @@ def test_explicit_version_with_a_v_is_normalised_at_parse() -> None:
         'echo "V=$CB_VERSION E=$CB_VERSION_EXPLICIT"',
     ])
     for given, want in (("v0.4.5", "0.4.5"), ("0.4.5", "0.4.5"), ("vv0.4.5", "v0.4.5")):
-        r = subprocess.run(["bash", "-c", script, "bash", "--version", given], capture_output=True, text=True)
+        r = subprocess.run(["bash", "-c", script, "bash", "--version", given], capture_output=True, text=True, check=False)
         assert r.stdout.strip() == f"V={want} E=true", r.stdout + r.stderr
 
 
@@ -429,7 +429,7 @@ def _run_download_stage(tmp: Path, local_bundle: str, curl_body: str) -> subproc
     ])
     (tmp / "tmp").mkdir(exist_ok=True)
     env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"}
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, check=False)
 
 
 def _vars(stdout: str) -> dict[str, str]:
