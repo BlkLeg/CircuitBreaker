@@ -205,7 +205,11 @@ def test_the_pins_are_the_published_v046_hashes() -> None:
     for name, value in PINNED_V046.items():
         assert f'{name}="{value}"' in text
     assert "CB_LAST_UNSIGNED_RELEASE" not in text, "the version-string exception must not come back"
-    assert '"$CB_UNSIGNED_PIN_AMD64" "$CB_UNSIGNED_PIN_ARM64"' in _function("cb_unsigned_release_allowed")
+    # The pins and their matcher live in the shared library, which the
+    # Proxmox helper inlines too; the installer delegates to it.
+    assert 'cb_bundle_matches_unsigned_pin "$tarball"' in _function("cb_unsigned_release_allowed")
+    assert '"$CB_UNSIGNED_PIN_AMD64" "$CB_UNSIGNED_PIN_ARM64"' in _function("cb_bundle_matches_unsigned_pin")
+    assert text.index('CB_UNSIGNED_PIN_AMD64="') < text.index(END), "the pins belong in the inlined library"
 
 
 def test_a_download_without_sums_fails(s: Setup) -> None:

@@ -210,3 +210,49 @@ def test_every_committed_key_line_is_well_formed() -> None:
         assert len(raw) == 32, line
         assert key_id == hashlib.sha256(raw).hexdigest()[:16], line
         assert re.fullmatch(r"\d+\.\d+\.\d+", first), line
+
+
+PINNED_V046 = {
+    "CB_UNSIGNED_PIN_AMD64": "377a62236a792df994e63c54fef38aca2ab76b38246fd4de33b913514f7a35d5"
+                             "  circuit-breaker_0.4.6_linux_amd64.tar.gz",
+    "CB_UNSIGNED_PIN_ARM64": "1c93f507cbac803da6dc6fd0ef3da62083ef87b09bcba3531b7bd61a1624c93f"
+                             "  circuit-breaker_0.4.6_linux_arm64.tar.gz",
+}
+
+
+def test_the_library_carries_the_published_v046_pins() -> None:
+    """Copied from v0.4.6's SHA256SUMS; install.sh and the Proxmox helper share them."""
+    for name, value in PINNED_V046.items():
+        r = bash(f'printf "%s" "${name}"')
+        assert r.stdout == value
+
+
+@pytest.mark.parametrize("pin", ["CB_UNSIGNED_PIN_AMD64", "CB_UNSIGNED_PIN_ARM64"])
+def test_a_tarball_matching_a_pin_by_hash_and_name_matches(tmp_path: Path, pin: str) -> None:
+    tarball = tmp_path / "circuit-breaker_0.4.6_linux_amd64.tar.gz"
+    tarball.write_bytes(b"genuine")
+    digest = hashlib.sha256(b"genuine").hexdigest()
+    r = bash(f'{pin}="{digest}  {tarball.name}"\ncb_bundle_matches_unsigned_pin "$1"', str(tarball))
+    assert r.returncode == 0, r.stderr
+
+
+def test_a_pinned_hash_under_another_name_does_not_match(tmp_path: Path) -> None:
+    tarball = tmp_path / "circuit-breaker_0.4.8_linux_amd64.tar.gz"
+    tarball.write_bytes(b"genuine")
+    digest = hashlib.sha256(b"genuine").hexdigest()
+    r = bash(f'CB_UNSIGNED_PIN_AMD64="{digest}  circuit-breaker_0.4.6_linux_amd64.tar.gz"\n'
+             'cb_bundle_matches_unsigned_pin "$1"', str(tarball))
+    assert r.returncode == 1
+
+
+def test_a_pinned_name_with_other_bytes_does_not_match(tmp_path: Path) -> None:
+    """A forged bundle named like v0.4.6: the real pins, other bytes."""
+    tarball = tmp_path / "circuit-breaker_0.4.6_linux_amd64.tar.gz"
+    tarball.write_bytes(b"forged")
+    r = bash('cb_bundle_matches_unsigned_pin "$1"', str(tarball))
+    assert r.returncode == 1
+
+
+def test_a_missing_tarball_does_not_match(tmp_path: Path) -> None:
+    r = bash('cb_bundle_matches_unsigned_pin "$1"', str(tmp_path / "circuit-breaker_0.4.6_linux_amd64.tar.gz"))
+    assert r.returncode == 1
