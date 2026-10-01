@@ -184,16 +184,43 @@ test('refuses a hardlink to an in-archive symlink, whatever the order', async ()
   assert.match(only.reason, /hardlink h targets symlink/);
 });
 
-test('refuses GNU sparse pax records in x and g headers', async () => {
+test('refuses GNU sparse pax records in x headers and any g header', async () => {
   const sparse = pax({
     'GNU.sparse.major': '1', 'GNU.sparse.minor': '0',
     'GNU.sparse.name': '../sparse-escape', 'GNU.sparse.realsize': '4',
   });
-  for (const type of ['x', 'g']) {
-    const r = await refused([{ name: 'pax', type, data: sparse }, { name: 'benign', data: Buffer.from('x') }]);
+  const x = await refused([{ name: 'pax', type: 'x', data: sparse }, { name: 'benign', data: Buffer.from('x') }]);
+  assert.equal(x.ok, false);
+  assert.match(x.reason, /GNU\.sparse/);
+  const g = await refused([{ name: 'pax', type: 'g', data: sparse }, { name: 'benign', data: Buffer.from('x') }]);
+  assert.equal(g.ok, false);
+  assert.match(g.reason, /global pax/);
+});
+
+for (const [label, records, entries] of [
+  ['gsize', { size: '512' }, [{ name: 'sl', type: '2', linkname: 'ok' }, { name: 'benign', data: hiddenEvil() }]],
+  ['glink', { linkpath: '/etc/shadow' }, [{ name: 'sl', type: '2', linkname: 'ok' }]],
+  ['gpath', { path: 'gp/evilpath' }, [{ name: 'benign', data: Buffer.from('x') }]],
+]) {
+  test(`refuses a global pax header (${label})`, async () => {
+    const r = await refused([{ name: 'ok', data: Buffer.from('x') }, { name: 'g', type: 'g', data: pax(records) }, ...entries]);
     assert.equal(r.ok, false);
-    assert.match(r.reason, /sparse/);
-  }
+    assert.match(r.reason, /global pax/);
+  });
+}
+
+test('refuses an unknown x keyword and accepts allowlisted ones', async () => {
+  const bad = await refused([
+    { name: 'pax', type: 'x', data: pax({ 'SCHILY.xattr.security.capability': 'x' }) },
+    { name: 'benign', data: Buffer.from('x') },
+  ]);
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /SCHILY\.xattr\.security\.capability/);
+  const good = await refused([
+    { name: 'pax', type: 'x', data: pax({ mtime: '1700000000.5', uid: '1', gname: 'grp' }) },
+    { name: 'benign', data: Buffer.from('x') },
+  ]);
+  assert.equal(good.ok, true, good.reason);
 });
 
 test('refuses a GNU sparse (type S) entry', async () => {
