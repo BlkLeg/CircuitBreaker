@@ -13,8 +13,8 @@
     "plan": { "const": true },
     "outcome": { "enum": ["verified", "refused", "available", "no_change", "committed", "recovered", "recovery_required", "interrupted", "listed"] },
     "operation_id": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/operation_id" }] },
-    "current_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/version" }] },
-    "target_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/version" }] },
+    "current_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/installed_version" }] },
+    "target_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/installed_version" }] },
     "recovery_available": { "type": "boolean" },
     "error": { "$ref": "#/$defs/error" },
     "target": {
@@ -53,14 +53,29 @@
       "additionalProperties": false,
       "required": ["version", "mode"],
       "properties": {
-        "version": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\x00-\\x1f\\x7f]*$" },
+        "version": { "$ref": "#/$defs/installed_version" },
         "mode": { "$ref": "#/$defs/adapter" }
       }
     },
-    "operations": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/history_entry" } }
+    "operations": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/history_entry" } }
   },
   "$defs": {
     "adapter": { "enum": ["native", "mono", "package", "proxmox"] },
+    "brief_text": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f]*$",
+      "x-reason": "contains a control character other than tab or newline",
+      "not": {
+        "description": "looks like a credential (a URL password, private key, bearer token or secret assignment); redact it",
+        "anyOf": [
+          { "pattern": "[A-Za-z][A-Za-z0-9+.-]*://[^/?#@ \\x00-\\x1f]*:[^/?#@ \\x00-\\x1f]*@" },
+          { "pattern": "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----" },
+          { "pattern": "(?:Bearer|bearer|BEARER) [A-Za-z0-9._~+/=-]{8,}" },
+          { "pattern": "(?:[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Ss]ecret|SECRET|[Tt]oken|TOKEN|[Aa]pi_?[Kk]ey|API_?KEY|[Vv]ault_[Kk]ey|VAULT_KEY)[ ]?[=:][ ]?[^ \\x00-\\x1f]" }
+        ]
+      }
+    },
     "error": {
       "type": "object",
       "additionalProperties": false,
@@ -71,7 +86,7 @@
       }
     },
     "exit_name": { "enum": ["USAGE", "UNSUPPORTED", "NETWORK", "TRUST", "PERMISSION", "PREFLIGHT", "RECOVERED", "MANUAL", "LOCKED", "INTERRUPTED"] },
-    "file_name": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\x00-\\x1f\\x7f]*$" },
+    "file_name": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\x00-\\x1f\\x7f-\\x9f]*$" },
     "history_entry": {
       "oneOf": [
         {
@@ -85,12 +100,12 @@
             "action": { "$ref": "#/$defs/journal_action" },
             "adapter": { "$ref": "#/$defs/adapter" },
             "state": { "$ref": "#/$defs/state" },
-            "outcome": { "enum": ["committed", "recovered", "refused", "interrupted", null] },
+            "outcome": { "enum": ["committed", "recovered", "refused", "interrupted", "manual", null] },
             "checkpoint": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/state" }] },
             "started_at": { "$ref": "#/$defs/timestamp" },
             "updated_at": { "$ref": "#/$defs/timestamp" },
-            "source_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/version" }] },
-            "target_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/version" }] },
+            "source_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/installed_version" }] },
+            "target_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/installed_version" }] },
             "recovery_available": { "type": "boolean" }
           }
         },
@@ -101,11 +116,12 @@
           "properties": {
             "inspection_required": { "const": true },
             "record": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/file_name" }] },
-            "reason": { "$ref": "#/$defs/text" }
+            "reason": { "$ref": "#/$defs/brief_text" }
           }
         }
       ]
     },
+    "installed_version": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$", "x-reason": "contains a control character" },
     "history_index": {
       "x-max-bytes": 262144,
       "type": "object",
@@ -114,7 +130,7 @@
       "properties": {
         "schema_version": { "const": 1 },
         "generated_at": { "$ref": "#/$defs/timestamp" },
-        "operations": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/history_entry" } }
+        "operations": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/history_entry" } }
       }
     },
     "journal_action": {
@@ -125,7 +141,7 @@
     "path": {
       "type": "string",
       "maxLength": 4096,
-      "pattern": "^/(?:(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f]+(?:/(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f]+)*)?$"
+      "pattern": "^/(?:(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f-\\x9f]+(?:/(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f-\\x9f]+)*)?$"
     },
     "state": {
       "enum": ["planned", "staged", "verified", "recovery_saved", "applying", "checking", "committed", "recovering", "recovered", "recovery_required", "interrupted"]
@@ -133,7 +149,7 @@
     "text": {
       "type": "string",
       "maxLength": 4096,
-      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*$",
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f]*$",
       "x-reason": "contains a control character other than tab or newline",
       "not": {
         "description": "looks like a credential (a URL password, private key, bearer token or secret assignment); redact it",

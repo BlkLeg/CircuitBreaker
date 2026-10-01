@@ -31,7 +31,7 @@
     "state": { "$ref": "#/$defs/state" },
     "generation": { "type": "integer", "minimum": 1 },
     "level": { "enum": ["info", "warning", "error"] },
-    "message": { "$ref": "#/$defs/text" },
+    "message": { "$ref": "#/$defs/message_text" },
     "code": { "$ref": "#/$defs/exit_name" }
   },
   "$defs": {
@@ -40,10 +40,10 @@
     "state": {
       "enum": ["planned", "staged", "verified", "recovery_saved", "applying", "checking", "committed", "recovering", "recovered", "recovery_required", "interrupted"]
     },
-    "text": {
+    "message_text": {
       "type": "string",
-      "maxLength": 4096,
-      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*$",
+      "maxLength": 900,
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f]*$",
       "x-reason": "contains a control character other than tab or newline",
       "not": {
         "description": "looks like a credential (a URL password, private key, bearer token or secret assignment); redact it",

@@ -253,6 +253,102 @@
      "confirm"
     ]
    }
+  },
+  {
+   "name": "update from a mono host whose identity records latest",
+   "document": {
+    "schema_version": 1,
+    "action": "update",
+    "adapter": "mono",
+    "source": {
+     "version": "latest",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": null,
+     "schema_revision": "0040_rls_policies"
+    },
+    "target": {
+     "version": "0.4.7",
+     "arch": "amd64",
+     "channel": "stable",
+     "artifact": {
+      "name": "circuit-breaker_0.4.7_linux_amd64.tar.gz",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+     },
+     "schema_revision": "a1b2c3d4e5f6"
+    },
+    "compatibility": {
+     "management": "certified",
+     "schema": "forward",
+     "transition_digest": null
+    },
+    "options": null,
+    "downtime": "outage",
+    "recovery": {
+     "mode": "new_point",
+     "ref": null
+    },
+    "data": {
+     "effect": "migrated",
+     "restore_point_at": null,
+     "scope_digest": null
+    },
+    "trust": {
+     "signature": {
+      "key_id": "0123456789abcdef"
+     },
+     "provenance": "verified"
+    },
+    "acknowledgments": [
+     "confirm"
+    ]
+   }
+  },
+  {
+   "name": "rollback to a point recorded as latest",
+   "document": {
+    "schema_version": 1,
+    "action": "rollback",
+    "adapter": "mono",
+    "source": {
+     "version": "unknown",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": null,
+     "schema_revision": null
+    },
+    "target": {
+     "version": "latest",
+     "arch": "amd64",
+     "channel": null,
+     "artifact": {
+      "name": "ghcr.io/blkleg/circuitbreaker:v0.4.7",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+     },
+     "schema_revision": null
+    },
+    "compatibility": {
+     "management": "certified",
+     "schema": "compatible",
+     "transition_digest": null
+    },
+    "options": null,
+    "downtime": "restart",
+    "recovery": {
+     "mode": "existing_point",
+     "ref": {
+      "operation_id": "op-20261001-1234",
+      "manifest_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+     }
+    },
+    "data": {
+     "effect": "retained",
+     "restore_point_at": null,
+     "scope_digest": null
+    },
+    "trust": null,
+    "acknowledgments": [
+     "confirm"
+    ]
+   }
   }
  ],
  "event": [
@@ -573,6 +669,18 @@
      "code": "PERMISSION",
      "reason": "/var/lib/circuitbreaker-lifecycle/history.json is not owned by root"
     }
+   }
+  },
+  {
+   "name": "rollback back to a host recorded as latest",
+   "document": {
+    "schema_version": 1,
+    "action": "rollback",
+    "outcome": "committed",
+    "operation_id": "op-20260930-001",
+    "current_version": "latest",
+    "target_version": "latest",
+    "recovery_available": true
    }
   }
  ],
@@ -1158,6 +1266,236 @@
      }
     ]
    }
+  },
+  {
+   "name": "abandoned during staging, closed",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "update",
+    "adapter": "native",
+    "generation": 4,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": {
+     "version": "0.4.6",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": null,
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "interrupted",
+      "at": "2026-09-30T12:03:00.123Z",
+      "cause": "abandoned",
+      "checkpoint": "staged",
+      "outcome": "interrupted"
+     }
+    ]
+   }
+  },
+  {
+   "name": "legacy install of latest",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "legacy",
+    "action": "install",
+    "adapter": "native",
+    "generation": 3,
+    "plan_digest": null,
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": null,
+    "target": {
+     "version": "latest",
+     "artifact_digest": null
+    },
+    "recovery": null,
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "applying",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "applying",
+      "at": "2026-09-30T12:02:00.123Z",
+      "step": "image_pulled"
+     },
+     {
+      "sequence": 3,
+      "state": "committed",
+      "at": "2026-09-30T12:03:00.123Z",
+      "outcome": "committed"
+     }
+    ]
+   }
+  },
+  {
+   "name": "recovery attempts exhausted, closed by hand",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "update",
+    "adapter": "native",
+    "generation": 40,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": {
+     "version": "0.4.6",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": {
+     "operation_id": "op-20260930-001",
+     "manifest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "verified",
+      "at": "2026-09-30T12:03:00.123Z"
+     },
+     {
+      "sequence": 4,
+      "state": "recovery_saved",
+      "at": "2026-09-30T12:04:00.123Z"
+     },
+     {
+      "sequence": 5,
+      "state": "applying",
+      "at": "2026-09-30T12:05:00.123Z"
+     },
+     {
+      "sequence": 6,
+      "state": "checking",
+      "at": "2026-09-30T12:06:00.123Z"
+     },
+     {
+      "sequence": 7,
+      "state": "recovery_required",
+      "at": "2026-09-30T12:07:00.123Z",
+      "cause": "check_failed",
+      "error": {
+       "code": "MANUAL",
+       "reason": "the restored release did not become healthy"
+      }
+     },
+     {
+      "sequence": 8,
+      "state": "recovering",
+      "at": "2026-09-30T12:08:00.123Z"
+     },
+     {
+      "sequence": 9,
+      "state": "recovering",
+      "at": "2026-09-30T12:09:00.123Z",
+      "step": "release_restored"
+     },
+     {
+      "sequence": 10,
+      "state": "recovery_required",
+      "at": "2026-09-30T12:10:00.123Z",
+      "cause": "recovery_failed",
+      "error": {
+       "code": "MANUAL",
+       "reason": "the restored release did not become healthy"
+      }
+     },
+     {
+      "sequence": 11,
+      "state": "recovering",
+      "at": "2026-09-30T12:11:00.123Z"
+     },
+     {
+      "sequence": 12,
+      "state": "recovering",
+      "at": "2026-09-30T12:12:00.123Z",
+      "step": "release_restored"
+     },
+     {
+      "sequence": 13,
+      "state": "recovery_required",
+      "at": "2026-09-30T12:13:00.123Z",
+      "cause": "recovery_failed",
+      "error": {
+       "code": "MANUAL",
+       "reason": "the restored release did not become healthy"
+      }
+     },
+     {
+      "sequence": 14,
+      "state": "recovering",
+      "at": "2026-09-30T12:14:00.123Z"
+     },
+     {
+      "sequence": 15,
+      "state": "recovering",
+      "at": "2026-09-30T12:15:00.123Z",
+      "step": "release_restored"
+     },
+     {
+      "sequence": 16,
+      "state": "recovery_required",
+      "at": "2026-09-30T12:16:00.123Z",
+      "cause": "recovery_failed",
+      "error": {
+       "code": "MANUAL",
+       "reason": "the restored release did not become healthy"
+      }
+     },
+     {
+      "sequence": 17,
+      "state": "recovery_required",
+      "at": "2026-09-30T12:17:00.123Z",
+      "cause": "recovery_failed",
+      "outcome": "manual",
+      "error": {
+       "code": "MANUAL",
+       "reason": "resolved by hand: restored the database from the operator's own dump"
+      }
+     }
+    ]
+   }
   }
  ],
  "history": [
@@ -1194,6 +1532,50 @@
       "inspection_required": true,
       "record": null,
       "reason": "unsupported journal schema_version 2"
+     }
+    ]
+   }
+  },
+  {
+   "name": "index with a hand-closed operation from a latest host",
+   "document": {
+    "schema_version": 1,
+    "generated_at": "2026-09-30T12:00:00Z",
+    "operations": [
+     {
+      "inspection_required": false,
+      "operation_id": "op-20260930-002",
+      "kind": "legacy",
+      "action": "migrate",
+      "adapter": "native",
+      "state": "interrupted",
+      "outcome": null,
+      "checkpoint": "applying",
+      "started_at": "2026-09-30T12:00:00Z",
+      "updated_at": "2026-09-30T12:00:00Z",
+      "source_version": null,
+      "target_version": null,
+      "recovery_available": false
+     },
+     {
+      "inspection_required": true,
+      "record": null,
+      "reason": "unsupported journal schema_version 2"
+     },
+     {
+      "inspection_required": false,
+      "operation_id": "op-20260930-003",
+      "kind": "transaction",
+      "action": "update",
+      "adapter": "mono",
+      "state": "recovery_required",
+      "outcome": "manual",
+      "checkpoint": null,
+      "started_at": "2026-09-30T12:00:00Z",
+      "updated_at": "2026-09-30T13:00:00Z",
+      "source_version": "latest",
+      "target_version": "0.4.7",
+      "recovery_available": true
      }
     ]
    }

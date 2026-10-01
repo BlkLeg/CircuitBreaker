@@ -3,7 +3,7 @@
   "$id": "https://circuitbreaker.local/schemas/lifecycle-plan.schema.json",
   "title": "CircuitBreakerLifecyclePlan",
   "description": "A lifecycle execution plan, version 1. Describes; never authorizes: the native helper recomputes its digest from its own inputs. Field rules beyond this schema: specs/install/lifecycle-contract.md.",
-  "x-max-bytes": 16384,
+  "x-max-bytes": 65536,
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "action", "adapter", "source", "target", "compatibility", "options", "downtime", "recovery", "data", "trust", "acknowledgments"],
@@ -14,8 +14,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "summary": { "$ref": "#/$defs/text" },
-        "lines": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/text" } }
+        "summary": { "$ref": "#/$defs/brief_text" },
+        "lines": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/brief_text" } }
       }
     },
     "action": { "enum": ["install", "update", "downgrade", "rollback", "recover", "uninstall"] },
@@ -25,7 +25,7 @@
       "additionalProperties": false,
       "required": ["version", "identity_digest", "artifact_digest", "schema_revision"],
       "properties": {
-        "version": { "$ref": "#/$defs/version" },
+        "version": { "$ref": "#/$defs/installed_version" },
         "identity_digest": { "$ref": "#/$defs/digest" },
         "artifact_digest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
         "schema_revision": { "$ref": "#/$defs/revision" }
@@ -36,7 +36,7 @@
       "additionalProperties": false,
       "required": ["version", "arch", "channel", "artifact", "schema_revision"],
       "properties": {
-        "version": { "$ref": "#/$defs/version" },
+        "version": { "$ref": "#/$defs/installed_version" },
         "arch": { "enum": ["amd64", "arm64"] },
         "channel": { "enum": ["stable", "candidate", null] },
         "artifact": {
@@ -112,11 +112,12 @@
   "$defs": {
     "adapter": { "enum": ["native", "mono", "package", "proxmox"] },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "installed_version": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$", "x-reason": "contains a control character" },
     "operation_id": { "type": "string", "pattern": "^op-[0-9]{8}-[0-9]{3,9}$", "format": "cb-operation-id" },
     "path": {
       "type": "string",
       "maxLength": 4096,
-      "pattern": "^/(?:(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f]+(?:/(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f]+)*)?$"
+      "pattern": "^/(?:(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f-\\x9f]+(?:/(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f-\\x9f]+)*)?$"
     },
     "recovery_ref": {
       "type": ["object", "null"],
@@ -128,10 +129,10 @@
       }
     },
     "revision": { "type": ["string", "null"], "pattern": "^[0-9A-Za-z_]{1,64}$" },
-    "text": {
+    "brief_text": {
       "type": "string",
-      "maxLength": 4096,
-      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*$",
+      "maxLength": 256,
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f]*$",
       "x-reason": "contains a control character other than tab or newline",
       "not": {
         "description": "looks like a credential (a URL password, private key, bearer token or secret assignment); redact it",

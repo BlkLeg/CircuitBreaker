@@ -8,6 +8,7 @@
     "initial": { "transaction": "planned", "legacy": "applying" },
     "pre_mutation": ["planned", "staged", "verified", "recovery_saved"],
     "progress_states": ["applying", "checking", "recovering"],
+    "max_recovery_attempts": 3,
     "causes": {
       "interrupted": ["interrupted", "abandoned"],
       "recovery_required": ["interrupted", "apply_failed", "check_failed", "recovery_failed"]
@@ -48,7 +49,7 @@
     "recovery": { "$ref": "#/$defs/recovery_ref" },
     "evidence": {
       "type": "array",
-      "maxItems": 32,
+      "maxItems": 16,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -56,7 +57,7 @@
         "properties": {
           "check": { "enum": ["signature", "provenance", "digest", "archive", "compatibility", "recovery_point", "health", "version", "schema", "identity"] },
           "result": { "enum": ["passed", "failed", "skipped"] },
-          "detail": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/text" }] }
+          "detail": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/brief_text" }] }
         }
       }
     },
@@ -65,7 +66,7 @@
     "checkpoints": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 256,
+      "maxItems": 32,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -77,8 +78,8 @@
           "step": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
           "cause": { "enum": ["interrupted", "abandoned", "apply_failed", "check_failed", "recovery_failed"] },
           "checkpoint": { "$ref": "#/$defs/state" },
-          "outcome": { "enum": ["committed", "recovered", "refused", "interrupted"] },
-          "error": { "$ref": "#/$defs/error" }
+          "outcome": { "enum": ["committed", "recovered", "refused", "interrupted", "manual"] },
+          "error": { "$ref": "#/$defs/journal_error" }
         }
       }
     }
@@ -86,15 +87,16 @@
   "$defs": {
     "adapter": { "enum": ["native", "mono", "package", "proxmox"] },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "error": {
+    "journal_error": {
       "type": "object",
       "additionalProperties": false,
       "required": ["code", "reason"],
       "properties": {
         "code": { "$ref": "#/$defs/exit_name" },
-        "reason": { "$ref": "#/$defs/text" }
+        "reason": { "$ref": "#/$defs/brief_text" }
       }
     },
+    "installed_version": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$", "x-reason": "contains a control character" },
     "exit_name": { "enum": ["USAGE", "UNSUPPORTED", "NETWORK", "TRUST", "PERMISSION", "PREFLIGHT", "RECOVERED", "MANUAL", "LOCKED", "INTERRUPTED"] },
     "journal_action": {
       "enum": ["install", "update", "downgrade", "rollback", "recover", "uninstall", "restore", "migrate", "backup", "vault_recover", "restart"]
@@ -115,17 +117,17 @@
       "additionalProperties": false,
       "required": ["version", "artifact_digest"],
       "properties": {
-        "version": { "$ref": "#/$defs/version" },
+        "version": { "$ref": "#/$defs/installed_version" },
         "artifact_digest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }
       }
     },
     "state": {
       "enum": ["planned", "staged", "verified", "recovery_saved", "applying", "checking", "committed", "recovering", "recovered", "recovery_required", "interrupted"]
     },
-    "text": {
+    "brief_text": {
       "type": "string",
-      "maxLength": 4096,
-      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*$",
+      "maxLength": 256,
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f]*$",
       "x-reason": "contains a control character other than tab or newline",
       "not": {
         "description": "looks like a credential (a URL password, private key, bearer token or secret assignment); redact it",

@@ -38,6 +38,12 @@ export class ContractError extends Error {
 
 const fail = (path, reason) => { throw new ContractError(path, reason); };
 
+// Actions whose target is a release the coordinator resolved and verified, so
+// its version is a release name; elsewhere versions are as a host recorded them.
+const RESOLVED = new Set(['install', 'update', 'downgrade']);
+const RELEASE = new RegExp(JOURNAL.$defs.version.pattern, 'u');
+const isRelease = (version) => typeof version === 'string' && RELEASE.test(version) && [...version].length <= JOURNAL.$defs.version.maxLength;
+
 // --- Canonical form (contract §2): what both validators hash and size.
 
 const KEY = /^[a-z][a-z0-9_]*$/;
@@ -183,6 +189,7 @@ function planRules(p) {
   if (targetless && p.target !== null) fail('/target', `${p.action} has no target release`);
   if (!targetless && p.target === null) fail('/target', `${p.action} needs a target release`);
   if (['install', 'update', 'downgrade'].includes(p.action) && p.trust === null) fail('/trust', `${p.action} needs trust evidence for its target`);
+  if (RESOLVED.has(p.action) && !isRelease(p.target.version)) fail('/target/version', `${p.action} targets a resolved release, named like 0.4.7`);
   if (p.target === null && p.trust !== null) fail('/trust', 'trust describes a target, and this plan has none');
   if (p.recovery.mode === 'existing_point' && p.recovery.ref === null) fail('/recovery/ref', 'existing_point names the recovery point it restores');
   if (p.recovery.mode !== 'existing_point' && p.recovery.ref !== null) fail('/recovery/ref', 'only existing_point names a recovery point');
@@ -245,6 +252,9 @@ function resultRules(r) {
   if (['committed', 'recovered', 'recovery_required'].includes(outcome) && r.operation_id === null) fail('/operation_id', `a ${outcome} result names its operation`);
   if (outcome === 'available' && r.operation_id !== null) fail('/operation_id', 'a release check creates no operation');
   if (outcome === 'available' && r.target_version === null) fail('/target_version', 'an available result names the newer release');
+  if (RESOLVED.has(action) && typeof r.target_version === 'string' && !isRelease(r.target_version)) {
+    fail('/target_version', `${action} targets a resolved release, named like 0.4.7`);
+  }
 }
 
 function checkpointRules(c, at) {
@@ -264,6 +274,13 @@ function checkpointRules(c, at) {
   if (c.outcome === 'interrupted' && !(c.state === 'interrupted' && preMutation.includes(c.checkpoint))) {
     fail(`${at}/outcome`, 'interrupted only closes an operation interrupted before mutation');
   }
+  if (c.state === 'interrupted' && preMutation.includes(c.checkpoint) && c.outcome !== 'interrupted') {
+    fail(`${at}/outcome`, 'an interruption before mutation changed nothing, so it closes the operation with outcome interrupted');
+  }
+  if (c.state === 'interrupted' && !preMutation.includes(c.checkpoint) && c.cause !== 'abandoned') {
+    fail(`${at}/cause`, 'after mutation a trap records recovery_required with cause interrupted; an interrupted record after mutation is only abandoned (no trap ran)');
+  }
+  if (c.outcome === 'manual' && c.state !== 'recovery_required') fail(`${at}/outcome`, 'manual only closes a recovery_required operation');
   const errorAs = c.outcome === 'refused' ? 'refused' : c.state;
   const needsError = ['refused', 'recovered', 'recovery_required'].includes(errorAs);
   if (needsError && !c.error) fail(`${at}/error`, `a ${errorAs} record carries an error`);
@@ -287,6 +304,10 @@ function journalRules(j) {
   if (j.kind === 'transaction' && j.plan_digest === null) fail('/plan_digest', 'a transaction binds its plan_digest');
   if (j.kind === 'legacy' && j.plan_digest !== null) fail('/plan_digest', 'a legacy record has no plan_digest');
   if (j.generation < checkpoints.length) fail('/generation', 'generation counts durable writes and cannot be below the number of checkpoints');
+  if (j.kind === 'transaction' && RESOLVED.has(j.action) && j.target !== null && !isRelease(j.target.version)) {
+    fail('/target/version', `a ${j.action} transaction targets a resolved release, named like 0.4.7`);
+  }
+  let attempts = 0;
   checkpoints.forEach((c, i) => {
     const at = `/checkpoints/${i}`;
     checkpointRules(c, at);
@@ -296,10 +317,15 @@ function journalRules(j) {
     if ('outcome' in prev) fail(at, `the operation was closed by an outcome at record ${i - 1}; nothing may follow`);
     if (c.sequence <= prev.sequence) fail(`${at}/sequence`, 'sequences must increase');
     if (c.state === 'interrupted' && c.checkpoint !== from) fail(`${at}/checkpoint`, `the last durable checkpoint is ${from}, not ${c.checkpoint}`);
+    if (c.outcome === 'manual' && from !== 'recovery_required') fail(`${at}/outcome`, 'manual closes an operation on a record that repeats its recovery_required record');
+    if (c.state === 'recovering' && from !== 'recovering' && ++attempts > LIFECYCLE.max_recovery_attempts) {
+      fail(`${at}/state`, `recovery attempts exhausted (at most ${LIFECYCLE.max_recovery_attempts} per operation); close it with outcome manual once resolved by hand`);
+    }
     if (from === c.state) {
       const progress = 'step' in c && LIFECYCLE.progress_states.includes(c.state);
-      const closingRefusal = c.outcome === 'refused';
-      if (!progress && !closingRefusal) fail(`${at}/state`, `${from} -> ${c.state} repeats a state without a step`);
+      const closing = c.outcome === 'refused' || c.outcome === 'manual';
+      if (progress && 'step' in prev) fail(`${at}/state`, `a later ${c.state} step replaces the earlier stepped record in place; it is not appended`);
+      if (!progress && !closing) fail(`${at}/state`, `${from} -> ${c.state} repeats a state without a step`);
     } else if (!isTransition(j.kind, from, c.state)) {
       fail(`${at}/state`, `${from} -> ${c.state} is not a ${j.kind} transition`);
     } else if (from === 'verified' && c.state === 'applying' && j.action !== 'install') {
@@ -420,6 +446,45 @@ export function parseDocument(kind, input) {
   scan(text);
   assertValid(kind, value);
   return value;
+}
+
+// True when `value` matches $defs/<name> of that document kind, for a producer
+// that must know whether a value can be reported before it reports it.
+export function conforms(kind, name, value) {
+  const { defs } = kindOf(kind);
+  if (!Object.hasOwn(defs, name)) throw new TypeError(`no $defs/${name} in the ${kind} schema`);
+  return check(defs[name], defs, value, '') === null;
+}
+
+// --- Redaction (contract §1.7): what a producer applies to any free text it
+// writes into a document, so its own words never make the document invalid.
+
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu;
+const CONTROL_ON_ONE_LINE = /[\u0000-\u001f\u007f-\u009f]/gu;
+const escapeControl = (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`;
+const CREDENTIALS = [
+  [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[^]*?-----END [A-Z0-9 ]*PRIVATE KEY-----|[^]*)/gu, '[redacted private key]'],
+  [/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#@ \u0000-\u001f]*:[^/?#@ \u0000-\u001f]*@/gu, '$1[redacted]@'],
+  [/(Bearer|bearer|BEARER) [A-Za-z0-9._~+/=-]{8,}/gu, '$1 [redacted]'],
+  [/([Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Ss]ecret|SECRET|[Tt]oken|TOKEN|[Aa]pi_?[Kk]ey|API_?KEY|[Vv]ault_[Kk]ey|VAULT_KEY)[ ]?[=:][ ]?(?:[=:][ ]?)?[^ \u0000-\u001f]+/gu, '$1 (redacted)'],
+];
+const SHAPES = RESULT.$defs.text.not.anyOf.map(({ pattern }) => new RegExp(pattern, 'u'));
+const credentialShaped = (text) => SHAPES.some((shape) => shape.test(text));
+const UNREDACTABLE = '[redacted: the text looked like it held a credential]';
+
+// Contract text from any string: lone surrogates become U+FFFD, control
+// characters other than tab and newline (all of them with singleLine) become
+// visible \u00xx escapes, credential shapes are masked, and the result is cut
+// to maxLength code points with a closing ellipsis. The output always passes
+// $defs/text (or $defs/installed_version with singleLine, when not empty).
+export function redactText(value, { maxLength = 4096, singleLine = false } = {}) {
+  let text = String(value).toWellFormed().replace(singleLine ? CONTROL_ON_ONE_LINE : CONTROL, escapeControl);
+  for (let round = 0; round < 4 && credentialShaped(text); round += 1) {
+    for (const [shape, mask] of CREDENTIALS) text = text.replace(shape, mask);
+  }
+  if (credentialShaped(text)) text = UNREDACTABLE;
+  const points = [...text];
+  return points.length > maxLength ? `${points.slice(0, maxLength - 1).join('')}…` : text;
 }
 
 // The exit code a result stands for: 0 without an error, else its code's value.

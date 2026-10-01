@@ -52,8 +52,11 @@ REQUIRED_PACKED = {
 # own growth here. 131 KiB takes sub-plan 03 Task 1's frozen lifecycle contract
 # (measured 132,698 B): the four lifecycle schemas (25.5 KB, each self-contained
 # so they version independently) and lifecycle-contract.js (23.7 KB), the
-# coordinator's validator for them, which 03 Task 4 and 05-08 consume.
-UNPACKED_SIZE_BUDGET = 131 * 1024
+# coordinator's validator for them, which 03 Task 4 and 05-08 consume. 138 KiB
+# takes that task's review fixes (measured 139,977 B): the bounded text and
+# installed-version definitions, the interruption, step and recovery-attempt
+# rules, the shared redaction, and install --plan redacting what it echoes.
+UNPACKED_SIZE_BUDGET = 138 * 1024
 SHRINKWRAP_SIZE_BUDGET = 40 * 1024
 SHRINKWRAP = PKG / "npm-shrinkwrap.json"
 ENTRY_BUDGET = 40

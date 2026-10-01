@@ -7,7 +7,7 @@ implement it. Where this text and a schema disagree, the schema's tests fail.
 
 | Document | Schema | Bound | Producer | Authority |
 | --- | --- | --- | --- | --- |
-| Execution plan | `packages/cli/schemas/lifecycle-plan.schema.json` | 16 KiB | coordinator (Node) | none: it describes, the native helper recomputes it |
+| Execution plan | `packages/cli/schemas/lifecycle-plan.schema.json` | 64 KiB | coordinator (Node) | none: it describes, the native helper recomputes it |
 | Event | `packages/cli/schemas/lifecycle-event.schema.json` | 4096 bytes per line | coordinator and native helper | none: presentation only |
 | Result | `packages/cli/schemas/lifecycle-result.schema.json` | 256 KiB | the command that ran | the final statement of that run |
 | Operation journal | `packages/cli/schemas/operation-journal.schema.json` | 64 KiB | native state utility, under the lock | authoritative lifecycle state |
@@ -21,7 +21,8 @@ something different is a new version, never an edit to v1.
 Validators: `packages/cli/src/lifecycle-contract.js` (coordinator) and the native state utility
 `deploy/scripts/lifecycle-state.py` (sub-plan 03 Task 3, Python 3.9+ stdlib). Both interpret the
 same schema subset, apply the numbered rules below, and pass the shared fixtures in
-`packages/cli/test/fixtures/lifecycle/` (`valid.json`, `invalid.json`, `digest-vectors.json`).
+`packages/cli/test/fixtures/lifecycle/` (`valid.json`, `invalid.json`, `digest-vectors.json`,
+`redaction-vectors.json`).
 `tests/build/test_lifecycle_contract.py` pins the subset, the regex dialect, the canonical digest
 in Python, and the tables in this file.
 
@@ -29,7 +30,11 @@ in Python, and the tables in this file.
 
 1. UTF-8 without a byte order mark. One JSON object at the top level.
 2. The size bound applies to the bytes received, before parsing. In memory it applies to the
-   canonical text (§2).
+   canonical text (§2). **Bounds hold:** every member bound is chosen so that the largest
+   document the schema and rules allow still fits its byte bound, counting 4 bytes per code
+   point. A producer that writes only valid members can therefore always write the document.
+   `packages/cli/test/lifecycle-contract.test.js` builds that largest document for each kind,
+   and for the journal it searches every legal checkpoint sequence.
 3. Object keys match `^[a-z][a-z0-9_]*$`. A key appears at most once. Nesting is at most 32 levels.
 4. Numbers are safe integers. They are written `-?(0|[1-9][0-9]*)`, are not `-0`, and lie within
    ±(2^53−1). A fraction, an exponent or `-0` is refused even when its value is integral. A
@@ -38,11 +43,38 @@ in Python, and the tables in this file.
 6. Every object is closed (`additionalProperties: false`). A member that is not in the schema is
    refused. A refused member whose name looks like a secret (`password`, `token`,
    `vault_key`, …) is reported as a secret field.
-7. Free text (`text`: error reasons, messages, presentation, evidence detail) is bounded (4096) and
-   has no control characters except tab and newline, so it has no ANSI escapes. It must not have
-   a credential shape: URL userinfo with a password, a PEM private key, `Bearer` tokens, or
-   `password=`/`secret:`/`token=`/`api_key=`/`vault_key=` assignments. Producers redact before
-   writing. The validator's shape check is a backstop, not the redaction.
+7. Free text has no control characters except tab and newline: no C0 control, DEL, or C1
+   control (U+0080–U+009F, which some terminals read as escape introducers), so it has no
+   ANSI escapes. It must not have a credential shape: URL userinfo with a password, a PEM
+   private key, `Bearer` tokens, or `password=`/`secret:`/`token=`/`api_key=`/`vault_key=`
+   assignments. Three bounds, in code points:
+   - `text`, 4096: result error reasons;
+   - `message_text`, 900: event messages, so an event fits its 4096-byte line;
+   - `brief_text`, 256: journal error reasons and evidence detail, plan presentation, history
+     inspection reasons, so a journal, plan and index fit their bounds.
+
+   **Redaction.** A producer passes every free-text value it writes through `redactText`
+   (`lifecycle-contract.js`; the native utility implements the same steps and passes
+   `redaction-vectors.json`). The steps, in order:
+   1. A lone surrogate becomes U+FFFD.
+   2. Each control character above (with `single_line`, tab and newline too) becomes the
+      visible six-character text `\u00xx`, lowercase hex.
+   3. Credential shapes are masked, repeating up to four rounds while one remains:
+      - a PEM private key from `-----BEGIN … PRIVATE KEY-----` through its END line (or to the
+        end of the text) → `[redacted private key]`;
+      - URL userinfo `scheme://user:pass@` → `scheme://[redacted]@`;
+      - `Bearer <token>` → `Bearer [redacted]`;
+      - a secret assignment, the keyword kept and the value (one more `=`/`:` included) →
+        `<keyword> (redacted)`.
+
+      Text that still has a shape after four rounds becomes
+      `[redacted: the text looked like it held a credential]`.
+   4. Text over the bound keeps its first bound−1 code points and ends with `…` (U+2026).
+
+   The output always validates, so a producer's own words, including echoed user input, never
+   make its document invalid. The validator's shape check is a backstop, not the redaction.
+   Values a document reports exactly (paths, file names) are never redacted: a producer that
+   cannot report one as it is refuses before using it (§7).
 
 ### Schema subset
 
@@ -79,9 +111,10 @@ with `$` replaced by `\Z`, because Python's `$` also matches before a trailing n
 | Digest | `sha256:` + 64 lowercase hex | plan, identity, artifact, manifest, scope and transition digests |
 | Bundle SHA256 | 64 lowercase hex, no prefix | the landed `install --plan` result only |
 | Key ID | 16 lowercase hex | `trust/release-bundle-keys.txt` |
-| Version | `X.Y.Z` or `X.Y.Z-pre`, no `v`, ≤ 64 | release versions |
+| Release version | `X.Y.Z` or `X.Y.Z-pre`, no `v`, ≤ 64 | a release the coordinator resolved and verified: `$defs/version` |
+| Installed version | 1–64 code points, no control character | a version as a host records it (`installed_version`): the install identity's `version` is free-form, and installers write `latest` or `unknown` today |
 | Schema revision | `^[0-9A-Za-z_]{1,64}$` | an Alembic revision id |
-| Path | absolute, normalized: no empty, `.` or `..` segment, no trailing `/`, no control character, ≤ 4096 | |
+| Path | absolute, normalized: no empty, `.` or `..` segment, no trailing `/`, no control character (C0, DEL, C1), ≤ 4096 | |
 | Timestamp | RFC 3339 UTC with `Z`, optional 1–6 fractional digits | |
 | Adapter | `native`, `mono`, `package`, `proxmox` | the install identity modes; Docker and Compose are transports of `mono` |
 
@@ -115,8 +148,8 @@ absence cannot change the digest.
 | --- | --- |
 | `action` | `install`, `update`, `downgrade`, `rollback`, `recover`, `uninstall` |
 | `adapter` | the lifecycle adapter, which is the install mode |
-| `source` | the installed server: `version`, `identity_digest`, `artifact_digest` (or null), `schema_revision` (or null); `null` for an install |
-| `target` | the release to run: `version`, `arch`, `channel` (or null), `artifact {name, digest}`, `schema_revision` (or null) |
+| `source` | the installed server: `version` (an installed version), `identity_digest`, `artifact_digest` (or null), `schema_revision` (or null); `null` for an install |
+| `target` | the release to run: `version` (P9), `arch`, `channel` (or null), `artifact {name, digest}`, `schema_revision` (or null) |
 | `compatibility` | `management` (`certified`, `uncertified`, `not_applicable`), `schema` (`none`, `forward`, `compatible`, `incompatible`), `transition_digest` of the signed certification that allows it (or null) |
 | `options` | installer options forwarded verbatim: `port`, `fqdn`, `cert_type`, `email`, `data_dir`, `tls`, `docker`, `airgap`; `null` when no installer runs |
 | `downtime` | `none`, `restart`, `outage` |
@@ -124,7 +157,7 @@ absence cannot change the digest.
 | `data` | `effect` (`none`, `retained`, `migrated`, `restored`, `removed`), `restore_point_at` (the restored point's time, so newer writes are known lost), `scope_digest` (sub-plan 07's removal scope) |
 | `trust` | `signature` (`{key_id}` or `{unsigned: pinned or explicit-older}`) and `provenance` (`verified`, `skipped-airgap`, `not-applicable`), exactly as `install --plan` reports them |
 | `acknowledgments` | the acknowledgments execution requires: `confirm`, `restore_data`, `purge` |
-| `presentation` | optional display text (`summary`, `lines`), outside the digest |
+| `presentation` | optional display text (`summary`, up to 32 `lines`, each brief text), outside the digest |
 | `plan_digest` | optional; when present it must equal the computed digest |
 
 Rules:
@@ -140,6 +173,14 @@ Rules:
   for `uninstall`.
 - **P8** `acknowledgments` always include `confirm`. They include `restore_data` exactly when data
   is restored, and `purge` exactly when data is removed.
+- **P9** The target of an `install`, `update` or `downgrade` is a resolved release, so its
+  `version` is a release version. A `rollback` targets a recovery point's release, which carries
+  the installed version that host recorded (for example `latest`).
+- **P10** The source version is the install identity's `version` as found. `identity_digest`
+  binds the whole identity whatever the version says. When that version is not an installed
+  version (a control character, or over 64 code points), the coordinator refuses with
+  `UNSUPPORTED` before planning and names the identity file to repair. It never invents or
+  rewrites a version.
 
 ## 4. Operation states and transitions
 
@@ -181,8 +222,11 @@ events (§6). Rules:
 - **J2** A transaction binds `plan_digest`. A legacy record's `plan_digest` is null.
   `generation` is never below the number of checkpoints.
 - **J3** A repeated state is allowed only as mutation progress: the same `applying`, `checking` or
-  `recovering` with a `step` (`^[a-z][a-z0-9_]{0,63}$`). The other exception is a closing
-  refusal (J6). Otherwise each step follows the table.
+  `recovering` with a `step` (`^[a-z][a-z0-9_]{0,63}$`), following a record of that state
+  without one. A run of one state therefore has at most two records: as the step advances,
+  the state utility replaces the stepped record in place (new `sequence`, new `generation`)
+  instead of appending. The other exceptions are the closing records of J6 (`refused`,
+  `manual`). Otherwise each step follows the table.
 - **J4** `verified → applying` skips the recovery point. Only an `install`, which has nothing to
   recover, may take it.
 - **J5** `interrupted` and `recovery_required` records carry a `cause`, and no other record does.
@@ -191,14 +235,25 @@ events (§6). Rules:
   - `abandoned`: the next lock holder found the operation unfinished and its process gone.
   - `apply_failed`, `check_failed`, `recovery_failed`.
 
-  `interrupted` takes `interrupted` or `abandoned`. `recovery_required` takes `interrupted`,
-  `apply_failed`, `check_failed` or `recovery_failed`.
+  `recovery_required` takes `interrupted`, `apply_failed`, `check_failed` or `recovery_failed`.
+  `interrupted` takes `interrupted` or `abandoned` when its checkpoint is before mutation, and
+  only `abandoned` when its checkpoint is a mutation state: after mutation a trap records
+  `recovery_required` with cause `interrupted`, so only a killed process (no trap ran) leaves
+  an `interrupted` record there.
 - **J6** `outcome` closes an operation. It appears only on the last record, and nothing follows
   it.
   - `committed` and `recovered` are exactly the records in those states.
   - `refused` closes a failure before mutation. It is written on a record that repeats the last
     pre-mutation state. No new state is added.
-  - `interrupted` closes an `interrupted` record whose checkpoint is before mutation.
+  - `interrupted` closes an `interrupted` record whose checkpoint is before mutation, and every
+    such record carries it, whatever its cause. Nothing changed, so a trap's record and the
+    next lock holder's `abandoned` record for a process killed while staging both finish the
+    operation: it never blocks a `begin`, and `recovering` or `recovery_required` can follow an
+    `interrupted` record only from a mutation checkpoint.
+  - `manual` closes a `recovery_required` operation on a record that repeats it (same cause and
+    error). The state utility writes it only on an explicit operator acknowledgment that the
+    host was resolved by hand (sub-plan 06), never on its own. It is not a success: history
+    shows it as `manual`.
 - **J7** An `interrupted` record names in `checkpoint` the state of the record before it: the last
   durable checkpoint, which it preserves.
 - **J8** Errors:
@@ -208,12 +263,23 @@ events (§6). Rules:
     `interrupted`.
 - **J9** Sequences increase. Once a `recovery_saved` record exists, `recovery` references the
   point.
+- **J10** An operation makes at most 3 recovery attempts (`x-lifecycle.max_recovery_attempts`): a
+  run of `recovering` records is one attempt. After the last failed attempt the operation stays
+  `recovery_required` (exit 9, manual intervention) until a `manual` record closes it. With J3,
+  this bounds every legal journal: the longest has 23 records, within `maxItems` 32, and its
+  worst-case filling (16 evidence entries, every reason at 256 four-byte code points) fits
+  64 KiB. No legal journal can reach a state with no legal way to finish.
+- **J11** `source` and `target` carry installed versions, or are null when not known. A
+  `transaction` whose action is `install`, `update` or `downgrade` targets a release version
+  (P9). A legacy producer whose version is not an installed version records that member as
+  null.
 
 **Finished** means the last record has an `outcome`. An unfinished record is one of these:
 
 - an operation in progress;
 - `recovery_required`;
-- an `interrupted` record whose last durable checkpoint is a mutation state.
+- an `interrupted` record whose last durable checkpoint is a mutation state (cause
+  `abandoned`).
 
 Unfinished records await reconciliation by `recover` (sub-plan 06).
 
@@ -224,7 +290,8 @@ What happens on interruption:
 - INT or TERM after it records `recovery_required` with cause `interrupted`, and exits 130.
 - A killed process runs no trap. History reports its unfinished record as `interrupted`, and the
   next lock holder persists that with cause `abandoned`. The record keeps the last durable
-  checkpoint.
+  checkpoint. Killed before mutation, the record is closed with outcome `interrupted` like a
+  trapped one; killed after it, the record stays unfinished for `recover`.
 
 In sub-plan 03, only an unfinished `transaction` blocks a new `begin` (exit 9). An unfinished
 legacy record is reported, and the next `begin` names it as a warning, but it does not block.
@@ -263,7 +330,7 @@ is `schema_version`, `operation_id`, `sequence`, `at`, `source` (`coordinator` o
 | `phase` | `phase`, `status`, optional `duration_ms` (completed or failed only) | a phase started, completed, failed or was skipped |
 | `progress` | `phase`, `done`, `total` (null when unknown; otherwise `done ≤ total`), `unit` (`bytes`, `steps`) | measured units only, never a fabricated percentage |
 | `checkpoint` | `state`, `generation` | emitted by the native side only, after the journal write is durable |
-| `diagnostic` | `level`, `message`, optional `code` | a redacted diagnostic that would otherwise be unframed stderr |
+| `diagnostic` | `level`, `message` (at most 900 code points), optional `code` | a redacted diagnostic that would otherwise be unframed stderr; a longer one is cut by redaction, and the final result carries it whole |
 
 The phases are `preflight`, `resolve`, `download`, `verify`, `stage`, `backup`, `stop`, `apply`,
 `migrate`, `start`, `health`, `commit`, `recover`, `remove` and `cleanup`.
@@ -323,6 +390,17 @@ Rules:
 - **O1** `listed` belongs only to `history`.
 - **O2** `verified` is only a plan result, and a plan result is `verified` or `refused`.
 - **O3** The table's required, optional and forbidden members hold. `error` codes follow §5.
+- **O4** `current_version` and `target_version` are installed versions. For `install`, `update`
+  and `downgrade` a non-null `target_version` is a release version (P9).
+
+Producers write the plan members as the landed `install --plan` computes them, with three
+guards that keep every result valid:
+
+- a `refused` reason is redacted (§1.7), on stderr as well;
+- a bundle path or file name the result cannot carry exactly (a control character, or over its
+  bound) is refused with `USAGE` before verification. It is never reported altered.
+- `server.version` is the identity's version, or its redacted one-line form (escaped and cut to
+  64 code points) when it is not an installed version.
 
 Streams:
 
@@ -339,15 +417,18 @@ Streams:
 `/var/lib/circuitbreaker-lifecycle/history.json` is root-owned, 0644 and atomically replaced. It
 is the redacted summary that `history` reads without elevation. The state utility rewrites it
 after every acknowledged checkpoint and on `list`. Its shape is `$defs/history_index`:
-`schema_version` (1, versioned on its own), `generated_at` and `operations` (at most 512
-entries).
+`schema_version` (1, versioned on its own), `generated_at` and `operations` (at most 100
+entries). When more operations exist, the index carries inspection entries and unfinished
+operations first, then the newest finished ones. Older finished operations stay in their
+journals and are left out of the index only.
 
 Each entry is one of two forms:
 
 - **A summary**: `inspection_required: false`, `operation_id`, `kind`, `action`, `adapter`,
-  `state`, `outcome` (or null while unfinished), `checkpoint` (an interrupted record's last
-  durable checkpoint, or null), `started_at`, `updated_at`, `source_version`, `target_version`
-  and `recovery_available`.
+  `state`, `outcome` (or null while unfinished; `manual` for J6's hand-closed operations),
+  `checkpoint` (an interrupted record's last durable checkpoint, or null), `started_at`,
+  `updated_at`, `source_version` and `target_version` (installed versions), and
+  `recovery_available`.
 - **An inspection entry**: `inspection_required: true`, `record` (the journal file name, or
   null) and `reason`. A corrupt or unsupported journal appears this way. It is never silently
   dropped, rewritten or reported as a success.

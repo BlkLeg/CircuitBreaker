@@ -149,7 +149,7 @@ def test_shared_definitions_are_identical_in_every_schema() -> None:
                 assert definition == value, f"$defs/{def_name} differs between {first} and {name}"
             else:
                 seen[def_name] = (name, definition)
-    for shared in ("operation_id", "digest", "timestamp", "version", "text", "error", "adapter", "state"):
+    for shared in ("operation_id", "digest", "timestamp", "version", "installed_version", "text", "brief_text", "error", "adapter", "state"):
         assert shared in seen, shared
 
 
@@ -176,6 +176,35 @@ def test_transition_table_matches_the_contract_document() -> None:
         assert _targets(legacy) == lifecycle["transitions"]["legacy"].get(state, []), state
     assert set(lifecycle["transitions"]["legacy"]) <= set(states)
     assert set(lifecycle["pre_mutation"]) == {"planned", "staged", "verified", "recovery_saved"}
+    attempts = lifecycle["max_recovery_attempts"]
+    assert isinstance(attempts, int) and attempts >= 1
+    assert f"at most {attempts} recovery attempts" in CONTRACT.read_text(encoding="utf-8")
+
+
+def test_byte_bounds_match_the_contract_document() -> None:
+    """The document's bound column is the schemas' x-max-bytes, so a bound changes in both."""
+    text = CONTRACT.read_text(encoding="utf-8")
+    units = {"KiB": 1024, "bytes per line": 1}
+    for name in NAMES:
+        row = re.search(rf"\| `packages/cli/schemas/{name}\.schema\.json` \| ([0-9]+) (KiB|bytes per line) \|", text)
+        assert row, f"{name} has no row in the document table"
+        assert int(row.group(1)) * units[row.group(2)] == _schema(name)["x-max-bytes"], name
+
+
+def test_free_text_and_versions_refuse_every_control_character() -> None:
+    """C1 controls (U+0080-U+009F) are terminal escape introducers too; Python reads the
+    patterns as the coordinator does."""
+    for name in NAMES:
+        defs = _schema(name)["$defs"]
+        for def_name in ("text", "brief_text", "message_text", "installed_version", "path", "file_name"):
+            if def_name not in defs:
+                continue
+            pattern = _python_pattern(defs[def_name]["pattern"])
+            for bad in ("\x1b[31m", "a\x9bb", "a\x85b", "a\x7fb", "a\rb"):
+                assert not pattern.search(bad if def_name not in ("path",) else "/" + bad), f"{name} {def_name} {bad!r}"
+    installed = _python_pattern(_schema("lifecycle-plan")["$defs"]["installed_version"]["pattern"])
+    for good in ("latest", "unknown", "0.4.7", "v0.4.7-rc.1 (local)"):
+        assert installed.search(good), good
 
 
 def test_exit_codes_match_the_contract_document_and_the_cli() -> None:

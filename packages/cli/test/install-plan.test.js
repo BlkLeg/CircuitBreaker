@@ -11,6 +11,7 @@ import { parseTrustedKeys } from '../src/release-trust.js';
 import { RELEASE_API } from '../src/release-resolve.js';
 import { ATTESTATION_API } from '../src/attestation.js';
 import { makeTarGz } from './helpers/tar.js';
+import { parseDocument } from '../src/lifecycle-contract.js';
 
 const DL = 'https://github.com/BlkLeg/CircuitBreaker/releases/download';
 const name = (version) => `circuit-breaker_${version}_linux_amd64.tar.gz`;
@@ -465,6 +466,72 @@ test('an existing install is reported, and the plan says an install would be an 
   const j = await host({ fetchImpl: github(rel).fetchImpl, keys: rel.keys, identity: { version: '0.4.6' } });
   assert.equal(await run(['install', '--plan', '--json'], j.deps), EXIT.OK, j.output.err);
   assert.deepEqual(JSON.parse(j.output.out).server, { version: '0.4.6', mode: 'native' });
+});
+
+// R4: the lifecycle result contract accepts what install --plan --json writes,
+// including refusals that echo what the operator typed. Producers redact.
+test('every --json result validates against the lifecycle result contract, hostile echoes included', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cb-local-'));
+  const cases = [
+    [['--version', 'token=abcdef'], EXIT.USAGE, ['abcdef']],
+    [['--version', 'api_key: abcdef'], EXIT.USAGE, ['abcdef']],
+    [['--version', '0.4.7\u001b[31m'], EXIT.USAGE, ['\u001b']],
+    [['--channel', 'x\u001b[2J\u009b31m'], EXIT.USAGE, ['\u001b', '\u009b']],
+    [['--channel', 'http://admin:s3cret@proxy.lan'], EXIT.USAGE, ['s3cret']],
+    [['--local-bundle', join(dir, 'token=abcdef', name('0.4.7'))], EXIT.USAGE, ['abcdef']],
+    [['--local-bundle', join(dir, 'a\u0001x', name('0.4.7'))], EXIT.USAGE, ['\u0001']],
+    [['--local-bundle', `${dir}/Bearer abcdefgh12345678/${name('0.4.7')}`], EXIT.USAGE, ['abcdefgh12345678']],
+  ];
+  for (const [argv, code, secrets] of cases) {
+    const h = await host({ env: { CB_AIRGAP: 'true' } });
+    assert.equal(await run(['install', '--plan', '--json', ...argv], h.deps), code, JSON.stringify(argv));
+    const result = parseDocument('result', h.output.out.trimEnd());
+    assert.equal(result.error.code, 'USAGE', JSON.stringify(argv));
+    for (const secret of secrets) {
+      assert.ok(!result.error.reason.includes(secret), `${JSON.stringify(argv)}: ${result.error.reason}`);
+      assert.ok(!h.output.err.includes(secret), `${JSON.stringify(argv)} reached stderr unredacted: ${h.output.err}`);
+    }
+  }
+  // An unknown option fails parsing before --json is known, so it has no
+  // result (Task 4 pre-scans argv); its diagnostic is still redacted.
+  const unknown = await host({ env: { CB_AIRGAP: 'true' } });
+  assert.equal(await run(['install', '--plan', '--json', '--token=hunter2'], unknown.deps), EXIT.USAGE);
+  assert.equal(unknown.output.out, '');
+  assert.ok(!unknown.output.err.includes('hunter2'), unknown.output.err);
+
+  const rel = release();
+  const ok = await host({ fetchImpl: github(rel).fetchImpl, keys: rel.keys });
+  assert.equal(await run(['install', '--plan', '--json', '--version', '0.4.7'], ok.deps), EXIT.OK, ok.output.err);
+  assert.equal(parseDocument('result', ok.output.out.trimEnd()).outcome, 'verified');
+  const untrusted = await host({ fetchImpl: github(release({ trusted: false })).fetchImpl, keys: rel.keys });
+  assert.equal(await run(['install', '--plan', '--json'], untrusted.deps), EXIT.TRUST);
+  assert.equal(parseDocument('result', untrusted.output.out.trimEnd()).error.code, 'TRUST');
+});
+
+test('a bundle path the result cannot carry is refused before verification, never reported altered', async () => {
+  const rel = release();
+  const parent = await mkdtemp(join(tmpdir(), 'cb-local-'));
+  for (const odd of ['line\nbreak', 'csi\u009bx', 'esc\u001b[31m']) {
+    const dir = join(parent, odd);
+    await mkdir(dir);
+    for (const [file, bytes] of [[name('0.4.7'), rel.tarball], ['SHA256SUMS', rel.sums], ['SHA256SUMS.sig', rel.sig]]) {
+      await writeFile(join(dir, file), bytes);
+    }
+    const h = await host({ keys: rel.keys, env: { CB_AIRGAP: 'true' } });
+    assert.equal(await run(['install', '--plan', '--json', '--local-bundle', join(dir, name('0.4.7'))], h.deps), EXIT.USAGE, JSON.stringify(odd));
+    const result = parseDocument('result', h.output.out.trimEnd());
+    assert.match(result.error.reason, /control character/);
+    assert.ok(!h.output.err.includes(odd), JSON.stringify(h.output.err));
+  }
+});
+
+test('an installed version the result cannot carry as is is reported escaped', async () => {
+  const rel = release();
+  for (const [version, reported] of [['latest', 'latest'], ['unknown', 'unknown'], ['0.4.6\u001b[31m', '0.4.6\\u001b[31m'], ['v'.repeat(70), `${'v'.repeat(63)}…`]]) {
+    const h = await host({ fetchImpl: github(rel).fetchImpl, keys: rel.keys, identity: { version } });
+    assert.equal(await run(['install', '--plan', '--json'], h.deps), EXIT.OK, h.output.err);
+    assert.deepEqual(parseDocument('result', h.output.out.trimEnd()).server, { version: reported, mode: 'native' });
+  }
 });
 
 test('help lists install --plan under this CLI and says host-changing installs come later', async () => {

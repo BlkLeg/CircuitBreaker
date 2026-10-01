@@ -10,6 +10,7 @@ import { verifyAttestation, sigstoreCacheDir } from './attestation.js';
 import { verifyBundle } from './bundle-verify.js';
 import { TRUSTED_KEYS } from './release-trust.js';
 import { loadIdentityFor } from './identity.js';
+import { conforms, redactText } from './lifecycle-contract.js';
 
 const USAGE = 'usage: circuitbreaker install --plan [--version VERSION | --channel stable|candidate] [--local-bundle PATH] [--airgap] [--json]';
 
@@ -223,12 +224,22 @@ function planJson(plan, result, server) {
   };
 }
 
+// A refusal often echoes what the operator typed. Both streams get it redacted
+// (lifecycle contract §1.7), so neither repeats a credential or a terminal
+// escape, and the --json result always validates.
 function refuse(deps, json, code, reason) {
-  deps.err(`circuitbreaker install: ${reason}\n`);
+  const text = redactText(reason);
+  deps.err(`circuitbreaker install: ${text}\n`);
   if (json) {
-    deps.out(`${JSON.stringify({ schema_version: 1, action: 'install', plan: true, outcome: 'refused', error: { code: CODE_NAME[code], reason } })}\n`);
+    deps.out(`${JSON.stringify({ schema_version: 1, action: 'install', plan: true, outcome: 'refused', error: { code: CODE_NAME[code], reason: text } })}\n`);
   }
   return code;
+}
+
+// The identity's version is free text; the result carries it escaped when it
+// holds what a result cannot (a control character, more than 64 characters).
+function serverVersion(version) {
+  return conforms('result', 'installed_version', version) ? version : redactText(version, { maxLength: 64, singleLine: true });
 }
 
 // `install --plan`: resolve, stage and verify, then say what an install would
@@ -247,6 +258,11 @@ export async function runInstallPlan(args, deps) {
     const airgap = checkOptions(options, deps.env);
     const fetchImpl = deps.fetchImpl ?? fetch;
     const plan = options.localBundle !== undefined ? await planLocal(options.localBundle, deps) : await planDownload(options, deps, fetchImpl);
+    // The result reports the bundle's path exactly, so a path it cannot carry
+    // is refused here rather than reported altered.
+    if (!conforms('result', 'path', plan.tarballPath) || !conforms('result', 'file_name', basename(plan.tarballPath))) {
+      throw new InstallPlanError('USAGE', 'the bundle path holds a control character (or is over 4096 characters), which no plan can report; move the bundle to a plain path');
+    }
     const result = await verifyBundle({
       ...plan,
       airgap,
@@ -258,7 +274,7 @@ export async function runInstallPlan(args, deps) {
       return refuse(deps, json, EXIT_FOR[result.code], reason);
     }
     const lookup = await loadIdentityFor(deps);
-    const server = lookup.status === 'found' ? { version: lookup.identity.version, mode: lookup.identity.mode } : null;
+    const server = lookup.status === 'found' ? { version: serverVersion(lookup.identity.version), mode: lookup.identity.mode } : null;
     deps.out(json ? `${JSON.stringify(planJson(plan, result, server))}\n` : renderPlan(plan, result, server));
     return EXIT.OK;
   } catch (error) {
