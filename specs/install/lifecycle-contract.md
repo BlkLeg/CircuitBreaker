@@ -441,6 +441,14 @@ Each entry is one of two forms:
 `history --json` prints a `listed` result whose `operations` are these entries. A malformed ID in
 the index is shown as needing inspection and is never used.
 
+The index is written under the lock, so it cannot know that a writer was killed after its last
+write. Until the next lock holder (any `begin` or `list`) persists `interrupted`, a killed
+operation's summary keeps its last durable state: `outcome` null and a state that is neither
+`recovery_required` nor `interrupted`. History presents such an unsettled entry as "in progress or
+interrupted" and never as settled; `inspect`, which reads the owner record under privilege,
+reports it as `interrupted` (`status=abandoned`). The killed operation is therefore always
+discoverable in history, and labelled `interrupted` once any lock holder has run.
+
 The coordinator reads the index only after `checkTrustedFile` (owner uid 0) passes. The exit
 codes are:
 
@@ -482,6 +490,15 @@ control plane that cannot be installed fails the install. The control plane and 
 outside the release tree and outside every removal scope, so replacing or removing the server
 never removes its recovery tools or its audit history.
 
+`lifecycle.sh` runs the utility only from a trusted file (a trusted owner, not writable by group
+or others, below directories that pass the state tree's ancestor rule). The library and the
+utility speak one protocol, so the copy shipped beside the file the library was read from comes
+first: next to it, in its bundle's `deploy/scripts`, or in `deploy/scripts` below the script it is
+inlined in. The control plane comes last. A library that bash read from no regular file (piped,
+`curl | bash`) looks only in the control plane, and never takes the working directory for its own.
+A copy that is not trusted is passed over and never run; with no trusted copy the library refuses
+with 7 and names every copy it passed over.
+
 **Layout.** Under the state root: `history.json` (0644), and in `private/` (0700) the lock, the
 owner record and `operations/<operation id>/` (0700), which holds `journal.json` (0600) and
 `sequence` (0600), the operation's event sequence counter. Every directory and file is checked
@@ -521,6 +538,17 @@ A failure at any step leaves the old or the new valid record, never a mix, and a
 nothing. `begin` builds the operation's directory under a staging name and renames it into place.
 A write that cannot be made durable (a full disk among them) exits 7, so the caller stops before
 its next change. A writer whose `expected_generation` is not the journal's is stale and exits 9.
+Once a record is durable, the request succeeds: a history index that cannot be rewritten (or
+rebuilt) is a warning, since the journal is authoritative.
+
+`cb_lifecycle_checkpoint` learns the journal's current generation (`inspect`) before each
+checkpoint and names it as the expected one. Under the held lock only the operation's own
+writers can move its journal (the shell, a subshell of it, or a child it handed the lock to, whose
+view dies with it), so a parent checkpoints after a child's checkpoint, and a writer that slips in
+between still makes it stale. What a shell cannot learn is whether its own checkpoint that went
+unacknowledged landed anyway: while the journal still has the generation that shell last saw,
+nothing landed and it goes on; once the journal has moved past it, every later checkpoint of the
+operation from that shell is stale (9).
 INT, TERM and HUP are ignored while a request runs: the caller's trap acts once it returns.
 
 **Reconciliation.** Under the lock, `begin` and `list` close every operation still in progress
@@ -533,8 +561,11 @@ already used that day.
 
 **Inspection.** A record whose directory or journal has the wrong owner, mode or type, a
 symlink, invalid content, an unknown `schema_version`, or another operation's ID requires
-inspection. It is listed in the index as an inspection entry, reported by `inspect` with 9 (3 for
-an unknown version), and never deleted, rewritten or counted as a success.
+inspection, and so does any other entry of `operations/`. It is listed in the index as an
+inspection entry, reported by `inspect` with 9 (3 for an unknown version), and never deleted,
+rewritten or counted as a success. A name that is not UTF-8, or holds a character that is not
+printable, is shown with those bytes and characters as backslash escapes (`op-bad\xff`), and its
+entry's `record` is null.
 
 **Retention.** The utility deletes no record and no recovery point in v1. `list` reports what a
 pruner (sub-plan 05 on) may release: every recovery reference an unfinished operation holds and

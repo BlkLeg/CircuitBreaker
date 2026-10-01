@@ -1348,9 +1348,21 @@ def _summary(journal: Doc) -> Doc:
     }
 
 
+def display_name(name: str) -> str:
+    """A directory entry's name as printable text on one line.
+
+    os.listdir hands back a name that is not UTF-8 with its bytes as lone
+    surrogates, which no record, line or index may carry: those bytes, and any
+    character that is not printable, are shown as backslash escapes instead.
+    """
+    text = os.fsencode(name).decode("utf-8", "backslashreplace")
+    return "".join(c if c.isprintable() else ascii(c)[1:-1] for c in text)
+
+
 def _inspection(record: Record) -> Doc:
-    name = record.name if _check(_FILE_NAME, RESULT["$defs"], record.name, "") is None else None
-    reason = redact_text(f"{name or 'an entry'}: {record.reason}", 256)
+    shown = display_name(record.name)
+    name = record.name if shown == record.name and _check(_FILE_NAME, RESULT["$defs"], record.name, "") is None else None
+    reason = redact_text(f"{shown}: {record.reason}", 256)
     return {"inspection_required": True, "record": name, "reason": reason}
 
 
@@ -1532,13 +1544,13 @@ def handle_begin(request: Doc) -> list[str]:
         blocking = [r.name for r in records if r.journal is not None and r.journal["kind"] == "transaction" and not finished(r.journal)]
         doubtful = [r for r in records if r.journal is None]
         if kind == "transaction" and doubtful:
-            blocking += [r.name for r in doubtful]
+            blocking += [display_name(r.name) for r in doubtful]
         else:
-            warnings += [f"{r.name} requires inspection: {r.reason}" for r in doubtful]
+            warnings += [f"{display_name(r.name)} requires inspection: {r.reason}" for r in doubtful]
         warnings += [f"{r.name} ({r.journal['action']}) is unfinished" for r in records
                      if r.journal is not None and r.journal["kind"] == "legacy" and not finished(r.journal)]
         if blocking:
-            _index_quietly(tree, records)
+            _index_quietly(tree, lambda: records)
             raise StateError("MANUAL", "an unfinished lifecycle operation must be reconciled first: " + ", ".join(blocking[:5]),
                              _warning_lines(warnings))
         stamp = _now()
@@ -1582,19 +1594,27 @@ def handle_begin(request: Doc) -> list[str]:
             _remove_staging(operations, staging)
             raise _write_failure(f"operation {op}", error) from None
         records.append(Record(op, journal=journal))
-        warnings += _index_quietly(tree, records)
+        warnings += _index_quietly(tree, lambda: records)
         return _lines(operation_id=op, generation=1, sequence=1, state=LIFECYCLE["initial"][kind]) + _warning_lines(warnings) + [f"event={event}"]
     finally:
         tree.close()
 
 
-def _index_quietly(tree: Tree, records: list[Record]) -> list[str]:
-    """Rewrite the index after an acknowledged write; the journal is authoritative, so a failure only warns."""
+def _index_quietly(tree: Tree, records: Callable[[], list[Record]]) -> list[str]:
+    """Rewrite the index after a durable write; the journal is authoritative, so a failure only warns.
+
+    Once a record is durable the request has succeeded: nothing the index does,
+    reading the records again included, may turn that into a failure the
+    caller would take for an unwritten record.
+    """
     try:
-        omitted = write_index(tree, records)
+        current = records()
+        omitted = write_index(tree, current)
     except OSError as error:
         return [f"history.json was not updated ({error.strerror}); the journals are intact"]
-    return [f"history.json lists the first {len(records) - omitted} operations"] if omitted else []
+    except StateError as error:
+        return [f"history.json was not updated ({error.message}); the journals are intact"]
+    return [f"history.json lists the first {len(current) - omitted} operations"] if omitted else []
 
 
 def handle_checkpoint(request: Doc) -> list[str]:
@@ -1630,8 +1650,7 @@ def handle_checkpoint(request: Doc) -> list[str]:
                 raise _write_failure(f"the {entry['state']} checkpoint of {op}", error) from None
         finally:
             os.close(op_fd)
-        records = [r if r.name != op else Record(op, journal=updated) for r in read_records(tree)]
-        warnings = _index_quietly(tree, records)
+        warnings = _index_quietly(tree, lambda: [r if r.name != op else Record(op, journal=updated) for r in read_records(tree)])
         return _lines(operation_id=op, generation=updated["generation"], sequence=entry["sequence"],
                       state=entry["state"]) + _warning_lines(warnings) + [f"event={event}"]
     finally:
@@ -1688,7 +1707,7 @@ def handle_list(_: Doc) -> list[str]:
         protected, releasable, complete = retention(records)
         lines = _lines(operations=len(records), indexed=len(records) - omitted, omitted=omitted)
         lines += [f"unfinished={r.name}" for r in records if r.journal is not None and not finished(r.journal)]
-        lines += [f"inspection={_inspection(r)['record'] or '-'}" for r in records if r.journal is None]
+        lines += [f"inspection={display_name(r.name)}" for r in records if r.journal is None]
         lines += [f"protected={ref}" for ref in protected] + [f"releasable={ref}" for ref in releasable]
         lines += [f"retention={'complete' if complete else 'blocked'}"]
         return lines + _warning_lines(warnings)

@@ -339,13 +339,19 @@ def _system_python() -> str:
 SYSTEM_PYTHON = _system_python()
 
 
-def prelude() -> str:
-    """errexit and an ERR trap, as install.sh runs, with the control plane's library sourced."""
+STRICT = "set -Eeuo pipefail\ntrap 'echo \"ERR-TRAP: $BASH_COMMAND\" >&2' ERR\n"
+
+
+def prelude(library: Path | None = None, plane: Path | None = None) -> str:
+    """errexit and an ERR trap, as install.sh runs, with a library sourced (the control plane's by default).
+
+    `plane` points the library's control-plane fallback somewhere else than its real fixed path.
+    """
     return (
-        "set -Eeuo pipefail\n"
-        "trap 'echo \"ERR-TRAP: $BASH_COMMAND\" >&2' ERR\n"
-        f'source "{PLANE[-1] / "lifecycle.sh"}"\n'
-        f'CB_LIFECYCLE_SYSTEM_PYTHON="{SYSTEM_PYTHON}"\n'
+        STRICT
+        + f'source "{library or PLANE[-1] / "lifecycle.sh"}"\n'
+        + f'CB_LIFECYCLE_SYSTEM_PYTHON="{SYSTEM_PYTHON}"\n'
+        + (f'CB_LIFECYCLE_CONTROL_PLANE="{plane}"\n' if plane is not None else "")
     )
 
 
@@ -369,11 +375,14 @@ def env_for(state: Path | None, extra: dict[str, str] | None = None) -> dict[str
 
 
 def sh(script: str, state: Path | None, extra: dict[str, str] | None = None,
-       preexec: Callable[[], None] | None = None) -> subprocess.CompletedProcess[str]:
-    """One bash process with the library sourced, under errexit and an ERR trap like install.sh."""
+       preexec: Callable[[], None] | None = None, head: str | None = None) -> subprocess.CompletedProcess[str]:
+    """One bash process with the library sourced, under errexit and an ERR trap like install.sh.
+
+    `head` replaces the default prelude (another library, another control plane).
+    """
     return subprocess.run(
-        ["bash", "-c", prelude() + script], capture_output=True, text=True, env=env_for(state, extra),
-        timeout=60, check=False, preexec_fn=preexec,
+        ["bash", "-c", (prelude() if head is None else head) + script], capture_output=True, text=True,
+        env=env_for(state, extra), timeout=60, check=False, preexec_fn=preexec,
     )
 
 
@@ -660,16 +669,104 @@ def test_a_stale_writer_is_refused_and_the_next_mutation_never_runs(tmp_path: Pa
     state = tmp_path / "state"
     marker = tmp_path / "mutated"
     r = sh(ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n'
-           # Another writer of the same operation records a step the wrapper here did not see.
+           "cb_lifecycle_checkpoint state=applying step=units_stopped\n"
+           # A writer that still believes the operation is at generation 1 has missed that step.
            'cb_lifecycle_state checkpoint operation_id="$CB_LIFECYCLE_OPERATION" expected_generation=1 '
-           "state=applying step=units_stopped >/dev/null\n"
-           "cb_lifecycle_checkpoint state=committed outcome=committed || exit $?\n"
+           "state=committed outcome=committed || exit $?\n"
            'touch "$MUTATION"\n', state, {"MUTATION": str(marker)})
     assert r.returncode == 9, r.stderr
     assert "stale" in r.stderr
     assert not marker.exists()
     journal = journal_of(state, op_from(r))
     assert journal["generation"] == 2 and journal["checkpoints"][-1]["state"] == "applying"
+
+
+CHILD_CHECKPOINT = """\
+set -Eeuo pipefail
+source "$CB_TEST_LIBRARY"
+CB_LIFECYCLE_SYSTEM_PYTHON="$CB_TEST_PYTHON"
+cb_lifecycle_lock_acquire "restore" || exit $?
+cb_lifecycle_checkpoint state=applying step=data_restored || exit $?
+cb_lifecycle_lock_release
+"""
+
+
+@seam
+@pytest.mark.parametrize("closing", ["committed", "recovery_required"])
+def test_the_parent_checkpoints_after_a_child_and_a_subshell_it_handed_the_lock_to(
+    closing: str, tmp_path: Path,
+) -> None:
+    # cb update -> restore.sh: the child joins through the handoff and records its step, then
+    # the parent records a step in a pipeline (a subshell) and closes the operation.
+    state = tmp_path / "state"
+    close = ("state=committed outcome=committed" if closing == "committed" else
+             "state=recovery_required cause=apply_failed error_code=MANUAL 'error_reason=the new tree did not start'")
+    r = ok(sh(ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n'
+              'bash -c "$CB_TEST_CHILD"\n'
+              "cb_lifecycle_checkpoint state=applying step=units_started | cat\n"
+              f"cb_lifecycle_checkpoint {close} || exit $?\n", state,
+              {"CB_TEST_CHILD": CHILD_CHECKPOINT, "CB_TEST_LIBRARY": str(PLANE[-1] / "lifecycle.sh"),
+               "CB_TEST_PYTHON": SYSTEM_PYTHON}))
+    journal = journal_of(state, op_from(r))
+    assert journal["generation"] == 4
+    assert [(c["state"], c.get("step")) for c in journal["checkpoints"]] == [
+        ("applying", None), ("applying", "units_started"), (closing, None)]
+    if closing == "recovery_required":
+        record = journal["checkpoints"][-1]
+        assert record["cause"] == "apply_failed" and record["error"]["reason"] == "the new tree did not start"
+
+
+FLAKY_PYTHON = """\
+#!/bin/sh
+# The trusted interpreter, except that one checkpoint request loses its acknowledgement:
+# with CB_TEST_LANDS=1 the record is written first (the rename landed, its fsync failed),
+# otherwise nothing is written. Either way the caller sees 7.
+if [ "${{2:-}}" = "-B" ] && [ -e "$CB_TEST_FAULT" ]; then
+  request=$(cat)
+  case "$request" in
+    *'"request":"checkpoint"'*)
+      rm -f "$CB_TEST_FAULT"
+      if [ "$CB_TEST_LANDS" = 1 ]; then printf '%s' "$request" | {python} "$@" >/dev/null; fi
+      exit 7 ;;
+  esac
+  printf '%s' "$request" | {python} "$@"
+  exit $?
+fi
+exec {python} "$@"
+"""
+
+
+@seam
+@pytest.mark.parametrize("lands", [True, False], ids=["the record landed", "nothing was written"])
+def test_after_an_unacknowledged_checkpoint_the_next_is_stale_only_if_the_record_may_be_its_own(
+    lands: bool, tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    marker = tmp_path / "mutated"
+    flaky = tmp_path / "bundle" / "python" / "bin" / "python3"
+    flaky.parent.mkdir(parents=True)
+    flaky.write_text(FLAKY_PYTHON.format(python=SYSTEM_PYTHON))
+    os.chmod(flaky, 0o755)
+    fault = tmp_path / "fault"
+    r = sh(f'CB_LIFECYCLE_SYSTEM_PYTHON="{tmp_path}/no-python3"\ncb_lifecycle_python "{flaky}" || exit $?\n'
+           + ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\ntouch "$CB_TEST_FAULT"\n'
+           'if cb_lifecycle_checkpoint state=applying step=units_stopped; then echo "first ok"; else echo "first $?"; fi\n'
+           "cb_lifecycle_checkpoint state=recovery_required cause=apply_failed error_code=MANUAL "
+           "'error_reason=the units did not stop' || exit $?\n"
+           'touch "$MUTATION"\n', state,
+           {"CB_TEST_FAULT": str(fault), "CB_TEST_LANDS": "1" if lands else "0", "MUTATION": str(marker)})
+    assert "first 7" in r.stdout, r.stdout + r.stderr
+    journal = journal_of(state, op_from(r))
+    if lands:
+        # This shell cannot tell its own unacknowledged record from another writer's: stale.
+        assert r.returncode == 9, r.stderr
+        assert "not acknowledged" in r.stderr
+        assert not marker.exists()
+        assert journal["generation"] == 2 and journal["checkpoints"][-1].get("step") == "units_stopped"
+    else:
+        assert r.returncode == 0, r.stderr
+        assert marker.exists()
+        assert journal["generation"] == 2 and journal["checkpoints"][-1]["state"] == "recovery_required"
 
 
 @seam
@@ -791,11 +888,18 @@ def test_a_killed_apply_is_reported_interrupted_and_persisted_by_the_next_holder
     seen = ack(r.stdout)
     assert seen["status"] == ["abandoned"] and seen["reported"] == ["interrupted"] and seen["state"] == ["applying"]
     assert (operations(state) / op / "journal.json").read_bytes() == before, "inspect writes nothing"
+    # Until the next holder runs, the index still shows the last durable state, unsettled: no
+    # outcome and a progress state (ruling T3-n). History presents that as in progress or
+    # interrupted; it never shows it as settled.
+    entry = index_of(state)["operations"][0]
+    assert (entry["operation_id"], entry["state"], entry["outcome"], entry["checkpoint"]) == (op, "applying", None, None)
     listed = ack(ok(sh(ACQUIRE + "cb_lifecycle_state list\n", state)).stdout)
     assert listed["unfinished"] == [op]
     record = journal_of(state, op)["checkpoints"][-1]
     assert (record["state"], record["cause"], record["checkpoint"], "outcome" in record) == (
         "interrupted", "abandoned", "applying", False)
+    entry = index_of(state)["operations"][0]
+    assert (entry["operation_id"], entry["state"], entry["checkpoint"]) == (op, "interrupted", "applying")
 
 
 def _write_raw_record(state: Path, name: str, data: bytes, dir_mode: int = 0o700, file_mode: int = 0o600) -> Path:
@@ -872,6 +976,47 @@ def test_records_that_cannot_be_trusted_require_inspection(case: str, tmp_path: 
         before.pop(key, None)
         after.pop(key, None)
     assert after == before, "a record that requires inspection is never deleted or rewritten"
+
+
+@seam
+def test_an_entry_whose_name_is_not_utf8_requires_inspection_and_breaks_no_write(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    make_state(state)
+    operations(state).mkdir(mode=0o700)
+    os.mkdir(os.fsencode(operations(state)) + b"/op-bad\xff", 0o700)
+    shown = "op-bad\\xff"
+    listed = ack(ok(sh(ACQUIRE + "cb_lifecycle_state list\n", state)).stdout)
+    assert listed["inspection"] == [shown] and listed["retention"] == ["blocked"]
+    entry = index_of(state)["operations"][0]
+    assert entry["inspection_required"] is True and entry["record"] is None
+    assert entry["reason"].startswith(shown + ":")
+    r = ok(sh(ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n' + COMMIT, state))
+    assert f"{shown} requires inspection" in r.stderr
+    op = op_from(r)
+    assert journal_of(state, op)["checkpoints"][-1]["outcome"] == "committed"
+    # The begin was acknowledged and bound, so no retry left another operation behind.
+    assert sorted(os.listdir(os.fsencode(operations(state)))) == sorted([b"op-bad\xff", op.encode()])
+    assert [e.get("operation_id") for e in index_of(state)["operations"]] == [None, op]
+
+
+@seam
+def test_an_index_that_cannot_be_built_never_fails_an_acknowledged_write(
+    held: Held, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(_: Any) -> Any:
+        raise LS.StateError("USAGE", "the index is not valid")
+
+    monkeypatch.setattr(LS, "build_index", broken)
+    code, lines, err = held.request(request="begin", kind="legacy", action="migrate", adapter="native")
+    assert code == 0, err
+    op = lines["operation_id"][0]
+    assert any("history.json was not updated" in w for w in lines["warning"])
+    held.bind(op)
+    code, lines, err = held.request(request="checkpoint", operation_id=op, expected_generation=1,
+                                    state="committed", outcome="committed")
+    assert code == 0, err
+    assert lines["generation"] == ["2"] and any("journals are intact" in w for w in lines["warning"])
+    assert journal_of(held.state, op)["checkpoints"][-1]["outcome"] == "committed"
 
 
 @seam
@@ -1128,6 +1273,81 @@ def test_a_fresh_install_may_use_the_verified_bundle_interpreter(tmp_path: Path)
     r = ok(sh(f'CB_LIFECYCLE_SYSTEM_PYTHON="{tmp_path}/no-python3"\ncb_lifecycle_python "{fake}"\n'
               'echo "py=$_CB_LIFECYCLE_PYTHON"\n', None))
     assert f"py={fake}" in r.stdout
+
+
+# A utility that must never run: it leaves a marker and acknowledges nothing.
+DECOY_UTILITY = 'import os\nopen(os.environ["CB_TEST_MARKER"], "a").close()\n'
+COMMIT = "cb_lifecycle_checkpoint state=committed outcome=committed || exit $?\n"
+
+
+def _plant_decoys(work: Path, perm: int) -> None:
+    """Decoy utilities at every place a library that took the working directory for its own would look."""
+    for rel in ("lifecycle-state.py", "deploy/scripts/lifecycle-state.py", "../scripts/lifecycle-state.py"):
+        decoy = work / rel
+        decoy.parent.mkdir(parents=True, exist_ok=True)
+        decoy.write_text(DECOY_UTILITY)
+        os.chmod(decoy, perm)
+
+
+@seam
+@pytest.mark.parametrize("perm", [0o755, 0o775], ids=["trusted decoys", "untrusted decoys"])
+def test_a_piped_library_never_runs_a_utility_from_the_working_directory(perm: int, tmp_path: Path) -> None:
+    # curl | sudo bash: the inlined library has no file of its own (BASH_SOURCE is empty), so only
+    # the control plane may provide the utility, whatever the caller's working directory holds.
+    state = tmp_path / "state"
+    work = tmp_path / "checkout" / "work"
+    _plant_decoys(work, perm)
+    marker = tmp_path / "decoy-ran"
+    script = (STRICT + LIB.read_text() + f'\nCB_LIFECYCLE_SYSTEM_PYTHON="{SYSTEM_PYTHON}"\n'
+              f'CB_LIFECYCLE_CONTROL_PLANE="{PLANE[-1]}"\n' + ACQUIRE + LEGACY
+              + 'echo "op=$CB_LIFECYCLE_OPERATION"\n' + COMMIT)
+    r = ok(subprocess.run(["bash"], input=script, capture_output=True, text=True, cwd=work, timeout=60, check=False,
+                          env=env_for(state, {"CB_TEST_MARKER": str(marker)})))
+    assert not marker.exists(), "a utility from the working directory ran"
+    assert journal_of(state, op_from(r))["checkpoints"][-1]["outcome"] == "committed"
+
+
+def _bundle_with(tmp_path: Path, utility_text: str, perm: int) -> Path:
+    """A bundle's deploy tree: the library and, next to it in scripts/, the given utility."""
+    deploy = tmp_path / "bundle" / "deploy"
+    (deploy / "lib").mkdir(parents=True)
+    (deploy / "scripts").mkdir()
+    shutil.copyfile(LIB, deploy / "lib" / "lifecycle.sh")
+    (deploy / "scripts" / "lifecycle-state.py").write_text(utility_text)
+    os.chmod(deploy / "scripts" / "lifecycle-state.py", perm)
+    return deploy
+
+
+@seam
+def test_a_sourced_library_skips_an_untrusted_neighbour_for_the_control_plane(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    deploy = _bundle_with(tmp_path, DECOY_UTILITY, 0o775)
+    marker = tmp_path / "decoy-ran"
+    extra = {"CB_TEST_MARKER": str(marker)}
+    r = ok(sh(ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n' + COMMIT, state, extra,
+              head=prelude(deploy / "lib" / "lifecycle.sh", PLANE[-1])))
+    assert not marker.exists()
+    assert journal_of(state, op_from(r))["checkpoints"][-1]["outcome"] == "committed"
+    # With no trusted copy anywhere, nothing runs and the refusal names what was passed over.
+    r = sh(ACQUIRE + LEGACY, state, extra, head=prelude(deploy / "lib" / "lifecycle.sh", tmp_path / "no-plane"))
+    assert r.returncode == 7, r.stderr
+    assert f"{deploy}/scripts/lifecycle-state.py is not trusted" in r.stderr
+    assert not marker.exists()
+
+
+@seam
+def test_a_sourced_library_runs_the_trusted_utility_of_its_own_bundle_first(tmp_path: Path) -> None:
+    # The library and the utility speak one protocol, so a bundle's pair stays together.
+    state = tmp_path / "state"
+    real = PLANE[-1] / "lifecycle-state.py"
+    wrapper = ('import os, runpy, sys\nopen(os.environ["CB_TEST_MARKER"], "a").close()\n'
+               f"sys.argv[0] = {str(real)!r}\nrunpy.run_path({str(real)!r}, run_name='__main__')\n")
+    deploy = _bundle_with(tmp_path, wrapper, 0o755)
+    marker = tmp_path / "bundle-utility-ran"
+    r = ok(sh(ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n' + COMMIT, state, {"CB_TEST_MARKER": str(marker)},
+              head=prelude(deploy / "lib" / "lifecycle.sh", tmp_path / "no-plane")))
+    assert marker.exists()
+    assert journal_of(state, op_from(r))["checkpoints"][-1]["outcome"] == "committed"
 
 
 def test_the_control_plane_is_installed_whole_and_replaced_atomically(tmp_path: Path) -> None:

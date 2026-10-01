@@ -58,15 +58,29 @@ CB_LIFECYCLE_DEFAULT_ROOT="/var/lib/circuitbreaker-lifecycle"
 # trust material, and the interpreter tried first (ruling R13).
 CB_LIFECYCLE_CONTROL_PLANE="/usr/local/lib/circuitbreaker"
 CB_LIFECYCLE_SYSTEM_PYTHON="/usr/bin/python3"
-# The directory this library was sourced from, so it finds the utility of its
-# own bundle or control plane.
-_CB_LIFECYCLE_LIB_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd)" || _CB_LIFECYCLE_LIB_DIR=""
+# The directory of the file this library was read from (the control plane, a
+# bundle's deploy/lib, or the script it is inlined in), so it finds the
+# utility it was shipped with. Empty when bash read it from no regular file:
+# piped (curl | bash) or from /dev/fd, BASH_SOURCE names no directory of its
+# own, and the caller's working directory is never taken for one.
+_CB_LIFECYCLE_LIB_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  _CB_LIFECYCLE_LIB_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || _CB_LIFECYCLE_LIB_DIR=""
+  case "$_CB_LIFECYCLE_LIB_DIR" in
+    /*) ;;
+    *) _CB_LIFECYCLE_LIB_DIR="" ;;
+  esac
+  case "$_CB_LIFECYCLE_LIB_DIR/" in
+    /dev/* | /proc/*) _CB_LIFECYCLE_LIB_DIR="" ;;
+  esac
+fi
 export -n _CB_LIFECYCLE_LIB_DIR
 
 # packages/cli/src/exit-codes.js; tests/build/test_lifecycle_lock.py keeps them equal.
 CB_LIFECYCLE_EXIT_USAGE=2
 CB_LIFECYCLE_EXIT_PERMISSION=6
 CB_LIFECYCLE_EXIT_PREFLIGHT=7
+CB_LIFECYCLE_EXIT_MANUAL=9
 CB_LIFECYCLE_EXIT_LOCKED=10
 
 # The holding state of this shell. Never exported, never read from the
@@ -74,10 +88,11 @@ CB_LIFECYCLE_EXIT_LOCKED=10
 # opened or joined it ($BASHPID, so a subshell is a different holder) and
 # _DEPTH how many acquisitions in that process are still unreleased.
 _CB_LIFECYCLE_STATE_VARS=(_CB_LIFECYCLE_LOCK_FD _CB_LIFECYCLE_LOCK_ID _CB_LIFECYCLE_LOCK_PID _CB_LIFECYCLE_LOCK_DEPTH)
-# What this shell resolved or last saw for its operation: the interpreter, and
-# the journal generation it expects. Never exported, never read from the
-# environment either, and dropped with the lock.
-_CB_LIFECYCLE_CACHE_VARS=(_CB_LIFECYCLE_PYTHON _CB_LIFECYCLE_GENERATION _CB_LIFECYCLE_GEN_OPERATION)
+# What this shell resolved or last saw for its operation: the interpreter, the
+# journal generation of its last acknowledged write, and whether a checkpoint
+# it sent since went unacknowledged (_UNSURE). Never exported, never read from
+# the environment either, and dropped with the lock.
+_CB_LIFECYCLE_CACHE_VARS=(_CB_LIFECYCLE_PYTHON _CB_LIFECYCLE_GENERATION _CB_LIFECYCLE_GEN_OPERATION _CB_LIFECYCLE_GEN_UNSURE)
 
 # Drop any holding state that is exported: it came from a parent's
 # environment (or was exported by hand), and proves nothing. Every public
@@ -661,25 +676,33 @@ cb_lifecycle_python() {
   export -n _CB_LIFECYCLE_PYTHON
 }
 
-# Find the state utility next to this library (the control plane), in its
-# bundle's deploy/scripts, or in the control plane, and require that it is a
-# trusted file. Sets _CB_LC_UTILITY. Returns 0 or 7.
+# Find the state utility and require that it is a trusted file. The library
+# and the utility speak one protocol, so the copy shipped beside the file this
+# library was read from comes first: next to it (the control plane), in its
+# bundle's deploy/scripts, or in deploy/scripts below the script it is inlined
+# in. The control plane comes last, and is the only place looked at when the
+# library was read from no file (piped). A copy that is not trusted is passed
+# over, never run. Sets _CB_LC_UTILITY. Returns 0, or 7 naming every copy
+# passed over.
 _cb_lifecycle_find_utility() {
-  local dir="${_CB_LIFECYCLE_LIB_DIR:-}" candidate scripts=""
+  local dir="${_CB_LIFECYCLE_LIB_DIR:-}" candidate scripts="" passed=""
   if [[ -n "$dir" && -d "$dir/../scripts" ]]; then
     scripts="$(cd -P -- "$dir/../scripts" 2>/dev/null && pwd)" || scripts=""
   fi
   for candidate in "${dir:+$dir/lifecycle-state.py}" "${scripts:+$scripts/lifecycle-state.py}" \
       "${dir:+$dir/deploy/scripts/lifecycle-state.py}" "$CB_LIFECYCLE_CONTROL_PLANE/lifecycle-state.py"; do
-    [[ -n "$candidate" && -e "$candidate" ]] || continue
+    [[ "$candidate" == /* && -e "$candidate" ]] || continue
     if _cb_lifecycle_trusted_program "$candidate"; then
       _CB_LC_UTILITY="$candidate"
       return 0
     fi
-    _cb_lifecycle_say "$candidate is not trusted (its owner, its mode or a directory above it); refusing to run it"
-    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+    passed+="${passed:+, }$candidate"
   done
-  _cb_lifecycle_say "the lifecycle state utility (lifecycle-state.py) is not installed"
+  if [[ -n "$passed" ]]; then
+    _cb_lifecycle_say "no trusted lifecycle state utility: $passed is not trusted (its owner, its mode or a directory above it); refusing to run it"
+  else
+    _cb_lifecycle_say "the lifecycle state utility (lifecycle-state.py) is not installed"
+  fi
   return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
 }
 
@@ -767,10 +790,14 @@ _cb_lifecycle_read_ack() {
   done <<<"$1"
 }
 
+# Remember generation $2 of operation $1 as this shell's last acknowledged
+# view; $3 set means a checkpoint is now in flight, unacknowledged until
+# remembered again.
 _cb_lifecycle_remember_generation() {
   _CB_LIFECYCLE_GEN_OPERATION="$1"
   _CB_LIFECYCLE_GENERATION="$2"
-  export -n _CB_LIFECYCLE_GEN_OPERATION _CB_LIFECYCLE_GENERATION
+  _CB_LIFECYCLE_GEN_UNSURE="${3:-}"
+  export -n _CB_LIFECYCLE_GEN_OPERATION _CB_LIFECYCLE_GENERATION _CB_LIFECYCLE_GEN_UNSURE
 }
 
 # Write one event line to the descriptor the coordinator handed down
@@ -819,11 +846,22 @@ cb_lifecycle_begin() {
 # Record the next durable checkpoint of the operation the lock is bound to:
 # key=value members state, and optionally step, cause, outcome, error_code
 # with error_reason, recovery_operation_id with recovery_manifest_digest, and
-# evidence_*. It names the generation this shell last saw, so a checkpoint
-# another writer made in between makes this one stale (9). The checkpoint
-# event is emitted only after the utility has made the record durable.
+# evidence_*. The checkpoint event is emitted only after the utility has made
+# the record durable.
+#
+# Under the held lock only this operation's own writers can move its journal:
+# this shell, a subshell of it, or a child it handed the lock to (cb update ->
+# restore.sh), whose view of the generation dies with it. So each checkpoint
+# first learns the journal's current generation, and names it as the expected
+# one: a writer that slips in between still makes this one stale (9). The one
+# thing this shell cannot learn is whether a checkpoint it sent that went
+# unacknowledged (7, or no answer) landed anyway. While the journal still has
+# the generation this shell last saw, nothing landed and it goes on. Once the
+# journal has moved past it, the record may be its own, so this and every
+# later checkpoint of the operation from this shell is stale (9) and the
+# caller stops before its next change, as for any failed checkpoint.
 cb_lifecycle_checkpoint() {
-  local op="${CB_LIFECYCLE_OPERATION:-}" out rc=0
+  local op="${CB_LIFECYCLE_OPERATION:-}" out rc=0 current
   _cb_lifecycle_forget_exported_state
   if ! _cb_lifecycle_valid_operation "$op"; then
     _cb_lifecycle_say "internal error: a checkpoint needs the operation the lock is bound to"
@@ -832,17 +870,20 @@ cb_lifecycle_checkpoint() {
   if [[ -z "${_CB_LIFECYCLE_PYTHON:-}" ]]; then
     cb_lifecycle_python || return $?
   fi
-  if [[ "${_CB_LIFECYCLE_GEN_OPERATION:-}" != "$op" ]]; then
-    # A process that joined the operation learns where it stands once.
-    out="$(cb_lifecycle_state inspect operation_id="$op")" || return $?
-    _cb_lifecycle_read_ack "$out"
-    if [[ -z "$_CB_LC_ACK_GENERATION" ]]; then
-      _cb_lifecycle_say "internal error: the state utility did not report $op"
-      return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
-    fi
-    _cb_lifecycle_remember_generation "$op" "$_CB_LC_ACK_GENERATION"
+  out="$(cb_lifecycle_state inspect operation_id="$op")" || return $?
+  _cb_lifecycle_read_ack "$out"
+  current="$_CB_LC_ACK_GENERATION"
+  if [[ -z "$current" || "$_CB_LC_ACK_OPERATION" != "$op" ]]; then
+    _cb_lifecycle_say "internal error: the state utility did not report $op"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
   fi
-  out="$(cb_lifecycle_state checkpoint operation_id="$op" expected_generation="$_CB_LIFECYCLE_GENERATION" "$@")" || rc=$?
+  if [[ "${_CB_LIFECYCLE_GEN_OPERATION:-}" == "$op" && -n "${_CB_LIFECYCLE_GEN_UNSURE:-}" \
+    && "$current" != "${_CB_LIFECYCLE_GENERATION:-}" ]]; then
+    _cb_lifecycle_say "$op is at generation $current, past the $_CB_LIFECYCLE_GENERATION this shell last saw, and its last checkpoint here was not acknowledged: that record may be its own, so this checkpoint is stale; inspect the operation before changing anything"
+    return "$CB_LIFECYCLE_EXIT_MANUAL"
+  fi
+  _cb_lifecycle_remember_generation "$op" "$current" in-flight
+  out="$(cb_lifecycle_state checkpoint operation_id="$op" expected_generation="$current" "$@")" || rc=$?
   _cb_lifecycle_read_ack "$out"
   [[ "$rc" -eq 0 ]] || return "$rc"
   if [[ "$_CB_LC_ACK_OPERATION" != "$op" || -z "$_CB_LC_ACK_GENERATION" ]]; then

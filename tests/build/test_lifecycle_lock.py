@@ -207,7 +207,7 @@ def make_state(state: Path) -> Path:
 def test_exit_codes_are_the_contract_values() -> None:
     js = dict(re.findall(r"^\s+([A-Z]+): (\d+),$", EXIT_CODES_JS.read_text(), re.MULTILINE))
     lib = dict(re.findall(r"^CB_LIFECYCLE_EXIT_([A-Z]+)=(\d+)$", LIB.read_text(), re.MULTILINE))
-    assert lib == {name: js[name] for name in ("USAGE", "PERMISSION", "PREFLIGHT", "LOCKED")}
+    assert lib == {name: js[name] for name in ("USAGE", "PERMISSION", "PREFLIGHT", "MANUAL", "LOCKED")}
 
 
 def test_the_root_is_fixed_whatever_identity_or_cache_the_caller_has(tmp_path: Path) -> None:
