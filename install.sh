@@ -607,6 +607,8 @@ _cb_embedded_release_keys() {
 # install.sh and deploy/lib/bundle-signature.sh embed this file verbatim.
 # Rotation adds a line; a line is removed only on compromise.
 # See docs/release/bundle-signing.md.
+
+5f2aa2afdb764f86 5HA4V+WdSQtRz1ePEjE4t//FSX/5svuPkga9O0pQd40= 0.4.7 release bundle key, created 2026-10-01
 CB_RELEASE_KEYS
 }
 
