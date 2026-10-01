@@ -1,6 +1,6 @@
 {
   "name": "circuitbreaker",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "private": true,
   "description": "Self-hosted infrastructure discovery, monitoring, and interactive topology visualization for homelabs and private networks.",
   "directories": {
@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "husky": "^9.1.7",
-    "lint-staged": "^17.5.1"
+    "lint-staged": "^17.6.0"
   },
   "lint-staged": {
     "*.{js,jsx,py}": "make lint",
