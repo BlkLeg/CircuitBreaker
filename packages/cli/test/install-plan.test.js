@@ -481,6 +481,10 @@ test('every --json result validates against the lifecycle result contract, hosti
     [['--local-bundle', join(dir, 'token=abcdef', name('0.4.7'))], EXIT.USAGE, ['abcdef']],
     [['--local-bundle', join(dir, 'a\u0001x', name('0.4.7'))], EXIT.USAGE, ['\u0001']],
     [['--local-bundle', `${dir}/Bearer abcdefgh12345678/${name('0.4.7')}`], EXIT.USAGE, ['abcdefgh12345678']],
+    // Fix round 2: the 4096-code-point cut lands right after `token=`, so the
+    // bounded reason must not end in a credential shape (`token=…`).
+    [['--version', `${'a'.repeat(4078)}token=  rest`], EXIT.USAGE, ['rest']],
+    [['--channel', `${'a'.repeat(4069)}password:  rest`], EXIT.USAGE, ['rest']],
   ];
   for (const [argv, code, secrets] of cases) {
     const h = await host({ env: { CB_AIRGAP: 'true' } });

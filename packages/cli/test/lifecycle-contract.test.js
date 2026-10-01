@@ -459,3 +459,41 @@ test('redactText makes any input valid text and never keeps the secret', () => {
   assert.ok(!conforms('result', 'file_name', 'a\u009bb'));
   assert.throws(() => conforms('result', 'nope', 'x'), TypeError);
 });
+
+// Fix round 2: the cut that bounds the text must not itself make a credential
+// shape. A cut right after `token=` would end `token=…`, and U+2026 satisfies
+// the assignment shape's value character. Every keyword spelling and every
+// separator form, with the cut swept across the whole keyword and separator,
+// at every text tier a producer writes.
+test('a bounded cut never leaves a keyword and separator in front of the ellipsis', () => {
+  const keywords = ['password', 'Passwd', 'PASSWORD', 'PASSWD', 'secret', 'SECRET', 'token', 'Token', 'TOKEN',
+    'apikey', 'api_key', 'Api_Key', 'APIKEY', 'API_KEY', 'vault_key', 'Vault_Key', 'VAULT_KEY'];
+  const separators = ['=', ':', ' =', ' :', '= ', ': ', ' = ', '==', '=:', ': :', ' = = '];
+  const tiers = [
+    ['result', 'text', 4096], ['result', 'brief_text', 256], ['plan', 'brief_text', 256], ['event', 'message_text', 900],
+  ];
+  for (const [kind, def, bound] of tiers) {
+    for (const keyword of keywords) {
+      for (const separator of separators) {
+        const secret = `${keyword}${separator}`;
+        for (let end = bound - 3; end <= bound + secret.length + 1; end += 1) {
+          // The value after the separator starts with two spaces, so masking
+          // never fires on the full text and only the cut could make a shape.
+          // The filler is not letters: a long letter run costs the URL scheme
+          // shape quadratic time, and the reproduction below covers letters.
+          const input = `${'-'.repeat(Math.max(0, end - secret.length))}${secret}  rest`;
+          const redacted = redactText(input, { maxLength: bound });
+          const label = `${kind} ${def} ${JSON.stringify(secret)} ending at ${end}: ${JSON.stringify(redacted.slice(-24))}`;
+          assert.ok([...redacted].length <= bound, label);
+          assert.ok(conforms(kind, def, redacted), label);
+        }
+      }
+    }
+  }
+  // The reproduction: a cut that lands exactly after `token=` at each bound.
+  for (const bound of [256, 900, 4096]) {
+    const redacted = redactText(`${'a'.repeat(bound - 7)}token=  tail`, { maxLength: bound });
+    assert.equal(redacted, `${'a'.repeat(bound - 7)}token…`);
+    assert.ok(conforms('result', 'text', redacted));
+  }
+});

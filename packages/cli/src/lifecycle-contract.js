@@ -471,11 +471,13 @@ const CREDENTIALS = [
 const SHAPES = RESULT.$defs.text.not.anyOf.map(({ pattern }) => new RegExp(pattern, 'u'));
 const credentialShaped = (text) => SHAPES.some((shape) => shape.test(text));
 const UNREDACTABLE = '[redacted: the text looked like it held a credential]';
+const CUT_SEPARATOR = /[ =:]+$/u;
 
 // Contract text from any string: lone surrogates become U+FFFD, control
 // characters other than tab and newline (all of them with singleLine) become
 // visible \u00xx escapes, credential shapes are masked, and the result is cut
-// to maxLength code points with a closing ellipsis. The output always passes
+// to maxLength code points with a closing ellipsis (the separator of a secret
+// assignment the cut would leave in front of it dropped). The output always passes
 // $defs/text (or $defs/installed_version with singleLine, when not empty).
 export function redactText(value, { maxLength = 4096, singleLine = false } = {}) {
   let text = String(value).toWellFormed().replace(singleLine ? CONTROL_ON_ONE_LINE : CONTROL, escapeControl);
@@ -484,7 +486,14 @@ export function redactText(value, { maxLength = 4096, singleLine = false } = {})
   }
   if (credentialShaped(text)) text = UNREDACTABLE;
   const points = [...text];
-  return points.length > maxLength ? `${points.slice(0, maxLength - 1).join('')}…` : text;
+  if (points.length <= maxLength) return text;
+  // The ellipsis is a value character to the assignment shape, so a cut right
+  // after `token=` (or `password: `) would end in one. Masked text has no shape,
+  // so any shape the cut makes ends at the ellipsis; dropping the separator in
+  // front of it removes every one.
+  let cut = points.slice(0, maxLength - 1).join('');
+  if (credentialShaped(`${cut}…`)) cut = cut.replace(CUT_SEPARATOR, '');
+  return `${cut}…`;
 }
 
 // The exit code a result stands for: 0 without an error, else its code's value.

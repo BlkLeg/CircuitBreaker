@@ -70,6 +70,11 @@ in Python, and the tables in this file.
       Text that still has a shape after four rounds becomes
       `[redacted: the text looked like it held a credential]`.
    4. Text over the bound keeps its first bound−1 code points and ends with `…` (U+2026).
+      The ellipsis counts as a value character to the secret-assignment shape, so when the
+      kept code points followed by `…` have a credential shape (the cut fell right after
+      `token=`, `password: ` and the like), the trailing run of spaces, `=` and `:` is dropped
+      from them before `…` is appended. Text from step 3 has no shape, so any shape the cut
+      makes ends at the ellipsis, and dropping the separator in front of it removes it.
 
    The output always validates, so a producer's own words, including echoed user input, never
    make its document invalid. The validator's shape check is a backstop, not the redaction.
