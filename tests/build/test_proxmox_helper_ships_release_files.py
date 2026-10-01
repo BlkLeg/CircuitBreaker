@@ -6,7 +6,8 @@ its release file name. The helper used to push only the tarball, renamed to
 /tmp/cb-bundle.tar.gz, so every Proxmox install ran UNVERIFIED.
 
 cb-proxmox-deploy.sh runs `main` at import time, so the functions under test
-are extracted and eval'd in a clean bash with fake curl and pct on PATH.
+are extracted and eval'd in a clean bash with fake curl and pct on PATH. jq
+is required, as it is by the helper itself.
 """
 
 from __future__ import annotations
@@ -14,18 +15,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "cb-proxmox-deploy.sh"
 TARBALL = "circuit-breaker_0.4.7_linux_amd64.tar.gz"
-
-pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="the helper selects assets with jq")
-
 
 def _function(name: str) -> str:
     body = re.search(rf"^{name}\(\) \{{\n.*?^\}}$", HELPER.read_text(), re.MULTILINE | re.DOTALL)
