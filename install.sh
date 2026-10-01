@@ -1816,6 +1816,14 @@ stage0_download_bundle() {
     # Query GitHub for release
     cb_step "Querying GitHub for release"
     local release_json
+    # What --version named, if anything. CB_VERSION is overwritten from the
+    # release tag below; this keeps the operator's request to check it against.
+    local requested="$CB_VERSION"
+    # An empty --version would pick from the channel while still counting as
+    # explicit, and only a version the operator named may install unsigned.
+    if [[ "$CB_VERSION_EXPLICIT" == "true" ]] && [[ -z "$requested" ]]; then
+      cb_fail "--version needs a release version" "For example: --version 0.4.7"
+    fi
     if [[ -n "$CB_VERSION" ]]; then
       release_json=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "${CB_RELEASE_API}/tags/v${CB_VERSION}" 2>/dev/null) \
         || cb_fail "Release v${CB_VERSION} not found" "Check: https://github.com/${CB_GITHUB_REPO}/releases"
@@ -1848,6 +1856,20 @@ stage0_download_bundle() {
     CB_VERSION="${CB_VERSION#v}"
     if [[ -z "$CB_VERSION" ]] || [[ "$CB_VERSION" == "null" ]]; then
       cb_fail "Failed to parse release version" "GitHub API may be rate-limited"
+    fi
+    # The tag names the files written below, and with --version it decides
+    # whether an older release may be installed unsigned
+    # (cb_unsigned_release_allowed). GitHub answers tags/vX with vX, so a tag
+    # that is not a release version, or another release than the one asked
+    # for, is not its answer: refused before anything is downloaded. Same
+    # rules as the npm CLI's resolveTarget.
+    if [[ ! "$CB_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+      cb_fail "The release answer names a tag that is not a release version" \
+        "Release tags look like v1.2.3; check that nothing between this host and GitHub rewrites HTTPS answers"
+    fi
+    if [[ -n "$requested" ]] && [[ "$CB_VERSION" != "$requested" ]]; then
+      cb_fail "Asked for release v${requested} but GitHub answered with v${CB_VERSION}" \
+        "The release answer may have been tampered with; check that nothing between this host and GitHub rewrites HTTPS answers"
     fi
     cb_ok "Release: v${CB_VERSION}"
 

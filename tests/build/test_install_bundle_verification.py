@@ -411,19 +411,29 @@ cb_check_bundle() { echo "CHECK $1 | $2 | $3 | $4 | $5"; }
 """
 
 
-def _run_download_stage(tmp: Path, local_bundle: str, curl_body: str) -> subprocess.CompletedProcess[str]:
+def _run_download_stage(tmp: Path, local_bundle: str, curl_body: str,
+                        version: str = "0.4.7", explicit: bool | None = None) -> subprocess.CompletedProcess[str]:
+    """Run stage0_download_bundle with a fake curl.
+
+    `version` is what --version set ("" for none); `explicit` is
+    CB_VERSION_EXPLICIT, which the parser sets with it (by default: whether
+    `version` is non-empty).
+    """
     bindir = tmp / "bin"
     bindir.mkdir(exist_ok=True)
     curl = bindir / "curl"
     curl.write_text(curl_body)
     curl.chmod(0o755)
+    explicit = bool(version) if explicit is None else explicit
     script = "\n".join([
         "set -euo pipefail", DOWNLOAD_STUBS,
         f'TMPDIR="{tmp / "tmp"}"', "export TMPDIR",
-        'CB_VERSION="0.4.7"', f'CB_LOCAL_BUNDLE="{local_bundle}"', 'ARCH="amd64"',
+        f'CB_VERSION="{version}"', f"CB_VERSION_EXPLICIT={'true' if explicit else 'false'}",
+        f'CB_LOCAL_BUNDLE="{local_bundle}"', 'ARCH="amd64"',
         'CB_RELEASE_API="https://api.invalid/releases"', 'CB_GITHUB_REPO="BlkLeg/CircuitBreaker"',
         "SKIP_CHECKSUM=false", "SKIP_SIGNATURE=false", 'CB_PRIVATE_TMP=""',
         'CB_BUNDLE_TARBALL=""', 'CB_BUNDLE_DIR=""',
+        _function("cb_pick_release"),
         _function("cb_fetch_release_asset"),
         _function("stage0_download_bundle"),
         "stage0_download_bundle",
@@ -469,6 +479,63 @@ if [ -n "$out" ]; then cp "{assets}/$(basename "$url")" "$out"; else cat "{asset
     assert v["DIR"] == f"{private}/bundle"
     assert "EXTRACTED" in r.stdout
     assert f"CHECK {private}/{TARBALL} | {private}/SHA256SUMS | {private}/SHA256SUMS.sig | download | 0.4.7" in r.stdout
+
+
+def _logging_curl(tmp: Path, answer: object) -> str:
+    """A fake curl: an API request prints `answer`; a download (`-o`) is only logged."""
+    (tmp / "answer.json").write_text(json.dumps(answer))
+    return f"""#!/bin/sh
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2 ;; http*) url="$1"; shift ;; *) shift ;; esac
+done
+if [ -n "$out" ]; then echo "$url -> $out" >> "{tmp / 'downloads.log'}"; else cat "{tmp / 'answer.json'}"; fi
+"""
+
+
+def _asset(name: str) -> dict[str, object]:
+    return {"name": name, "size": 1, "browser_download_url": f"https://dl.invalid/{name}"}
+
+
+def test_an_answer_for_another_release_than_the_version_asked_for_is_refused(tmp_path: Path) -> None:
+    """--version 0.4.8 answered with an unsigned v0.4.3 must not install it as 'requested explicitly'.
+
+    GitHub answers tags/vX with vX. CB_VERSION_EXPLICIT exempts an older release
+    from signing, so the release installed must be the one the operator named;
+    the CLI's resolveTarget refuses the same answer.
+    """
+    answer = {"tag_name": "v0.4.3", "assets": [_asset("circuit-breaker_0.4.3_linux_amd64.tar.gz"), _asset("SHA256SUMS")]}
+    r = _run_download_stage(tmp_path, "", _logging_curl(tmp_path, answer), version="0.4.8")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "FAIL: Asked for release v0.4.8 but GitHub answered with v0.4.3" in r.stdout
+    assert "CHECK" not in r.stdout
+    assert not (tmp_path / "downloads.log").exists(), "nothing is downloaded for an answer that is not trusted"
+
+
+@pytest.mark.parametrize("tag", ["v0.4.8/../../escaped", "vv0.4.8", "v0.4.8 x"])
+def test_a_release_tag_that_is_not_a_version_never_names_a_file(tmp_path: Path, tag: str) -> None:
+    """The tag builds the tarball's file name; one that is not X.Y.Z(-pre) is refused first."""
+    answer = [{"tag_name": tag, "draft": False, "prerelease": False,
+               "assets": [_asset(f"circuit-breaker_{tag[1:]}_linux_amd64.tar.gz"), _asset("SHA256SUMS")]}]
+    r = _run_download_stage(tmp_path, "", _logging_curl(tmp_path, answer), version="")
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "FAIL: The release answer names a tag that is not a release version" in r.stdout
+    assert not (tmp_path / "downloads.log").exists()
+
+
+def test_an_empty_version_is_refused_before_any_request(tmp_path: Path) -> None:
+    """`--version ""` sets CB_VERSION_EXPLICIT with no version to hold the answer to.
+
+    It would install the channel's newest release while still counting as
+    explicit, so an older release answered by the list could install unsigned.
+    The CLI refuses an empty --version as a usage error before any request.
+    """
+    calls = tmp_path / "calls.log"
+    curl = f'#!/bin/sh\necho "$@" >> "{calls}"\nexit 22\n'
+    r = _run_download_stage(tmp_path, "", curl, version="", explicit=True)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "FAIL: --version needs a release version" in r.stdout
+    assert not calls.exists(), "no request is made for an empty --version"
 
 
 def test_a_local_bundle_is_extracted_in_a_private_dir_and_left_in_place(tmp_path: Path) -> None:
