@@ -1,0 +1,1500 @@
+[
+ {
+  "name": "plan schema_version 2 is unsupported",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/schema_version": 2
+  },
+  "unsupported": true,
+  "expect": {
+   "path": "/schema_version",
+   "reason": "unsupported schema_version 2"
+  }
+ },
+ {
+  "name": "event schema_version 2 is unsupported",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/schema_version": 2
+  },
+  "unsupported": true,
+  "expect": {
+   "path": "/schema_version",
+   "reason": "unsupported schema_version 2"
+  }
+ },
+ {
+  "name": "result schema_version 2 is unsupported",
+  "kind": "result",
+  "base": "committed update",
+  "set": {
+   "/schema_version": 2
+  },
+  "unsupported": true,
+  "expect": {
+   "path": "/schema_version",
+   "reason": "unsupported schema_version 2"
+  }
+ },
+ {
+  "name": "journal schema_version 2 is unsupported",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/schema_version": 2
+  },
+  "unsupported": true,
+  "expect": {
+   "path": "/schema_version",
+   "reason": "unsupported schema_version 2"
+  }
+ },
+ {
+  "name": "history schema_version 2 is unsupported",
+  "kind": "history",
+  "base": "index with an unfinished legacy record",
+  "set": {
+   "/schema_version": 2
+  },
+  "unsupported": true,
+  "expect": {
+   "path": "/schema_version",
+   "reason": "unsupported schema_version 2"
+  }
+ },
+ {
+  "name": "missing schema_version",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "unset": [
+   "/schema_version"
+  ],
+  "unsupported": true,
+  "expect": {
+   "path": "/schema_version",
+   "reason": "unsupported schema_version"
+  }
+ },
+ {
+  "name": "schema_version 0",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/schema_version": 0
+  },
+  "unsupported": true,
+  "expect": {
+   "path": "/schema_version",
+   "reason": "unsupported schema_version 0"
+  }
+ },
+ {
+  "name": "schema_version as a string",
+  "kind": "result",
+  "base": "committed update",
+  "set": {
+   "/schema_version": "1"
+  },
+  "unsupported": true,
+  "expect": {
+   "path": "/schema_version",
+   "reason": "unsupported schema_version"
+  }
+ },
+ {
+  "name": "schema_version true is not 1",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/schema_version": true
+  },
+  "unsupported": true,
+  "expect": {
+   "path": "/schema_version",
+   "reason": "unsupported schema_version"
+  }
+ },
+ {
+  "name": "unknown top-level field",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/extra": 1
+  },
+  "expect": {
+   "path": "/extra",
+   "reason": "not allowed"
+  }
+ },
+ {
+  "name": "secret field in options",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/options/password": "hunter2"
+  },
+  "expect": {
+   "path": "/options/password",
+   "reason": "secret"
+  }
+ },
+ {
+  "name": "credential-shaped presentation text",
+  "kind": "plan",
+  "base": "fresh air-gapped install with presentation",
+  "set": {
+   "/presentation/lines/1": "db password=hunter2"
+  },
+  "expect": {
+   "path": "/presentation/lines/1",
+   "reason": "credential"
+  }
+ },
+ {
+  "name": "ANSI escape in presentation",
+  "kind": "plan",
+  "base": "fresh air-gapped install with presentation",
+  "set": {
+   "/presentation/summary": "\u001b[31mred\u001b[0m"
+  },
+  "expect": {
+   "path": "/presentation/summary",
+   "reason": "control character"
+  }
+ },
+ {
+  "name": "relative data_dir",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/options/data_dir": "srv/cb"
+  },
+  "expect": {
+   "path": "/options/data_dir",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "dot-dot segment in data_dir",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/options/data_dir": "/srv/../etc"
+  },
+  "expect": {
+   "path": "/options/data_dir",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "trailing slash in data_dir",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/options/data_dir": "/srv/cb/"
+  },
+  "expect": {
+   "path": "/options/data_dir",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "uppercase digest",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/target/artifact/digest": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "expect": {
+   "path": "/target/artifact/digest",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "bare hex where a prefixed digest is required",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/source/identity_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "expect": {
+   "path": "/source/identity_digest",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "port out of range",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/options/port": 70000
+  },
+  "expect": {
+   "path": "/options/port",
+   "reason": "65535"
+  }
+ },
+ {
+  "name": "malformed fqdn",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/options/fqdn": "cb.home.arpa;reboot"
+  },
+  "expect": {
+   "path": "/options/fqdn",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "unknown adapter",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/adapter": "kubernetes"
+  },
+  "expect": {
+   "path": "/adapter",
+   "reason": "one of"
+  }
+ },
+ {
+  "name": "unknown action",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/action": "purge"
+  },
+  "expect": {
+   "path": "/action",
+   "reason": "one of"
+  }
+ },
+ {
+  "name": "plan_digest that does not match",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/plan_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "expect": {
+   "path": "/plan_digest",
+   "reason": "does not match"
+  }
+ },
+ {
+  "name": "install with a source",
+  "kind": "plan",
+  "base": "fresh air-gapped install with presentation",
+  "set": {
+   "/source": {
+    "version": "0.4.6",
+    "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifact_digest": null,
+    "schema_revision": null
+   }
+  },
+  "expect": {
+   "path": "/source",
+   "reason": "install has no source"
+  }
+ },
+ {
+  "name": "update without a source",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/source": null
+  },
+  "expect": {
+   "path": "/source",
+   "reason": "needs a source"
+  }
+ },
+ {
+  "name": "uninstall with a target",
+  "kind": "plan",
+  "base": "uninstall with purge",
+  "set": {
+   "/target": {
+    "version": "0.4.7",
+    "arch": "amd64",
+    "channel": null,
+    "artifact": {
+     "name": "x",
+     "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "schema_revision": null
+   }
+  },
+  "expect": {
+   "path": "/target",
+   "reason": "no target"
+  }
+ },
+ {
+  "name": "update without trust",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/trust": null
+  },
+  "expect": {
+   "path": "/trust",
+   "reason": "needs trust"
+  }
+ },
+ {
+  "name": "existing point without a reference",
+  "kind": "plan",
+  "base": "incompatible downgrade restoring a point",
+  "set": {
+   "/recovery/ref": null
+  },
+  "expect": {
+   "path": "/recovery/ref",
+   "reason": "existing_point"
+  }
+ },
+ {
+  "name": "new point with a reference",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/recovery/ref": {
+    "operation_id": "op-20260930-001",
+    "manifest_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   }
+  },
+  "expect": {
+   "path": "/recovery/ref",
+   "reason": "only existing_point"
+  }
+ },
+ {
+  "name": "restored data without restore_data",
+  "kind": "plan",
+  "base": "incompatible downgrade restoring a point",
+  "set": {
+   "/acknowledgments": [
+    "confirm"
+   ]
+  },
+  "expect": {
+   "path": "/acknowledgments",
+   "reason": "restore_data"
+  }
+ },
+ {
+  "name": "restored data without a restore point time",
+  "kind": "plan",
+  "base": "incompatible downgrade restoring a point",
+  "set": {
+   "/data/restore_point_at": null
+  },
+  "expect": {
+   "path": "/data/restore_point_at",
+   "reason": "restore_point_at"
+  }
+ },
+ {
+  "name": "removed data without purge",
+  "kind": "plan",
+  "base": "uninstall with purge",
+  "set": {
+   "/acknowledgments": [
+    "confirm"
+   ]
+  },
+  "expect": {
+   "path": "/acknowledgments",
+   "reason": "purge"
+  }
+ },
+ {
+  "name": "uninstall without a scope digest",
+  "kind": "plan",
+  "base": "uninstall with purge",
+  "set": {
+   "/data/scope_digest": null
+  },
+  "expect": {
+   "path": "/data/scope_digest",
+   "reason": "scope_digest"
+  }
+ },
+ {
+  "name": "no confirm acknowledgment",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/acknowledgments": [
+    "restore_data"
+   ]
+  },
+  "expect": {
+   "path": "/acknowledgments",
+   "reason": "confirm"
+  }
+ },
+ {
+  "name": "repeated acknowledgment",
+  "kind": "plan",
+  "base": "incompatible downgrade restoring a point",
+  "set": {
+   "/acknowledgments": [
+    "confirm",
+    "confirm",
+    "restore_data"
+   ]
+  },
+  "expect": {
+   "path": "/acknowledgments",
+   "reason": "unique"
+  }
+ },
+ {
+  "name": "install that saves a recovery point",
+  "kind": "plan",
+  "base": "fresh air-gapped install with presentation",
+  "set": {
+   "/recovery/mode": "new_point"
+  },
+  "expect": {
+   "path": "/recovery/mode",
+   "reason": "install"
+  }
+ },
+ {
+  "name": "management not_applicable with a source",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/compatibility/management": "not_applicable"
+  },
+  "expect": {
+   "path": "/compatibility/management",
+   "reason": "not_applicable"
+  }
+ },
+ {
+  "name": "signature with both key and unsigned",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/trust/signature": {
+    "key_id": "0123456789abcdef",
+    "unsigned": "pinned"
+   }
+  },
+  "expect": {
+   "path": "/trust/signature/unsigned",
+   "reason": "not allowed"
+  }
+ },
+ {
+  "name": "malformed key id",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "set": {
+   "/trust/signature": {
+    "key_id": "0123456789ABCDEF"
+   }
+  },
+  "expect": {
+   "path": "/trust/signature/key_id",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "fractional number token",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "replace": [
+   "\"port\":8443",
+   "\"port\":8443.0"
+  ],
+  "expect": {
+   "path": "",
+   "reason": "integer"
+  }
+ },
+ {
+  "name": "exponent number token",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "replace": [
+   "\"port\":8443",
+   "\"port\":8.443e3"
+  ],
+  "expect": {
+   "path": "",
+   "reason": "integer"
+  }
+ },
+ {
+  "name": "negative zero token",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "replace": [
+   "\"port\":8443",
+   "\"port\":-0"
+  ],
+  "expect": {
+   "path": "",
+   "reason": "integer"
+  }
+ },
+ {
+  "name": "duplicate key",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "replace": [
+   "\"adapter\":\"native\"",
+   "\"adapter\":\"native\",\"adapter\":\"mono\""
+  ],
+  "expect": {
+   "path": "",
+   "reason": "duplicate key"
+  }
+ },
+ {
+  "name": "byte order mark",
+  "kind": "plan",
+  "base": "update with a new recovery point",
+  "prefix": "﻿",
+  "expect": {
+   "path": "",
+   "reason": "JSON"
+  }
+ },
+ {
+  "name": "oversized document",
+  "kind": "plan",
+  "base": "fresh air-gapped install with presentation",
+  "set": {
+   "/presentation/lines": [
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   ]
+  },
+  "expect": {
+   "path": "",
+   "reason": "bytes"
+  }
+ },
+ {
+  "name": "malformed operation id",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/operation_id": "op-2026930-001"
+  },
+  "expect": {
+   "path": "/operation_id",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "operation id with an impossible date",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/operation_id": "op-20261340-001"
+  },
+  "expect": {
+   "path": "/operation_id",
+   "reason": "date"
+  }
+ },
+ {
+  "name": "operation id with a path",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/operation_id": "../../etc/passwd"
+  },
+  "expect": {
+   "path": "/operation_id",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "operation id with a trailing newline",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/operation_id": "op-20260930-001\n"
+  },
+  "expect": {
+   "path": "/operation_id",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "timestamp with an offset",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/at": "2026-09-30T12:00:00+02:00"
+  },
+  "expect": {
+   "path": "/at",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "timestamp on February 30",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/at": "2026-02-30T12:00:00Z"
+  },
+  "expect": {
+   "path": "/at",
+   "reason": "date"
+  }
+ },
+ {
+  "name": "sequence zero",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/sequence": 0
+  },
+  "expect": {
+   "path": "/sequence",
+   "reason": "at least 1"
+  }
+ },
+ {
+  "name": "sequence beyond a safe integer",
+  "kind": "event",
+  "base": "phase started",
+  "replace": [
+   "\"sequence\":1",
+   "\"sequence\":9007199254740992"
+  ],
+  "expect": {
+   "path": "",
+   "reason": "integer"
+  }
+ },
+ {
+  "name": "unknown phase",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/phase": "reboot"
+  },
+  "expect": {
+   "path": "/phase",
+   "reason": "one of"
+  }
+ },
+ {
+  "name": "progress past its total",
+  "kind": "event",
+  "base": "progress bytes",
+  "set": {
+   "/done": 88080385
+  },
+  "expect": {
+   "path": "/done",
+   "reason": "total"
+  }
+ },
+ {
+  "name": "phase event carrying progress fields",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/done": 1
+  },
+  "expect": {
+   "path": "/done",
+   "reason": "not allowed"
+  }
+ },
+ {
+  "name": "phase start with a duration",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/duration_ms": 5
+  },
+  "expect": {
+   "path": "/duration_ms",
+   "reason": "completed"
+  }
+ },
+ {
+  "name": "checkpoint without an operation",
+  "kind": "event",
+  "base": "checkpoint",
+  "set": {
+   "/operation_id": null
+  },
+  "expect": {
+   "path": "/operation_id",
+   "reason": "checkpoint"
+  }
+ },
+ {
+  "name": "checkpoint from the coordinator",
+  "kind": "event",
+  "base": "checkpoint",
+  "set": {
+   "/source": "coordinator"
+  },
+  "expect": {
+   "path": "/source",
+   "reason": "native"
+  }
+ },
+ {
+  "name": "native event without an operation",
+  "kind": "event",
+  "base": "phase started",
+  "set": {
+   "/operation_id": null
+  },
+  "expect": {
+   "path": "/operation_id",
+   "reason": "native"
+  }
+ },
+ {
+  "name": "secret field",
+  "kind": "event",
+  "base": "diagnostic warning without code",
+  "set": {
+   "/setup_token": "abc"
+  },
+  "expect": {
+   "path": "/setup_token",
+   "reason": "secret"
+  }
+ },
+ {
+  "name": "bearer token in a message",
+  "kind": "event",
+  "base": "diagnostic warning without code",
+  "set": {
+   "/message": "GET failed: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.x"
+  },
+  "expect": {
+   "path": "/message",
+   "reason": "credential"
+  }
+ },
+ {
+  "name": "private key in a message",
+  "kind": "event",
+  "base": "diagnostic warning without code",
+  "set": {
+   "/message": "-----BEGIN OPENSSH PRIVATE KEY-----"
+  },
+  "expect": {
+   "path": "/message",
+   "reason": "credential"
+  }
+ },
+ {
+  "name": "ANSI escape in a message",
+  "kind": "event",
+  "base": "diagnostic warning without code",
+  "set": {
+   "/message": "\u001b[2Jcleared"
+  },
+  "expect": {
+   "path": "/message",
+   "reason": "control character"
+  }
+ },
+ {
+  "name": "lone surrogate in a message",
+  "kind": "event",
+  "base": "diagnostic warning without code",
+  "replace": [
+   "\"level\":\"warning\"",
+   "\"level\":\"warning\",\"message\":\"\\ud800\""
+  ],
+  "unset": [
+   "/message"
+  ],
+  "expect": {
+   "path": "/message",
+   "reason": "surrogate"
+  }
+ },
+ {
+  "name": "line longer than 4096 bytes",
+  "kind": "event",
+  "base": "diagnostic warning without code",
+  "set": {
+   "/message": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+  },
+  "expect": {
+   "path": "",
+   "reason": "bytes"
+  }
+ },
+ {
+  "name": "verified without a bundle",
+  "kind": "result",
+  "base": "landed install --plan verified",
+  "unset": [
+   "/bundle"
+  ],
+  "expect": {
+   "path": "/bundle",
+   "reason": "verified"
+  }
+ },
+ {
+  "name": "plan false",
+  "kind": "result",
+  "base": "landed install --plan verified",
+  "set": {
+   "/plan": false
+  },
+  "expect": {
+   "path": "/plan",
+   "reason": "true"
+  }
+ },
+ {
+  "name": "plan refusal without an error",
+  "kind": "result",
+  "base": "landed install --plan refusal with usage text",
+  "unset": [
+   "/error"
+  ],
+  "expect": {
+   "path": "/error",
+   "reason": "refused"
+  }
+ },
+ {
+  "name": "committed with an error",
+  "kind": "result",
+  "base": "committed update",
+  "set": {
+   "/error": {
+    "code": "MANUAL",
+    "reason": "x"
+   }
+  },
+  "expect": {
+   "path": "/error",
+   "reason": "committed"
+  }
+ },
+ {
+  "name": "operation result without recovery_available",
+  "kind": "result",
+  "base": "committed update",
+  "unset": [
+   "/recovery_available"
+  ],
+  "expect": {
+   "path": "/recovery_available",
+   "reason": "required"
+  }
+ },
+ {
+  "name": "committed without an operation id",
+  "kind": "result",
+  "base": "committed update",
+  "set": {
+   "/operation_id": null
+  },
+  "expect": {
+   "path": "/operation_id",
+   "reason": "committed"
+  }
+ },
+ {
+  "name": "recovered with the manual code",
+  "kind": "result",
+  "base": "committed update",
+  "set": {
+   "/outcome": "recovered",
+   "/error": {
+    "code": "MANUAL",
+    "reason": "x"
+   }
+  },
+  "expect": {
+   "path": "/error/code",
+   "reason": "RECOVERED"
+  }
+ },
+ {
+  "name": "refusal with the OK code",
+  "kind": "result",
+  "base": "committed update",
+  "set": {
+   "/outcome": "refused",
+   "/error": {
+    "code": "OK",
+    "reason": "x"
+   }
+  },
+  "expect": {
+   "path": "/error/code",
+   "reason": "one of"
+  }
+ },
+ {
+  "name": "refusal with the interrupted code",
+  "kind": "result",
+  "base": "committed update",
+  "set": {
+   "/outcome": "refused",
+   "/error": {
+    "code": "INTERRUPTED",
+    "reason": "x"
+   }
+  },
+  "expect": {
+   "path": "/error/code",
+   "reason": "INTERRUPTED"
+  }
+ },
+ {
+  "name": "proxy credentials in a reason",
+  "kind": "result",
+  "base": "landed install --plan refusal with usage text",
+  "set": {
+   "/error/reason": "connect to http://admin:s3cret@proxy.lan:3128 failed"
+  },
+  "expect": {
+   "path": "/error/reason",
+   "reason": "credential"
+  }
+ },
+ {
+  "name": "token field in an error",
+  "kind": "result",
+  "base": "landed install --plan refusal with usage text",
+  "set": {
+   "/error/token": "abc"
+  },
+  "expect": {
+   "path": "/error/token",
+   "reason": "secret"
+  }
+ },
+ {
+  "name": "verified plan with an operation id",
+  "kind": "result",
+  "base": "landed install --plan verified",
+  "set": {
+   "/operation_id": "op-20260930-001"
+  },
+  "expect": {
+   "path": "/operation_id",
+   "reason": "plan"
+  }
+ },
+ {
+  "name": "plan fields on an operation result",
+  "kind": "result",
+  "base": "committed update",
+  "set": {
+   "/bundle": {
+    "name": "x",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "path": "/x"
+   }
+  },
+  "expect": {
+   "path": "/bundle",
+   "reason": "verified"
+  }
+ },
+ {
+  "name": "listing outside history",
+  "kind": "result",
+  "base": "committed update",
+  "set": {
+   "/outcome": "listed",
+   "/operations": []
+  },
+  "expect": {
+   "path": "/outcome",
+   "reason": "history"
+  }
+ },
+ {
+  "name": "malformed id in a history entry",
+  "kind": "result",
+  "base": "history listing",
+  "set": {
+   "/operations/0/operation_id": "op-x"
+  },
+  "expect": {
+   "path": "/operations/0/operation_id",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "history entry mixing summary and inspection fields",
+  "kind": "result",
+  "base": "history listing",
+  "set": {
+   "/operations/1/state": "committed"
+  },
+  "expect": {
+   "path": "/operations/1/state",
+   "reason": "not allowed"
+  }
+ },
+ {
+  "name": "bundle sha256 with a prefix",
+  "kind": "result",
+  "base": "landed install --plan verified",
+  "set": {
+   "/bundle/sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "expect": {
+   "path": "/bundle/sha256",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "transaction starting at applying",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/checkpoints/0/state": "applying"
+  },
+  "expect": {
+   "path": "/checkpoints/0/state",
+   "reason": "starts at planned"
+  }
+ },
+ {
+  "name": "legacy starting at planned",
+  "kind": "journal",
+  "base": "legacy restore",
+  "set": {
+   "/checkpoints/0/state": "planned"
+  },
+  "expect": {
+   "path": "/checkpoints/0/state",
+   "reason": "starts at applying"
+  }
+ },
+ {
+  "name": "planned to applying",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/checkpoints/1/state": "applying"
+  },
+  "expect": {
+   "path": "/checkpoints/1/state",
+   "reason": "planned -> applying"
+  }
+ },
+ {
+  "name": "verified to applying for an update",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/checkpoints/3/state": "applying"
+  },
+  "expect": {
+   "path": "/checkpoints/3/state",
+   "reason": "verified -> applying"
+  }
+ },
+ {
+  "name": "legacy applying to verified",
+  "kind": "journal",
+  "base": "legacy restore",
+  "set": {
+   "/checkpoints/1/state": "verified"
+  },
+  "unset": [
+   "/checkpoints/1/outcome"
+  ],
+  "expect": {
+   "path": "/checkpoints/1/state",
+   "reason": "applying -> verified"
+  }
+ },
+ {
+  "name": "record after commit",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/checkpoints/8": {
+    "sequence": 13,
+    "state": "recovering",
+    "at": "2026-09-30T13:00:00Z"
+   }
+  },
+  "expect": {
+   "path": "/checkpoints/8",
+   "reason": "closed"
+  }
+ },
+ {
+  "name": "outcome before the last record",
+  "kind": "journal",
+  "base": "refused before mutation",
+  "set": {
+   "/checkpoints/1/outcome": "refused",
+   "/checkpoints/1/error": {
+    "code": "TRUST",
+    "reason": "x"
+   }
+  },
+  "expect": {
+   "path": "/checkpoints/2",
+   "reason": "closed"
+  }
+ },
+ {
+  "name": "commit without an outcome",
+  "kind": "journal",
+  "base": "committed update",
+  "unset": [
+   "/checkpoints/7/outcome"
+  ],
+  "expect": {
+   "path": "/checkpoints/7/outcome",
+   "reason": "committed"
+  }
+ },
+ {
+  "name": "refusal after mutation",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/checkpoints/7": {
+    "sequence": 12,
+    "state": "checking",
+    "at": "2026-09-30T12:12:00Z",
+    "outcome": "refused",
+    "error": {
+     "code": "TRUST",
+     "reason": "x"
+    }
+   }
+  },
+  "expect": {
+   "path": "/checkpoints/7/outcome",
+   "reason": "before mutation"
+  }
+ },
+ {
+  "name": "refusal without an error",
+  "kind": "journal",
+  "base": "refused before mutation",
+  "unset": [
+   "/checkpoints/2/error"
+  ],
+  "expect": {
+   "path": "/checkpoints/2/error",
+   "reason": "error"
+  }
+ },
+ {
+  "name": "repeated state without a step",
+  "kind": "journal",
+  "base": "committed update",
+  "unset": [
+   "/checkpoints/5/step"
+  ],
+  "expect": {
+   "path": "/checkpoints/5/state",
+   "reason": "step"
+  }
+ },
+ {
+  "name": "step on a pre-mutation state",
+  "kind": "journal",
+  "base": "refused before mutation",
+  "set": {
+   "/checkpoints/1/step": "downloaded"
+  },
+  "expect": {
+   "path": "/checkpoints/1/step",
+   "reason": "step"
+  }
+ },
+ {
+  "name": "interrupted without its checkpoint",
+  "kind": "journal",
+  "base": "killed during apply, still unfinished",
+  "unset": [
+   "/checkpoints/5/checkpoint"
+  ],
+  "expect": {
+   "path": "/checkpoints/5/checkpoint",
+   "reason": "checkpoint"
+  }
+ },
+ {
+  "name": "interrupted naming the wrong checkpoint",
+  "kind": "journal",
+  "base": "killed during apply, still unfinished",
+  "set": {
+   "/checkpoints/5/checkpoint": "staged"
+  },
+  "expect": {
+   "path": "/checkpoints/5/checkpoint",
+   "reason": "applying"
+  }
+ },
+ {
+  "name": "interrupted without a cause",
+  "kind": "journal",
+  "base": "killed during apply, still unfinished",
+  "unset": [
+   "/checkpoints/5/cause"
+  ],
+  "expect": {
+   "path": "/checkpoints/5/cause",
+   "reason": "cause"
+  }
+ },
+ {
+  "name": "recovery_required without a cause",
+  "kind": "journal",
+  "base": "recovery required after Ctrl-C",
+  "unset": [
+   "/checkpoints/5/cause"
+  ],
+  "expect": {
+   "path": "/checkpoints/5/cause",
+   "reason": "cause"
+  }
+ },
+ {
+  "name": "recovery_required caused by abandonment",
+  "kind": "journal",
+  "base": "recovery required after Ctrl-C",
+  "set": {
+   "/checkpoints/5/cause": "abandoned"
+  },
+  "expect": {
+   "path": "/checkpoints/5/cause",
+   "reason": "interrupted, apply_failed"
+  }
+ },
+ {
+  "name": "cause on a committed record",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/checkpoints/7/cause": "interrupted"
+  },
+  "expect": {
+   "path": "/checkpoints/7/cause",
+   "reason": "cause"
+  }
+ },
+ {
+  "name": "closing an interruption after mutation",
+  "kind": "journal",
+  "base": "killed during apply, still unfinished",
+  "set": {
+   "/checkpoints/5/outcome": "interrupted"
+  },
+  "expect": {
+   "path": "/checkpoints/5/outcome",
+   "reason": "before mutation"
+  }
+ },
+ {
+  "name": "sequence going backwards",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/checkpoints/2/sequence": 2
+  },
+  "expect": {
+   "path": "/checkpoints/2/sequence",
+   "reason": "increase"
+  }
+ },
+ {
+  "name": "transaction without a plan digest",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/plan_digest": null
+  },
+  "expect": {
+   "path": "/plan_digest",
+   "reason": "plan_digest"
+  }
+ },
+ {
+  "name": "legacy with a plan digest",
+  "kind": "journal",
+  "base": "legacy restore",
+  "set": {
+   "/plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "expect": {
+   "path": "/plan_digest",
+   "reason": "plan_digest"
+  }
+ },
+ {
+  "name": "recovery saved without a reference",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/recovery": null
+  },
+  "expect": {
+   "path": "/recovery",
+   "reason": "recovery"
+  }
+ },
+ {
+  "name": "vault key in the recovery reference",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/recovery/vault_key": "Zm9v"
+  },
+  "expect": {
+   "path": "/recovery/vault_key",
+   "reason": "secret"
+  }
+ },
+ {
+  "name": "malformed recovery operation id",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/recovery/operation_id": "op-20260930-01"
+  },
+  "expect": {
+   "path": "/recovery/operation_id",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "no checkpoints",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/checkpoints": []
+  },
+  "expect": {
+   "path": "/checkpoints",
+   "reason": "at least 1"
+  }
+ },
+ {
+  "name": "generation zero",
+  "kind": "journal",
+  "base": "committed update",
+  "set": {
+   "/generation": 0
+  },
+  "expect": {
+   "path": "/generation",
+   "reason": "at least 1"
+  }
+ },
+ {
+  "name": "fresh install entering applying from verified is install-only",
+  "kind": "journal",
+  "base": "fresh install skips the recovery point",
+  "set": {
+   "/action": "downgrade"
+  },
+  "expect": {
+   "path": "/checkpoints/3/state",
+   "reason": "verified -> applying"
+  }
+ },
+ {
+  "name": "malformed id in the index",
+  "kind": "history",
+  "base": "index with an unfinished legacy record",
+  "set": {
+   "/operations/0/operation_id": "op-20260930-002/../x"
+  },
+  "expect": {
+   "path": "/operations/0/operation_id",
+   "reason": "pattern"
+  }
+ },
+ {
+  "name": "inspection entry with a summary field",
+  "kind": "history",
+  "base": "index with an unfinished legacy record",
+  "set": {
+   "/operations/1/action": "update"
+  },
+  "expect": {
+   "path": "/operations/1/action",
+   "reason": "not allowed"
+  }
+ },
+ {
+  "name": "index without generated_at",
+  "kind": "history",
+  "base": "index with an unfinished legacy record",
+  "unset": [
+   "/generated_at"
+  ],
+  "expect": {
+   "path": "/generated_at",
+   "reason": "required"
+  }
+ }
+]

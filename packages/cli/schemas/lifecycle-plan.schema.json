@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://circuitbreaker.local/schemas/lifecycle-plan.schema.json",
+  "title": "CircuitBreakerLifecyclePlan",
+  "description": "A lifecycle execution plan, version 1. Describes; never authorizes: the native helper recomputes its digest from its own inputs. Field rules beyond this schema: specs/install/lifecycle-contract.md.",
+  "x-max-bytes": 16384,
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "action", "adapter", "source", "target", "compatibility", "options", "downtime", "recovery", "data", "trust", "acknowledgments"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "plan_digest": { "$ref": "#/$defs/digest" },
+    "presentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "summary": { "$ref": "#/$defs/text" },
+        "lines": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/text" } }
+      }
+    },
+    "action": { "enum": ["install", "update", "downgrade", "rollback", "recover", "uninstall"] },
+    "adapter": { "$ref": "#/$defs/adapter" },
+    "source": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["version", "identity_digest", "artifact_digest", "schema_revision"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "identity_digest": { "$ref": "#/$defs/digest" },
+        "artifact_digest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+        "schema_revision": { "$ref": "#/$defs/revision" }
+      }
+    },
+    "target": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["version", "arch", "channel", "artifact", "schema_revision"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "arch": { "enum": ["amd64", "arm64"] },
+        "channel": { "enum": ["stable", "candidate", null] },
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "digest"],
+          "properties": {
+            "name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,254}$" },
+            "digest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        "schema_revision": { "$ref": "#/$defs/revision" }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["management", "schema", "transition_digest"],
+      "properties": {
+        "management": { "enum": ["certified", "uncertified", "not_applicable"] },
+        "schema": { "enum": ["none", "forward", "compatible", "incompatible"] },
+        "transition_digest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }
+      }
+    },
+    "options": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["port", "fqdn", "cert_type", "email", "data_dir", "tls", "docker", "airgap"],
+      "properties": {
+        "port": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 },
+        "fqdn": {
+          "type": ["string", "null"],
+          "maxLength": 253,
+          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+        },
+        "cert_type": { "enum": ["self-signed", "letsencrypt", null] },
+        "email": { "type": ["string", "null"], "maxLength": 254, "pattern": "^[^@ \\x00-\\x1f\\x7f]{1,64}@[A-Za-z0-9.-]{1,253}$" },
+        "data_dir": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/path" }] },
+        "tls": { "type": "boolean" },
+        "docker": { "type": "boolean" },
+        "airgap": { "type": "boolean" }
+      }
+    },
+    "downtime": { "enum": ["none", "restart", "outage"] },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "ref"],
+      "properties": {
+        "mode": { "enum": ["none", "new_point", "existing_point"] },
+        "ref": { "$ref": "#/$defs/recovery_ref" }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effect", "restore_point_at", "scope_digest"],
+      "properties": {
+        "effect": { "enum": ["none", "retained", "migrated", "restored", "removed"] },
+        "restore_point_at": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] },
+        "scope_digest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }
+      }
+    },
+    "trust": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/trust" }] },
+    "acknowledgments": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "enum": ["confirm", "restore_data", "purge"] }
+    }
+  },
+  "$defs": {
+    "adapter": { "enum": ["native", "mono", "package", "proxmox"] },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "operation_id": { "type": "string", "pattern": "^op-[0-9]{8}-[0-9]{3,9}$", "format": "cb-operation-id" },
+    "path": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^/(?:(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f]+(?:/(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f]+)*)?$"
+    },
+    "recovery_ref": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["operation_id", "manifest_digest"],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/operation_id" },
+        "manifest_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "revision": { "type": ["string", "null"], "pattern": "^[0-9A-Za-z_]{1,64}$" },
+    "text": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*$",
+      "x-reason": "contains a control character other than tab or newline",
+      "not": {
+        "description": "looks like a credential (a URL password, private key, bearer token or secret assignment); redact it",
+        "anyOf": [
+          { "pattern": "[A-Za-z][A-Za-z0-9+.-]*://[^/?#@ \\x00-\\x1f]*:[^/?#@ \\x00-\\x1f]*@" },
+          { "pattern": "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----" },
+          { "pattern": "(?:Bearer|bearer|BEARER) [A-Za-z0-9._~+/=-]{8,}" },
+          { "pattern": "(?:[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Ss]ecret|SECRET|[Tt]oken|TOKEN|[Aa]pi_?[Kk]ey|API_?KEY|[Vv]ault_[Kk]ey|VAULT_KEY)[ ]?[=:][ ]?[^ \\x00-\\x1f]" }
+        ]
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$",
+      "format": "cb-utc-timestamp"
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signature", "provenance"],
+      "properties": {
+        "signature": {
+          "oneOf": [
+            { "type": "object", "additionalProperties": false, "required": ["key_id"], "properties": { "key_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" } } },
+            { "type": "object", "additionalProperties": false, "required": ["unsigned"], "properties": { "unsigned": { "enum": ["pinned", "explicit-older"] } } }
+          ]
+        },
+        "provenance": { "enum": ["verified", "skipped-airgap", "not-applicable"] }
+      }
+    },
+    "version": { "type": "string", "maxLength": 64, "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" }
+  }
+}

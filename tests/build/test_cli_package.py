@@ -39,6 +39,8 @@ REQUIRED_PACKED = {
     "package.json", "README.md", "LICENSE", "bin/circuitbreaker.js",
     "src/main.js", "schemas/install-identity.schema.json",
     "schemas/native-commands.json", "compat/management.json",
+    "schemas/lifecycle-plan.schema.json", "schemas/lifecycle-event.schema.json",
+    "schemas/lifecycle-result.schema.json", "schemas/operation-journal.schema.json",
     "trust/release-bundle-keys.txt", "npm-shrinkwrap.json",
 }
 # The code's budget. npm-shrinkwrap.json is dependency metadata, not code, and
@@ -47,8 +49,11 @@ REQUIRED_PACKED = {
 # install --plan (sub-plan 02); 84 KiB takes that plan's final review fixes (the
 # release-answer checks and the one-pass hash and archive scan), again with
 # little headroom, so each later sub-plan that adds code has to argue for its
-# own growth here.
-UNPACKED_SIZE_BUDGET = 84 * 1024
+# own growth here. 131 KiB takes sub-plan 03 Task 1's frozen lifecycle contract
+# (measured 132,698 B): the four lifecycle schemas (25.5 KB, each self-contained
+# so they version independently) and lifecycle-contract.js (23.7 KB), the
+# coordinator's validator for them, which 03 Task 4 and 05-08 consume.
+UNPACKED_SIZE_BUDGET = 131 * 1024
 SHRINKWRAP_SIZE_BUDGET = 40 * 1024
 SHRINKWRAP = PKG / "npm-shrinkwrap.json"
 ENTRY_BUDGET = 40

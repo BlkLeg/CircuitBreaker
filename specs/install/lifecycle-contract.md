@@ -1,0 +1,379 @@
+# Lifecycle contract, version 1
+
+Status: frozen by npm CLI sub-plan 03 Task 1 (`plans/2026-09-30-v0.4.7-npm-cli-03-lock-journal-events.md`).
+It defines documents and rules only. It does not claim that any lifecycle command ships.
+The [design](../../docs/design/2026-09-30-v0.4.7-npm-cli-design.md) is binding. The schemas below
+implement it. Where this text and a schema disagree, the schema's tests fail.
+
+| Document | Schema | Bound | Producer | Authority |
+| --- | --- | --- | --- | --- |
+| Execution plan | `packages/cli/schemas/lifecycle-plan.schema.json` | 16 KiB | coordinator (Node) | none: it describes, the native helper recomputes it |
+| Event | `packages/cli/schemas/lifecycle-event.schema.json` | 4096 bytes per line | coordinator and native helper | none: presentation only |
+| Result | `packages/cli/schemas/lifecycle-result.schema.json` | 256 KiB | the command that ran | the final statement of that run |
+| Operation journal | `packages/cli/schemas/operation-journal.schema.json` | 64 KiB | native state utility, under the lock | authoritative lifecycle state |
+| History index | `lifecycle-result.schema.json#/$defs/history_index` | 256 KiB | native state utility | derived from journals, never authoritative |
+
+Each document carries its own `schema_version`. Each type versions on its own: a reader that
+meets a version it does not read refuses the document as unsupported (exit 3). It never guesses.
+Sub-plans 05–08 name the versions they consume. A change that would make a v1 reader accept
+something different is a new version, never an edit to v1.
+
+Validators: `packages/cli/src/lifecycle-contract.js` (coordinator) and the native state utility
+`deploy/scripts/lifecycle-state.py` (sub-plan 03 Task 3, Python 3.9+ stdlib). Both interpret the
+same schema subset, apply the numbered rules below, and pass the shared fixtures in
+`packages/cli/test/fixtures/lifecycle/` (`valid.json`, `invalid.json`, `digest-vectors.json`).
+`tests/build/test_lifecycle_contract.py` pins the subset, the regex dialect, the canonical digest
+in Python, and the tables in this file.
+
+## 1. Encoding and shape (every document)
+
+1. UTF-8 without a byte order mark. One JSON object at the top level.
+2. The size bound applies to the bytes received, before parsing. In memory it applies to the
+   canonical text (§2).
+3. Object keys match `^[a-z][a-z0-9_]*$`. A key appears at most once. Nesting is at most 32 levels.
+4. Numbers are safe integers. They are written `-?(0|[1-9][0-9]*)`, are not `-0`, and lie within
+   ±(2^53−1). A fraction, an exponent or `-0` is refused even when its value is integral. A
+   quantity that needs a fraction is carried as integer units (for example `duration_ms`).
+5. Strings are well-formed Unicode: a lone surrogate is refused. `maxLength` counts code points.
+6. Every object is closed (`additionalProperties: false`). A member that is not in the schema is
+   refused. A refused member whose name looks like a secret (`password`, `token`,
+   `vault_key`, …) is reported as a secret field.
+7. Free text (`text`: error reasons, messages, presentation, evidence detail) is bounded (4096) and
+   has no control characters except tab and newline, so it has no ANSI escapes. It must not have
+   a credential shape: URL userinfo with a password, a PEM private key, `Bearer` tokens, or
+   `password=`/`secret:`/`token=`/`api_key=`/`vault_key=` assignments. Producers redact before
+   writing. The validator's shape check is a backstop, not the redaction.
+
+### Schema subset
+
+Keywords: `$ref` (to `#/$defs/<name>` in the same file only), `type`, `const`, `enum`,
+`format`, `pattern`, `minLength`, `maxLength`, `minimum`, `maximum`, `properties`, `required`,
+`additionalProperties` (always `false`), `items`, `minItems`, `maxItems`, `uniqueItems`, `oneOf`,
+`anyOf`, `not`. Annotations: `$schema`, `$id`, `title`, `description`, `$defs`, and members
+starting with `x-`. Keyword semantics follow JSON Schema 2020-12. `const` and `enum` compare by
+JSON type as well as by value: `true` is not `1`. `integer` means a safe integer.
+
+Annotations that carry contract data:
+
+- `x-max-bytes`: the bound above.
+- `x-reason`: the message for a failed `pattern`.
+- `x-fields`: the event members per type (§6).
+- `x-lifecycle`: the state machine (§4).
+
+Formats:
+
+- `cb-utc-timestamp`: a real calendar date, hours ≤ 23, minutes and seconds ≤ 59. There is no
+  leap second.
+- `cb-operation-id`: the embedded date is a real calendar date.
+
+Patterns are ECMAScript regular expressions in a dialect Python's `re` reads identically. They
+use no `\d \w \s \b`, no named groups, no inline flags and no lookbehind. `$` appears only as an
+anchor. Patterns are searched (JSON Schema semantics). Python validators compile each pattern
+with `$` replaced by `\Z`, because Python's `$` also matches before a trailing newline.
+
+### Identifiers
+
+| Name | Form | Notes |
+| --- | --- | --- |
+| Operation ID | `op-YYYYMMDD-NNN` (`^op-[0-9]{8}-[0-9]{3,9}$`) | UTC date and a per-day counter of at least three digits. `begin` allocates it under the lock. Nothing builds a path from an ID that has not matched. |
+| Digest | `sha256:` + 64 lowercase hex | plan, identity, artifact, manifest, scope and transition digests |
+| Bundle SHA256 | 64 lowercase hex, no prefix | the landed `install --plan` result only |
+| Key ID | 16 lowercase hex | `trust/release-bundle-keys.txt` |
+| Version | `X.Y.Z` or `X.Y.Z-pre`, no `v`, ≤ 64 | release versions |
+| Schema revision | `^[0-9A-Za-z_]{1,64}$` | an Alembic revision id |
+| Path | absolute, normalized: no empty, `.` or `..` segment, no trailing `/`, no control character, ≤ 4096 | |
+| Timestamp | RFC 3339 UTC with `Z`, optional 1–6 fractional digits | |
+| Adapter | `native`, `mono`, `package`, `proxmox` | the install identity modes; Docker and Compose are transports of `mono` |
+
+## 2. Canonical serialization and the plan digest
+
+The canonical text of a document is UTF-8 JSON with:
+
+- object keys sorted by code point;
+- no insignificant whitespace;
+- integers in shortest form;
+- strings escaped as `JSON.stringify` does. That is `\"`, `\\`, `\b \f \n \r \t`, and other
+  C0 controls as lowercase `\u00xx`. Nothing else is escaped: non-ASCII, DEL and U+2028 stay
+  literal.
+
+Node produces it with `canonicalize()`. Python produces the same bytes with
+`json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")`.
+It does so after rules 1.3–1.5 have been checked: ASCII keys and integer-only numbers are what
+make the two agree without RFC 8785 number handling.
+
+**Plan digest** = `sha256:` + hex SHA-256 of the canonical text of the plan with the top-level
+`plan_digest` and `presentation` members removed. Every other member is bound. Volatile progress
+never appears in a plan. Plan members that are not set are `null`, never absent, so a member's
+absence cannot change the digest.
+
+**Identity digest** = the same hash over the parsed install identity
+(`specs/install/identity.schema.json`) as found on the host.
+
+## 3. The execution plan
+
+| Member | Meaning |
+| --- | --- |
+| `action` | `install`, `update`, `downgrade`, `rollback`, `recover`, `uninstall` |
+| `adapter` | the lifecycle adapter, which is the install mode |
+| `source` | the installed server: `version`, `identity_digest`, `artifact_digest` (or null), `schema_revision` (or null); `null` for an install |
+| `target` | the release to run: `version`, `arch`, `channel` (or null), `artifact {name, digest}`, `schema_revision` (or null) |
+| `compatibility` | `management` (`certified`, `uncertified`, `not_applicable`), `schema` (`none`, `forward`, `compatible`, `incompatible`), `transition_digest` of the signed certification that allows it (or null) |
+| `options` | installer options forwarded verbatim: `port`, `fqdn`, `cert_type`, `email`, `data_dir`, `tls`, `docker`, `airgap`; `null` when no installer runs |
+| `downtime` | `none`, `restart`, `outage` |
+| `recovery` | `mode` (`none`, `new_point`, `existing_point`) and `ref {operation_id, manifest_digest}` |
+| `data` | `effect` (`none`, `retained`, `migrated`, `restored`, `removed`), `restore_point_at` (the restored point's time, so newer writes are known lost), `scope_digest` (sub-plan 07's removal scope) |
+| `trust` | `signature` (`{key_id}` or `{unsigned: pinned or explicit-older}`) and `provenance` (`verified`, `skipped-airgap`, `not-applicable`), exactly as `install --plan` reports them |
+| `acknowledgments` | the acknowledgments execution requires: `confirm`, `restore_data`, `purge` |
+| `presentation` | optional display text (`summary`, `lines`), outside the digest |
+| `plan_digest` | optional; when present it must equal the computed digest |
+
+Rules:
+
+- **P1** A present `plan_digest` equals the computed digest.
+- **P2** `source` is null exactly for `install`.
+- **P3** `target` is null exactly for `uninstall` and `recover`.
+- **P4** `install`, `update` and `downgrade` carry `trust`. A plan without a target carries none.
+- **P5** `recovery.ref` is set exactly when `mode` is `existing_point`. An install's mode is
+  `none`, and a rollback's is `existing_point`.
+- **P6** `management` is `not_applicable` exactly when there is no source.
+- **P7** `restore_point_at` is set exactly when data is `restored`. `scope_digest` is set exactly
+  for `uninstall`.
+- **P8** `acknowledgments` always include `confirm`. They include `restore_data` exactly when data
+  is restored, and `purge` exactly when data is removed.
+
+## 4. Operation states and transitions
+
+Eleven states: `planned`, `staged`, `verified`, `recovery_saved`, `applying`, `checking`,
+`committed`, `recovering`, `recovered`, `recovery_required` and `interrupted`. The states before
+mutation are `planned`, `staged`, `verified` and `recovery_saved`. `applying` is the first
+mutation checkpoint.
+
+There are two kinds of operation:
+
+- **transaction**: the orchestrated path from sub-plan 05 on.
+- **legacy**: a direct shell command (install.sh, `cb update`, restore.sh, `cb migrate upgrade`,
+  …) recording its actual smaller scope. A legacy record never claims `verified` or
+  `recovery_saved`.
+
+<!-- lifecycle-transitions:begin -->
+| From | Transaction may go to | Legacy may go to |
+| --- | --- | --- |
+| (start) | planned | applying |
+| planned | staged, interrupted | — |
+| staged | verified, interrupted | — |
+| verified | recovery_saved, applying, interrupted | — |
+| recovery_saved | applying, interrupted | — |
+| applying | checking, recovering, recovery_required, interrupted | committed, recovery_required, interrupted |
+| checking | committed, recovering, recovery_required, interrupted | — |
+| committed | — | — |
+| recovering | recovered, recovery_required, interrupted | — |
+| recovered | — | — |
+| recovery_required | recovering | — |
+| interrupted | recovering, recovery_required | — |
+<!-- lifecycle-transitions:end -->
+
+A journal is one document per operation. It is atomically replaced at each durable checkpoint,
+and `generation` counts those writes. `checkpoints` lists the states the operation passed through,
+in order. Each entry has a `sequence`, which is drawn from the same per-operation counter as its
+events (§6). Rules:
+
+- **J1** The first checkpoint is `planned` for a transaction and `applying` for a legacy record.
+- **J2** A transaction binds `plan_digest`. A legacy record's `plan_digest` is null.
+  `generation` is never below the number of checkpoints.
+- **J3** A repeated state is allowed only as mutation progress: the same `applying`, `checking` or
+  `recovering` with a `step` (`^[a-z][a-z0-9_]{0,63}$`). The other exception is a closing
+  refusal (J6). Otherwise each step follows the table.
+- **J4** `verified → applying` skips the recovery point. Only an `install`, which has nothing to
+  recover, may take it.
+- **J5** `interrupted` and `recovery_required` records carry a `cause`, and no other record does.
+  The causes are:
+  - `interrupted`: an INT/TERM trap ran.
+  - `abandoned`: the next lock holder found the operation unfinished and its process gone.
+  - `apply_failed`, `check_failed`, `recovery_failed`.
+
+  `interrupted` takes `interrupted` or `abandoned`. `recovery_required` takes `interrupted`,
+  `apply_failed`, `check_failed` or `recovery_failed`.
+- **J6** `outcome` closes an operation. It appears only on the last record, and nothing follows
+  it.
+  - `committed` and `recovered` are exactly the records in those states.
+  - `refused` closes a failure before mutation. It is written on a record that repeats the last
+    pre-mutation state. No new state is added.
+  - `interrupted` closes an `interrupted` record whose checkpoint is before mutation.
+- **J7** An `interrupted` record names in `checkpoint` the state of the record before it: the last
+  durable checkpoint, which it preserves.
+- **J8** Errors:
+  - Refused, `recovered` and `recovery_required` records carry an `error`. An `interrupted`
+    record may carry one. No other record does.
+  - Codes follow §5. `recovery_required` uses `INTERRUPTED` exactly when its cause is
+    `interrupted`.
+- **J9** Sequences increase. Once a `recovery_saved` record exists, `recovery` references the
+  point.
+
+**Finished** means the last record has an `outcome`. An unfinished record is one of these:
+
+- an operation in progress;
+- `recovery_required`;
+- an `interrupted` record whose last durable checkpoint is a mutation state.
+
+Unfinished records await reconciliation by `recover` (sub-plan 06).
+
+What happens on interruption:
+
+- INT or TERM before the first mutation checkpoint records `interrupted`, closed with outcome
+  `interrupted`, and exits 130.
+- INT or TERM after it records `recovery_required` with cause `interrupted`, and exits 130.
+- A killed process runs no trap. History reports its unfinished record as `interrupted`, and the
+  next lock holder persists that with cause `abandoned`. The record keeps the last durable
+  checkpoint.
+
+In sub-plan 03, only an unfinished `transaction` blocks a new `begin` (exit 9). An unfinished
+legacy record is reported, and the next `begin` names it as a warning, but it does not block.
+
+## 5. Exit codes
+
+<!-- lifecycle-exit-codes:begin -->
+| Code | Name | Meaning |
+| --- | --- | --- |
+| 0 | OK | success, or no change |
+| 2 | USAGE | invalid usage |
+| 3 | UNSUPPORTED | unsupported platform, mode, compatibility or document version |
+| 4 | NETWORK | network failure |
+| 5 | TRUST | trust verification failed |
+| 6 | PERMISSION | permission denied |
+| 7 | PREFLIGHT | backup or preflight failed |
+| 8 | RECOVERED | activation failed but was recovered |
+| 9 | MANUAL | recovery failed or needs manual intervention; an unfinished transaction blocks |
+| 10 | LOCKED | another lifecycle operation holds the host lock |
+| 130 | INTERRUPTED | interrupted |
+<!-- lifecycle-exit-codes:end -->
+
+These are the CLI's own decisions (`packages/cli/src/exit-codes.js`). Forwarded native management
+commands (passthrough) keep their own exit codes and output unchanged. No lifecycle code ever
+replaces a child's status. A result's exit code is that of its `error.code`, or 0 without an
+error (`exitCodeFor`).
+
+## 6. Events
+
+An event is one JSON object on one line, at most 4096 bytes before its `\n`. The envelope
+is `schema_version`, `operation_id`, `sequence`, `at`, `source` (`coordinator` or `native`) and
+`type`. The per-type members are listed in the schema's `x-fields`:
+
+| `type` | Members | Meaning |
+| --- | --- | --- |
+| `phase` | `phase`, `status`, optional `duration_ms` (completed or failed only) | a phase started, completed, failed or was skipped |
+| `progress` | `phase`, `done`, `total` (null when unknown; otherwise `done ≤ total`), `unit` (`bytes`, `steps`) | measured units only, never a fabricated percentage |
+| `checkpoint` | `state`, `generation` | emitted by the native side only, after the journal write is durable |
+| `diagnostic` | `level`, `message`, optional `code` | a redacted diagnostic that would otherwise be unframed stderr |
+
+The phases are `preflight`, `resolve`, `download`, `verify`, `stage`, `backup`, `stop`, `apply`,
+`migrate`, `start`, `health`, `commit`, `recover`, `remove` and `cleanup`.
+
+Rules:
+
+- **E1** Members not listed for the type are refused.
+- **E2** Native events, and every `checkpoint`, name their operation. Coordinator events before
+  an operation exists (planning) carry `operation_id: null`.
+- **E3** `sequence` strictly increases per (`source`, `operation_id`). A consumer drops an event
+  that does not. The native sequence is allocated under the lock from a counter in the
+  operation's private directory. After a restart it continues above the journal's durable
+  sequence, so nested native processes share one sequence.
+- **E4** An event never authorizes, changes or proves state, including an out-of-order or invalid
+  one. Only the journal is authoritative. No later plan may treat a progress event as mutation
+  authority.
+
+**Native event descriptor.**
+
+- The native helper writes events only to the inherited descriptor named by
+  `CB_LIFECYCLE_EVENT_FD`, after validating it. It never writes them to its stdout or stderr.
+- Without that descriptor it emits no events, and standalone shell keeps its own renderer.
+- The coordinator reads the descriptor in bounded chunks and reassembles lines across partial
+  reads. It validates every line and refuses any over the bound.
+- The descriptor travels with the lock handoff (`CB_LIFECYCLE_LOCK_FD`, `CB_LIFECYCLE_OPERATION`).
+  A claim in the environment alone grants nothing.
+
+## 7. Results and output streams
+
+`--json` prints exactly one result object on stdout, followed by `\n`. Nothing else goes to
+stdout. What each outcome carries:
+
+| `outcome` | `plan` | `error` (code) | operation members | plan members | `operations` |
+| --- | --- | --- | --- | --- | --- |
+| `verified` | `true` | — | optional, `operation_id` null | required | — |
+| `refused` | `true` or absent | required (not `RECOVERED`/`INTERRUPTED`) | required unless a plan or history | — | — |
+| `available` | absent | — | required, `operation_id` null, `target_version` set | — | — |
+| `no_change` | absent | — | required | — | — |
+| `committed` | absent | — | required, `operation_id` set | — | — |
+| `recovered` | absent | `RECOVERED` | required, `operation_id` set | — | — |
+| `recovery_required` | absent | `MANUAL` or `INTERRUPTED` | required, `operation_id` set | — | — |
+| `interrupted` | absent | `INTERRUPTED` | required | — | — |
+| `listed` | absent | — | — | — | required |
+
+The column groups:
+
+- **Operation members**: `operation_id`, `current_version` (the version running when the result
+  is written), `target_version` (the version attempted) and `recovery_available`.
+- **Plan members**: `target`, `bundle`, `trust`, `archive` and `server`, exactly as the landed
+  `install --plan --json` writes them, unchanged.
+
+`history` results are `listed` or `refused` and carry no operation members. `operation_id` is
+null for read-only commands: planning, checks and history create no root state.
+
+Rules:
+
+- **O1** `listed` belongs only to `history`.
+- **O2** `verified` is only a plan result, and a plan result is `verified` or `refused`.
+- **O3** The table's required, optional and forbidden members hold. `error` codes follow §5.
+
+Streams:
+
+- **`--json` alone**: stdout carries the one result. Diagnostics may still go to stderr as
+  today.
+- **`--events=jsonl`**: stderr carries only event lines, with no mixed text. Every diagnostic
+  becomes a redacted `diagnostic` event, including refusals, usage errors and unexpected errors.
+  Raw native output goes to the private log, and errors also go into the final result. With
+  `--json` as well, stdout still carries the one result.
+- **Neither**: human-readable output; this contract does not constrain it.
+
+## 8. The history index
+
+`/var/lib/circuitbreaker-lifecycle/history.json` is root-owned, 0644 and atomically replaced. It
+is the redacted summary that `history` reads without elevation. The state utility rewrites it
+after every acknowledged checkpoint and on `list`. Its shape is `$defs/history_index`:
+`schema_version` (1, versioned on its own), `generated_at` and `operations` (at most 512
+entries).
+
+Each entry is one of two forms:
+
+- **A summary**: `inspection_required: false`, `operation_id`, `kind`, `action`, `adapter`,
+  `state`, `outcome` (or null while unfinished), `checkpoint` (an interrupted record's last
+  durable checkpoint, or null), `started_at`, `updated_at`, `source_version`, `target_version`
+  and `recovery_available`.
+- **An inspection entry**: `inspection_required: true`, `record` (the journal file name, or
+  null) and `reason`. A corrupt or unsupported journal appears this way. It is never silently
+  dropped, rewritten or reported as a success.
+
+`history --json` prints a `listed` result whose `operations` are these entries. A malformed ID in
+the index is shown as needing inspection and is never used.
+
+The coordinator reads the index only after `checkTrustedFile` (owner uid 0) passes. The exit
+codes are:
+
+| Index state | Result |
+| --- | --- |
+| Missing root or index | empty history, exit 0 |
+| Untrusted or unreadable | exit 6 |
+| Unparsable | exit 9 |
+| Unknown `schema_version` | exit 3 |
+
+## 9. Authority, presentation and secrets
+
+- **Plans describe; they never authorize.** A plan or event a user writes, edits or replays
+  grants nothing. Under the lock, the native helper revalidates identity, staged bytes and
+  options, recomputes the plan digest from its own inputs, and requires the acknowledgments the
+  recomputed plan lists. A plan whose digest it cannot reproduce is refused before mutation.
+- **Presentation never reaches authority.** `presentation` is outside the digest. Events and
+  rendered text are never read back as state.
+- **Secrets are referenced, never carried.** No schema member holds a secret value. The build
+  test refuses property names that look like secrets. Secrets live in the recovery point's
+  protected storage, and plans and journals reference that point by
+  `{operation_id, manifest_digest}`. Logs, events, results and the history index carry no secret.

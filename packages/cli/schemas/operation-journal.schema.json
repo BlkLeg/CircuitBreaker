@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://circuitbreaker.local/schemas/operation-journal.schema.json",
+  "title": "CircuitBreakerOperationJournal",
+  "description": "One operation's root-owned journal, version 1, atomically replaced at each durable checkpoint. Authoritative lifecycle state; never contains secret values. x-lifecycle is the state machine; the rules that walk it: specs/install/lifecycle-contract.md.",
+  "x-max-bytes": 65536,
+  "x-lifecycle": {
+    "initial": { "transaction": "planned", "legacy": "applying" },
+    "pre_mutation": ["planned", "staged", "verified", "recovery_saved"],
+    "progress_states": ["applying", "checking", "recovering"],
+    "causes": {
+      "interrupted": ["interrupted", "abandoned"],
+      "recovery_required": ["interrupted", "apply_failed", "check_failed", "recovery_failed"]
+    },
+    "transitions": {
+      "transaction": {
+        "planned": ["staged", "interrupted"],
+        "staged": ["verified", "interrupted"],
+        "verified": ["recovery_saved", "applying", "interrupted"],
+        "recovery_saved": ["applying", "interrupted"],
+        "applying": ["checking", "recovering", "recovery_required", "interrupted"],
+        "checking": ["committed", "recovering", "recovery_required", "interrupted"],
+        "committed": [],
+        "recovering": ["recovered", "recovery_required", "interrupted"],
+        "recovered": [],
+        "recovery_required": ["recovering"],
+        "interrupted": ["recovering", "recovery_required"]
+      },
+      "legacy": {
+        "applying": ["committed", "recovery_required", "interrupted"]
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "operation_id", "kind", "action", "adapter", "generation", "plan_digest", "identity_digest", "source", "target", "recovery", "evidence", "started_at", "updated_at", "checkpoints"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "operation_id": { "$ref": "#/$defs/operation_id" },
+    "kind": { "$ref": "#/$defs/kind" },
+    "action": { "$ref": "#/$defs/journal_action" },
+    "adapter": { "$ref": "#/$defs/adapter" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "plan_digest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "identity_digest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
+    "source": { "$ref": "#/$defs/release" },
+    "target": { "$ref": "#/$defs/release" },
+    "recovery": { "$ref": "#/$defs/recovery_ref" },
+    "evidence": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check", "result", "detail"],
+        "properties": {
+          "check": { "enum": ["signature", "provenance", "digest", "archive", "compatibility", "recovery_point", "health", "version", "schema", "identity"] },
+          "result": { "enum": ["passed", "failed", "skipped"] },
+          "detail": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/text" }] }
+        }
+      }
+    },
+    "started_at": { "$ref": "#/$defs/timestamp" },
+    "updated_at": { "$ref": "#/$defs/timestamp" },
+    "checkpoints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "state", "at"],
+        "properties": {
+          "sequence": { "type": "integer", "minimum": 1 },
+          "state": { "$ref": "#/$defs/state" },
+          "at": { "$ref": "#/$defs/timestamp" },
+          "step": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "cause": { "enum": ["interrupted", "abandoned", "apply_failed", "check_failed", "recovery_failed"] },
+          "checkpoint": { "$ref": "#/$defs/state" },
+          "outcome": { "enum": ["committed", "recovered", "refused", "interrupted"] },
+          "error": { "$ref": "#/$defs/error" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "adapter": { "enum": ["native", "mono", "package", "proxmox"] },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "reason"],
+      "properties": {
+        "code": { "$ref": "#/$defs/exit_name" },
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    },
+    "exit_name": { "enum": ["USAGE", "UNSUPPORTED", "NETWORK", "TRUST", "PERMISSION", "PREFLIGHT", "RECOVERED", "MANUAL", "LOCKED", "INTERRUPTED"] },
+    "journal_action": {
+      "enum": ["install", "update", "downgrade", "rollback", "recover", "uninstall", "restore", "migrate", "backup", "vault_recover", "restart"]
+    },
+    "kind": { "enum": ["transaction", "legacy"] },
+    "operation_id": { "type": "string", "pattern": "^op-[0-9]{8}-[0-9]{3,9}$", "format": "cb-operation-id" },
+    "recovery_ref": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["operation_id", "manifest_digest"],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/operation_id" },
+        "manifest_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "release": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["version", "artifact_digest"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "artifact_digest": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] }
+      }
+    },
+    "state": {
+      "enum": ["planned", "staged", "verified", "recovery_saved", "applying", "checking", "committed", "recovering", "recovered", "recovery_required", "interrupted"]
+    },
+    "text": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*$",
+      "x-reason": "contains a control character other than tab or newline",
+      "not": {
+        "description": "looks like a credential (a URL password, private key, bearer token or secret assignment); redact it",
+        "anyOf": [
+          { "pattern": "[A-Za-z][A-Za-z0-9+.-]*://[^/?#@ \\x00-\\x1f]*:[^/?#@ \\x00-\\x1f]*@" },
+          { "pattern": "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----" },
+          { "pattern": "(?:Bearer|bearer|BEARER) [A-Za-z0-9._~+/=-]{8,}" },
+          { "pattern": "(?:[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Ss]ecret|SECRET|[Tt]oken|TOKEN|[Aa]pi_?[Kk]ey|API_?KEY|[Vv]ault_[Kk]ey|VAULT_KEY)[ ]?[=:][ ]?[^ \\x00-\\x1f]" }
+        ]
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$",
+      "format": "cb-utc-timestamp"
+    },
+    "version": { "type": "string", "maxLength": 64, "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" }
+  }
+}

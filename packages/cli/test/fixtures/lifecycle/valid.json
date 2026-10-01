@@ -1,0 +1,1202 @@
+{
+ "plan": [
+  {
+   "name": "update with a new recovery point",
+   "document": {
+    "schema_version": 1,
+    "action": "update",
+    "adapter": "native",
+    "source": {
+     "version": "0.4.6",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "schema_revision": "0040_rls_policies"
+    },
+    "target": {
+     "version": "0.4.7",
+     "arch": "amd64",
+     "channel": "stable",
+     "artifact": {
+      "name": "circuit-breaker_0.4.7_linux_amd64.tar.gz",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+     },
+     "schema_revision": "a1b2c3d4e5f6"
+    },
+    "compatibility": {
+     "management": "certified",
+     "schema": "forward",
+     "transition_digest": null
+    },
+    "options": {
+     "port": 8443,
+     "fqdn": "cb.home.arpa",
+     "cert_type": "self-signed",
+     "email": null,
+     "data_dir": "/var/lib/circuitbreaker",
+     "tls": true,
+     "docker": false,
+     "airgap": false
+    },
+    "downtime": "outage",
+    "recovery": {
+     "mode": "new_point",
+     "ref": null
+    },
+    "data": {
+     "effect": "migrated",
+     "restore_point_at": null,
+     "scope_digest": null
+    },
+    "trust": {
+     "signature": {
+      "key_id": "0123456789abcdef"
+     },
+     "provenance": "verified"
+    },
+    "acknowledgments": [
+     "confirm"
+    ]
+   }
+  },
+  {
+   "name": "fresh air-gapped install with presentation",
+   "document": {
+    "schema_version": 1,
+    "action": "install",
+    "adapter": "native",
+    "source": null,
+    "target": {
+     "version": "0.4.7",
+     "arch": "arm64",
+     "channel": null,
+     "artifact": {
+      "name": "circuit-breaker_0.4.7_linux_arm64.tar.gz",
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+     },
+     "schema_revision": null
+    },
+    "compatibility": {
+     "management": "not_applicable",
+     "schema": "none",
+     "transition_digest": null
+    },
+    "options": {
+     "port": null,
+     "fqdn": null,
+     "cert_type": "letsencrypt",
+     "email": "ops@example.org",
+     "data_dir": "/srv/données/cb \"quoted\" \\ dir",
+     "tls": true,
+     "docker": false,
+     "airgap": true
+    },
+    "downtime": "none",
+    "recovery": {
+     "mode": "none",
+     "ref": null
+    },
+    "data": {
+     "effect": "none",
+     "restore_point_at": null,
+     "scope_digest": null
+    },
+    "trust": {
+     "signature": {
+      "unsigned": "pinned"
+     },
+     "provenance": "skipped-airgap"
+    },
+    "acknowledgments": [
+     "confirm"
+    ],
+    "presentation": {
+     "summary": "Fresh install of 0.4.7 ✓",
+     "lines": [
+      "Target  v0.4.7 (linux arm64)",
+      "Data    none yet"
+     ]
+    }
+   }
+  },
+  {
+   "name": "incompatible downgrade restoring a point",
+   "document": {
+    "schema_version": 1,
+    "action": "downgrade",
+    "adapter": "native",
+    "source": {
+     "version": "0.4.8",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": null,
+     "schema_revision": "0041_example"
+    },
+    "target": {
+     "version": "0.4.7",
+     "arch": "amd64",
+     "channel": null,
+     "artifact": {
+      "name": "circuit-breaker_0.4.7_linux_amd64.tar.gz",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+     },
+     "schema_revision": "0040_rls_policies"
+    },
+    "compatibility": {
+     "management": "certified",
+     "schema": "incompatible",
+     "transition_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "options": null,
+    "downtime": "outage",
+    "recovery": {
+     "mode": "existing_point",
+     "ref": {
+      "operation_id": "op-20260930-001",
+      "manifest_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+     }
+    },
+    "data": {
+     "effect": "restored",
+     "restore_point_at": "2026-09-30T12:00:00Z",
+     "scope_digest": null
+    },
+    "trust": {
+     "signature": {
+      "unsigned": "explicit-older"
+     },
+     "provenance": "not-applicable"
+    },
+    "acknowledgments": [
+     "confirm",
+     "restore_data"
+    ]
+   }
+  },
+  {
+   "name": "uninstall with purge",
+   "document": {
+    "schema_version": 1,
+    "action": "uninstall",
+    "adapter": "native",
+    "source": {
+     "version": "0.4.7",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+     "schema_revision": null
+    },
+    "target": null,
+    "compatibility": {
+     "management": "certified",
+     "schema": "none",
+     "transition_digest": null
+    },
+    "options": null,
+    "downtime": "outage",
+    "recovery": {
+     "mode": "new_point",
+     "ref": null
+    },
+    "data": {
+     "effect": "removed",
+     "restore_point_at": null,
+     "scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "trust": null,
+    "acknowledgments": [
+     "confirm",
+     "purge"
+    ]
+   }
+  },
+  {
+   "name": "mono rollback",
+   "document": {
+    "schema_version": 1,
+    "action": "rollback",
+    "adapter": "mono",
+    "source": {
+     "version": "0.4.8",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": null,
+     "schema_revision": null
+    },
+    "target": {
+     "version": "0.4.7",
+     "arch": "amd64",
+     "channel": null,
+     "artifact": {
+      "name": "ghcr.io/blkleg/circuitbreaker:v0.4.7",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+     },
+     "schema_revision": null
+    },
+    "compatibility": {
+     "management": "certified",
+     "schema": "compatible",
+     "transition_digest": null
+    },
+    "options": null,
+    "downtime": "restart",
+    "recovery": {
+     "mode": "existing_point",
+     "ref": {
+      "operation_id": "op-20261001-1234",
+      "manifest_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+     }
+    },
+    "data": {
+     "effect": "retained",
+     "restore_point_at": null,
+     "scope_digest": null
+    },
+    "trust": null,
+    "acknowledgments": [
+     "confirm"
+    ]
+   }
+  }
+ ],
+ "event": [
+  {
+   "name": "phase started",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "sequence": 1,
+    "at": "2026-09-30T12:00:00Z",
+    "source": "native",
+    "type": "phase",
+    "phase": "apply",
+    "status": "started"
+   }
+  },
+  {
+   "name": "phase completed with duration",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "sequence": 7,
+    "at": "2026-09-30T12:00:00Z",
+    "source": "native",
+    "type": "phase",
+    "phase": "backup",
+    "status": "completed",
+    "duration_ms": 4100
+   }
+  },
+  {
+   "name": "progress bytes",
+   "document": {
+    "schema_version": 1,
+    "operation_id": null,
+    "sequence": 1,
+    "at": "2026-09-30T12:00:00Z",
+    "source": "coordinator",
+    "type": "progress",
+    "phase": "download",
+    "done": 1024,
+    "total": 88080384,
+    "unit": "bytes"
+   }
+  },
+  {
+   "name": "progress unknown total",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "sequence": 1,
+    "at": "2026-09-30T12:00:00Z",
+    "source": "native",
+    "type": "progress",
+    "phase": "apply",
+    "done": 4,
+    "total": null,
+    "unit": "steps"
+   }
+  },
+  {
+   "name": "checkpoint",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "sequence": 6,
+    "at": "2026-09-30T12:00:00Z",
+    "source": "native",
+    "type": "checkpoint",
+    "state": "recovery_saved",
+    "generation": 5
+   }
+  },
+  {
+   "name": "coordinator diagnostic before an operation",
+   "document": {
+    "schema_version": 1,
+    "operation_id": null,
+    "sequence": 1,
+    "at": "2026-09-30T12:00:00Z",
+    "source": "coordinator",
+    "type": "diagnostic",
+    "level": "error",
+    "message": "usage: circuitbreaker install --plan\n  [--json]",
+    "code": "USAGE"
+   }
+  },
+  {
+   "name": "diagnostic warning without code",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "sequence": 1,
+    "at": "2026-09-30T12:00:00Z",
+    "source": "native",
+    "type": "diagnostic",
+    "level": "warning",
+    "message": "unfinished legacy operation op-20260929-002 (migrate) is still recorded"
+   }
+  }
+ ],
+ "result": [
+  {
+   "name": "landed install --plan verified",
+   "document": {
+    "schema_version": 1,
+    "action": "install",
+    "plan": true,
+    "outcome": "verified",
+    "target": {
+     "version": "0.4.7",
+     "channel": null,
+     "arch": "amd64",
+     "explicit_version": true
+    },
+    "bundle": {
+     "name": "circuit-breaker_0.4.7_linux_amd64.tar.gz",
+     "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+     "path": "/home/op/.cache/circuitbreaker/staging/0.4.7-amd64/circuit-breaker_0.4.7_linux_amd64.tar.gz"
+    },
+    "trust": {
+     "signature": {
+      "key_id": "0123456789abcdef"
+     },
+     "provenance": "verified"
+    },
+    "archive": {
+     "entries": 1,
+     "total_bytes": 10
+    },
+    "server": null
+   }
+  },
+  {
+   "name": "landed install --plan verified on an existing host",
+   "document": {
+    "schema_version": 1,
+    "action": "install",
+    "plan": true,
+    "outcome": "verified",
+    "target": {
+     "version": null,
+     "channel": null,
+     "arch": null,
+     "explicit_version": false
+    },
+    "bundle": {
+     "name": "cb.tar.gz",
+     "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+     "path": "/srv/bundles/cb.tar.gz"
+    },
+    "trust": {
+     "signature": {
+      "unsigned": "explicit-older"
+     },
+     "provenance": "not-applicable"
+    },
+    "archive": {
+     "entries": 3,
+     "total_bytes": 300
+    },
+    "server": {
+     "version": "0.4.6",
+     "mode": "native"
+    }
+   }
+  },
+  {
+   "name": "landed install --plan refusal with usage text",
+   "document": {
+    "schema_version": 1,
+    "action": "install",
+    "plan": true,
+    "outcome": "refused",
+    "error": {
+     "code": "USAGE",
+     "reason": "Unknown option '--bogus'\nusage: circuitbreaker install --plan [--json]"
+    }
+   }
+  },
+  {
+   "name": "committed update",
+   "document": {
+    "schema_version": 1,
+    "action": "update",
+    "outcome": "committed",
+    "operation_id": "op-20260930-001",
+    "current_version": "0.4.7",
+    "target_version": "0.4.7",
+    "recovery_available": true
+   }
+  },
+  {
+   "name": "no change",
+   "document": {
+    "schema_version": 1,
+    "action": "update",
+    "outcome": "no_change",
+    "operation_id": null,
+    "current_version": "0.4.7",
+    "target_version": "0.4.7",
+    "recovery_available": false
+   }
+  },
+  {
+   "name": "update available",
+   "document": {
+    "schema_version": 1,
+    "action": "update",
+    "outcome": "available",
+    "operation_id": null,
+    "current_version": "0.4.6",
+    "target_version": "0.4.7",
+    "recovery_available": false
+   }
+  },
+  {
+   "name": "lock busy refusal",
+   "document": {
+    "schema_version": 1,
+    "action": "update",
+    "outcome": "refused",
+    "operation_id": null,
+    "current_version": "0.4.6",
+    "target_version": "0.4.7",
+    "recovery_available": false,
+    "error": {
+     "code": "LOCKED",
+     "reason": "another lifecycle operation holds the host lock (op-20260930-001, pid 4242)"
+    }
+   }
+  },
+  {
+   "name": "recovered",
+   "document": {
+    "schema_version": 1,
+    "action": "update",
+    "outcome": "recovered",
+    "operation_id": "op-20260930-001",
+    "current_version": "0.4.6",
+    "target_version": "0.4.7",
+    "recovery_available": true,
+    "error": {
+     "code": "RECOVERED",
+     "reason": "health check failed; 0.4.6 restored"
+    }
+   }
+  },
+  {
+   "name": "recovery required after interrupt",
+   "document": {
+    "schema_version": 1,
+    "action": "update",
+    "outcome": "recovery_required",
+    "operation_id": "op-20260930-001",
+    "current_version": null,
+    "target_version": "0.4.7",
+    "recovery_available": true,
+    "error": {
+     "code": "INTERRUPTED",
+     "reason": "interrupted after mutation; run circuitbreaker recover --operation op-20260930-001"
+    }
+   }
+  },
+  {
+   "name": "interrupted before begin",
+   "document": {
+    "schema_version": 1,
+    "action": "install",
+    "outcome": "interrupted",
+    "operation_id": null,
+    "current_version": null,
+    "target_version": "0.4.7",
+    "recovery_available": false,
+    "error": {
+     "code": "INTERRUPTED",
+     "reason": "interrupted while downloading"
+    }
+   }
+  },
+  {
+   "name": "history listing",
+   "document": {
+    "schema_version": 1,
+    "action": "history",
+    "outcome": "listed",
+    "operations": [
+     {
+      "inspection_required": false,
+      "operation_id": "op-20260930-001",
+      "kind": "transaction",
+      "action": "update",
+      "adapter": "native",
+      "state": "committed",
+      "outcome": "committed",
+      "checkpoint": null,
+      "started_at": "2026-09-30T12:00:00Z",
+      "updated_at": "2026-09-30T12:12:00Z",
+      "source_version": "0.4.6",
+      "target_version": "0.4.7",
+      "recovery_available": true
+     },
+     {
+      "inspection_required": true,
+      "record": "op-2026-bad.json",
+      "reason": "unparsable journal (unexpected end of JSON input)"
+     }
+    ]
+   }
+  },
+  {
+   "name": "history refusal",
+   "document": {
+    "schema_version": 1,
+    "action": "history",
+    "outcome": "refused",
+    "error": {
+     "code": "PERMISSION",
+     "reason": "/var/lib/circuitbreaker-lifecycle/history.json is not owned by root"
+    }
+   }
+  }
+ ],
+ "journal": [
+  {
+   "name": "committed update",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "update",
+    "adapter": "native",
+    "generation": 9,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": {
+     "version": "0.4.6",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": {
+     "operation_id": "op-20260930-001",
+     "manifest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "evidence": [
+     {
+      "check": "signature",
+      "result": "passed",
+      "detail": "key 0123456789abcdef"
+     },
+     {
+      "check": "provenance",
+      "result": "passed",
+      "detail": null
+     },
+     {
+      "check": "health",
+      "result": "passed",
+      "detail": null
+     }
+    ],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 5,
+      "state": "verified",
+      "at": "2026-09-30T12:05:00.123Z"
+     },
+     {
+      "sequence": 6,
+      "state": "recovery_saved",
+      "at": "2026-09-30T12:06:00.123Z"
+     },
+     {
+      "sequence": 7,
+      "state": "applying",
+      "at": "2026-09-30T12:07:00.123Z"
+     },
+     {
+      "sequence": 8,
+      "state": "applying",
+      "at": "2026-09-30T12:08:00.123Z",
+      "step": "units_stopped"
+     },
+     {
+      "sequence": 11,
+      "state": "checking",
+      "at": "2026-09-30T12:11:00.123Z"
+     },
+     {
+      "sequence": 12,
+      "state": "committed",
+      "at": "2026-09-30T12:12:00.123Z",
+      "outcome": "committed"
+     }
+    ]
+   }
+  },
+  {
+   "name": "refused before mutation",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "update",
+    "adapter": "native",
+    "generation": 4,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": {
+     "version": "0.4.6",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": null,
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "staged",
+      "at": "2026-09-30T12:03:00.123Z",
+      "outcome": "refused",
+      "error": {
+       "code": "TRUST",
+       "reason": "SHA256SUMS.sig does not verify"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "interrupted before mutation",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "update",
+    "adapter": "native",
+    "generation": 4,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": {
+     "version": "0.4.6",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": null,
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "interrupted",
+      "at": "2026-09-30T12:03:00.123Z",
+      "cause": "interrupted",
+      "checkpoint": "staged",
+      "outcome": "interrupted"
+     }
+    ]
+   }
+  },
+  {
+   "name": "killed during apply, still unfinished",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "update",
+    "adapter": "native",
+    "generation": 7,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": {
+     "version": "0.4.6",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": {
+     "operation_id": "op-20260930-001",
+     "manifest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "verified",
+      "at": "2026-09-30T12:03:00.123Z"
+     },
+     {
+      "sequence": 4,
+      "state": "recovery_saved",
+      "at": "2026-09-30T12:04:00.123Z"
+     },
+     {
+      "sequence": 5,
+      "state": "applying",
+      "at": "2026-09-30T12:05:00.123Z"
+     },
+     {
+      "sequence": 9,
+      "state": "interrupted",
+      "at": "2026-09-30T12:09:00.123Z",
+      "cause": "abandoned",
+      "checkpoint": "applying"
+     }
+    ]
+   }
+  },
+  {
+   "name": "recovered",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "update",
+    "adapter": "native",
+    "generation": 9,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": {
+     "version": "0.4.6",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": {
+     "operation_id": "op-20260930-001",
+     "manifest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "verified",
+      "at": "2026-09-30T12:03:00.123Z"
+     },
+     {
+      "sequence": 4,
+      "state": "recovery_saved",
+      "at": "2026-09-30T12:04:00.123Z"
+     },
+     {
+      "sequence": 5,
+      "state": "applying",
+      "at": "2026-09-30T12:05:00.123Z"
+     },
+     {
+      "sequence": 6,
+      "state": "checking",
+      "at": "2026-09-30T12:06:00.123Z"
+     },
+     {
+      "sequence": 7,
+      "state": "recovering",
+      "at": "2026-09-30T12:07:00.123Z"
+     },
+     {
+      "sequence": 8,
+      "state": "recovered",
+      "at": "2026-09-30T12:08:00.123Z",
+      "outcome": "recovered",
+      "error": {
+       "code": "RECOVERED",
+       "reason": "health check failed after 120s; 0.4.6 restored and healthy"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "recovery required after Ctrl-C",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "update",
+    "adapter": "native",
+    "generation": 7,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": {
+     "version": "0.4.6",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": {
+     "operation_id": "op-20260930-001",
+     "manifest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "verified",
+      "at": "2026-09-30T12:03:00.123Z"
+     },
+     {
+      "sequence": 4,
+      "state": "recovery_saved",
+      "at": "2026-09-30T12:04:00.123Z"
+     },
+     {
+      "sequence": 5,
+      "state": "applying",
+      "at": "2026-09-30T12:05:00.123Z"
+     },
+     {
+      "sequence": 6,
+      "state": "recovery_required",
+      "at": "2026-09-30T12:06:00.123Z",
+      "cause": "interrupted",
+      "error": {
+       "code": "INTERRUPTED",
+       "reason": "interrupted by SIGINT after the release was replaced"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "fresh install skips the recovery point",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "install",
+    "adapter": "native",
+    "generation": 7,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": null,
+    "source": null,
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": null,
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "verified",
+      "at": "2026-09-30T12:03:00.123Z"
+     },
+     {
+      "sequence": 4,
+      "state": "applying",
+      "at": "2026-09-30T12:04:00.123Z"
+     },
+     {
+      "sequence": 5,
+      "state": "checking",
+      "at": "2026-09-30T12:05:00.123Z"
+     },
+     {
+      "sequence": 6,
+      "state": "committed",
+      "at": "2026-09-30T12:06:00.123Z",
+      "outcome": "committed"
+     }
+    ]
+   }
+  },
+  {
+   "name": "legacy restore",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "legacy",
+    "action": "restore",
+    "adapter": "native",
+    "generation": 3,
+    "plan_digest": null,
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": null,
+    "target": null,
+    "recovery": null,
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "applying",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "committed",
+      "at": "2026-09-30T12:02:00.123Z",
+      "outcome": "committed"
+     }
+    ]
+   }
+  },
+  {
+   "name": "legacy migrate failure",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "legacy",
+    "action": "migrate",
+    "adapter": "native",
+    "generation": 3,
+    "plan_digest": null,
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": null,
+    "target": null,
+    "recovery": null,
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "applying",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "recovery_required",
+      "at": "2026-09-30T12:03:00.123Z",
+      "cause": "apply_failed",
+      "error": {
+       "code": "MANUAL",
+       "reason": "alembic upgrade exited 1; see /var/log/circuitbreaker/install.log"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "reconciled after a kill",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-20260930-001",
+    "kind": "transaction",
+    "action": "update",
+    "adapter": "native",
+    "generation": 9,
+    "plan_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identity_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source": {
+     "version": "0.4.6",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "target": {
+     "version": "0.4.7",
+     "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "recovery": {
+     "operation_id": "op-20260930-001",
+     "manifest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "evidence": [],
+    "started_at": "2026-09-30T12:00:00Z",
+    "updated_at": "2026-09-30T12:59:00Z",
+    "checkpoints": [
+     {
+      "sequence": 1,
+      "state": "planned",
+      "at": "2026-09-30T12:01:00.123Z"
+     },
+     {
+      "sequence": 2,
+      "state": "staged",
+      "at": "2026-09-30T12:02:00.123Z"
+     },
+     {
+      "sequence": 3,
+      "state": "verified",
+      "at": "2026-09-30T12:03:00.123Z"
+     },
+     {
+      "sequence": 4,
+      "state": "recovery_saved",
+      "at": "2026-09-30T12:04:00.123Z"
+     },
+     {
+      "sequence": 5,
+      "state": "applying",
+      "at": "2026-09-30T12:05:00.123Z"
+     },
+     {
+      "sequence": 6,
+      "state": "interrupted",
+      "at": "2026-09-30T12:06:00.123Z",
+      "cause": "abandoned",
+      "checkpoint": "applying"
+     },
+     {
+      "sequence": 7,
+      "state": "recovering",
+      "at": "2026-09-30T12:07:00.123Z"
+     },
+     {
+      "sequence": 8,
+      "state": "recovered",
+      "at": "2026-09-30T12:08:00.123Z",
+      "outcome": "recovered",
+      "error": {
+       "code": "RECOVERED",
+       "reason": "reconciled: 0.4.6 restored from op-20260930-001"
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "history": [
+  {
+   "name": "empty index",
+   "document": {
+    "schema_version": 1,
+    "generated_at": "2026-09-30T12:00:00Z",
+    "operations": []
+   }
+  },
+  {
+   "name": "index with an unfinished legacy record",
+   "document": {
+    "schema_version": 1,
+    "generated_at": "2026-09-30T12:00:00Z",
+    "operations": [
+     {
+      "inspection_required": false,
+      "operation_id": "op-20260930-002",
+      "kind": "legacy",
+      "action": "migrate",
+      "adapter": "native",
+      "state": "interrupted",
+      "outcome": null,
+      "checkpoint": "applying",
+      "started_at": "2026-09-30T12:00:00Z",
+      "updated_at": "2026-09-30T12:00:00Z",
+      "source_version": null,
+      "target_version": null,
+      "recovery_available": false
+     },
+     {
+      "inspection_required": true,
+      "record": null,
+      "reason": "unsupported journal schema_version 2"
+     }
+    ]
+   }
+  }
+ ]
+}

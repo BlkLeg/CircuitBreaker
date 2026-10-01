@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://circuitbreaker.local/schemas/lifecycle-result.schema.json",
+  "title": "CircuitBreakerLifecycleResult",
+  "description": "The one final --json result of a lifecycle command, version 1, including install --plan's existing output unchanged. Which members each outcome carries: specs/install/lifecycle-contract.md. $defs/history_index is the derived history.json index, versioned on its own.",
+  "x-max-bytes": 262144,
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "action", "outcome"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "action": { "enum": ["install", "update", "downgrade", "rollback", "recover", "uninstall", "history"] },
+    "plan": { "const": true },
+    "outcome": { "enum": ["verified", "refused", "available", "no_change", "committed", "recovered", "recovery_required", "interrupted", "listed"] },
+    "operation_id": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/operation_id" }] },
+    "current_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/version" }] },
+    "target_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/version" }] },
+    "recovery_available": { "type": "boolean" },
+    "error": { "$ref": "#/$defs/error" },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "channel", "arch", "explicit_version"],
+      "properties": {
+        "version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/version" }] },
+        "channel": { "enum": ["stable", "candidate", null] },
+        "arch": { "enum": ["amd64", "arm64", null] },
+        "explicit_version": { "type": "boolean" }
+      }
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "sha256", "path"],
+      "properties": {
+        "name": { "$ref": "#/$defs/file_name" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "path": { "$ref": "#/$defs/path" }
+      }
+    },
+    "trust": { "$ref": "#/$defs/trust" },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entries", "total_bytes"],
+      "properties": {
+        "entries": { "type": "integer", "minimum": 0 },
+        "total_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "server": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["version", "mode"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[^\\x00-\\x1f\\x7f]*$" },
+        "mode": { "$ref": "#/$defs/adapter" }
+      }
+    },
+    "operations": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/history_entry" } }
+  },
+  "$defs": {
+    "adapter": { "enum": ["native", "mono", "package", "proxmox"] },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "reason"],
+      "properties": {
+        "code": { "$ref": "#/$defs/exit_name" },
+        "reason": { "$ref": "#/$defs/text" }
+      }
+    },
+    "exit_name": { "enum": ["USAGE", "UNSUPPORTED", "NETWORK", "TRUST", "PERMISSION", "PREFLIGHT", "RECOVERED", "MANUAL", "LOCKED", "INTERRUPTED"] },
+    "file_name": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[^/\\x00-\\x1f\\x7f]*$" },
+    "history_entry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inspection_required", "operation_id", "kind", "action", "adapter", "state", "outcome", "checkpoint", "started_at", "updated_at", "source_version", "target_version", "recovery_available"],
+          "properties": {
+            "inspection_required": { "const": false },
+            "operation_id": { "$ref": "#/$defs/operation_id" },
+            "kind": { "$ref": "#/$defs/kind" },
+            "action": { "$ref": "#/$defs/journal_action" },
+            "adapter": { "$ref": "#/$defs/adapter" },
+            "state": { "$ref": "#/$defs/state" },
+            "outcome": { "enum": ["committed", "recovered", "refused", "interrupted", null] },
+            "checkpoint": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/state" }] },
+            "started_at": { "$ref": "#/$defs/timestamp" },
+            "updated_at": { "$ref": "#/$defs/timestamp" },
+            "source_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/version" }] },
+            "target_version": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/version" }] },
+            "recovery_available": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inspection_required", "record", "reason"],
+          "properties": {
+            "inspection_required": { "const": true },
+            "record": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/file_name" }] },
+            "reason": { "$ref": "#/$defs/text" }
+          }
+        }
+      ]
+    },
+    "history_index": {
+      "x-max-bytes": 262144,
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "generated_at", "operations"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "generated_at": { "$ref": "#/$defs/timestamp" },
+        "operations": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/history_entry" } }
+      }
+    },
+    "journal_action": {
+      "enum": ["install", "update", "downgrade", "rollback", "recover", "uninstall", "restore", "migrate", "backup", "vault_recover", "restart"]
+    },
+    "kind": { "enum": ["transaction", "legacy"] },
+    "operation_id": { "type": "string", "pattern": "^op-[0-9]{8}-[0-9]{3,9}$", "format": "cb-operation-id" },
+    "path": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^/(?:(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f]+(?:/(?!\\.\\.?(?:/|$))[^/\\x00-\\x1f\\x7f]+)*)?$"
+    },
+    "state": {
+      "enum": ["planned", "staged", "verified", "recovery_saved", "applying", "checking", "committed", "recovering", "recovered", "recovery_required", "interrupted"]
+    },
+    "text": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*$",
+      "x-reason": "contains a control character other than tab or newline",
+      "not": {
+        "description": "looks like a credential (a URL password, private key, bearer token or secret assignment); redact it",
+        "anyOf": [
+          { "pattern": "[A-Za-z][A-Za-z0-9+.-]*://[^/?#@ \\x00-\\x1f]*:[^/?#@ \\x00-\\x1f]*@" },
+          { "pattern": "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----" },
+          { "pattern": "(?:Bearer|bearer|BEARER) [A-Za-z0-9._~+/=-]{8,}" },
+          { "pattern": "(?:[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Ss]ecret|SECRET|[Tt]oken|TOKEN|[Aa]pi_?[Kk]ey|API_?KEY|[Vv]ault_[Kk]ey|VAULT_KEY)[ ]?[=:][ ]?[^ \\x00-\\x1f]" }
+        ]
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$",
+      "format": "cb-utc-timestamp"
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signature", "provenance"],
+      "properties": {
+        "signature": {
+          "oneOf": [
+            { "type": "object", "additionalProperties": false, "required": ["key_id"], "properties": { "key_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" } } },
+            { "type": "object", "additionalProperties": false, "required": ["unsigned"], "properties": { "unsigned": { "enum": ["pinned", "explicit-older"] } } }
+          ]
+        },
+        "provenance": { "enum": ["verified", "skipped-airgap", "not-applicable"] }
+      }
+    },
+    "version": { "type": "string", "maxLength": 64, "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" }
+  }
+}

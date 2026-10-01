@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://circuitbreaker.local/schemas/lifecycle-event.schema.json",
+  "title": "CircuitBreakerLifecycleEvent",
+  "description": "One lifecycle event, version 1: one line of --events=jsonl or of the native event descriptor. Presentation only; an event never changes or authorizes state. x-fields lists the members each event type carries.",
+  "x-max-bytes": 4096,
+  "x-fields": {
+    "phase": { "required": ["phase", "status"], "optional": ["duration_ms"] },
+    "progress": { "required": ["phase", "done", "total", "unit"], "optional": [] },
+    "checkpoint": { "required": ["state", "generation"], "optional": [] },
+    "diagnostic": { "required": ["level", "message"], "optional": ["code"] }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "operation_id", "sequence", "at", "source", "type"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "operation_id": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/operation_id" }] },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "at": { "$ref": "#/$defs/timestamp" },
+    "source": { "enum": ["coordinator", "native"] },
+    "type": { "enum": ["phase", "progress", "checkpoint", "diagnostic"] },
+    "phase": {
+      "enum": ["preflight", "resolve", "download", "verify", "stage", "backup", "stop", "apply", "migrate", "start", "health", "commit", "recover", "remove", "cleanup"]
+    },
+    "status": { "enum": ["started", "completed", "failed", "skipped"] },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "done": { "type": "integer", "minimum": 0 },
+    "total": { "type": ["integer", "null"], "minimum": 0 },
+    "unit": { "enum": ["bytes", "steps"] },
+    "state": { "$ref": "#/$defs/state" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "level": { "enum": ["info", "warning", "error"] },
+    "message": { "$ref": "#/$defs/text" },
+    "code": { "$ref": "#/$defs/exit_name" }
+  },
+  "$defs": {
+    "exit_name": { "enum": ["USAGE", "UNSUPPORTED", "NETWORK", "TRUST", "PERMISSION", "PREFLIGHT", "RECOVERED", "MANUAL", "LOCKED", "INTERRUPTED"] },
+    "operation_id": { "type": "string", "pattern": "^op-[0-9]{8}-[0-9]{3,9}$", "format": "cb-operation-id" },
+    "state": {
+      "enum": ["planned", "staged", "verified", "recovery_saved", "applying", "checking", "committed", "recovering", "recovered", "recovery_required", "interrupted"]
+    },
+    "text": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[^\\x00-\\x08\\x0b-\\x1f\\x7f]*$",
+      "x-reason": "contains a control character other than tab or newline",
+      "not": {
+        "description": "looks like a credential (a URL password, private key, bearer token or secret assignment); redact it",
+        "anyOf": [
+          { "pattern": "[A-Za-z][A-Za-z0-9+.-]*://[^/?#@ \\x00-\\x1f]*:[^/?#@ \\x00-\\x1f]*@" },
+          { "pattern": "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----" },
+          { "pattern": "(?:Bearer|bearer|BEARER) [A-Za-z0-9._~+/=-]{8,}" },
+          { "pattern": "(?:[Pp]ass(?:word|wd)|PASS(?:WORD|WD)|[Ss]ecret|SECRET|[Tt]oken|TOKEN|[Aa]pi_?[Kk]ey|API_?KEY|[Vv]ault_[Kk]ey|VAULT_KEY)[ ]?[=:][ ]?[^ \\x00-\\x1f]" }
+        ]
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$",
+      "format": "cb-utc-timestamp"
+    }
+  }
+}
