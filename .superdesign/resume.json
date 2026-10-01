@@ -313,6 +313,311 @@
       "sourceTarget": "topology-map",
       "sourceDraftId": "d065afe9-56b1-4c40-b88e-ecb6dd755281",
       "updatedAt": "2026-09-30T00:00:52.910562+00:00"
+    },
+    "npm-cli-lifecycle": {
+      "targetKind": "new-ui",
+      "projectId": "6f07cdb8-a9ff-437e-9c3e-4ee8be947161",
+      "activeDraftId": "b765d472-5513-4d25-b6ce-67e3226149bd",
+      "designSystemPath": ".superdesign/cli-design-system.md",
+      "contextFiles": [
+        ".superdesign/cli-design-system.md",
+        "docs/design/2026-09-30-v0.4.7-npm-cli-design.md",
+        "install.sh:669:724",
+        ".superdesign/cli-preview-brief.md",
+        "deploy/cli/cb_resources.py:1150:1350",
+        ".superdesign/cli-uninstall-brief.md",
+        "uninstall.sh:16:99",
+        "uninstall.sh:575:713"
+      ],
+      "fingerprints": {
+        ".superdesign/cli-design-system.md": "6c48ebecac4e134d3e72979792bf0a6d22e37cc63ae8853874d506f9ee3c4f79",
+        "docs/design/2026-09-30-v0.4.7-npm-cli-design.md": "fbf526d8df54520dbb7890f43cb59890bbccf1a4bbc67dc567b72eae02f5fdaa",
+        "install.sh": "69363cc55526000b6beee3be24e21baa9f46d69b5fbf6971af7c368ae75ccc3e",
+        ".superdesign/cli-preview-brief.md": "66e6b4ef35be080c33b1fd99a82c2eeb915262d5207fae98516296516650ed92",
+        "deploy/cli/cb_resources.py": "f9527427128858270811f405de703cce753c88104ed557435f2e7d103f1b0e7a",
+        ".superdesign/cli-uninstall-brief.md": "0aa9204a58625b3005667ac361d8afcb05b068c36c7be569e25e5ed7a30efc37",
+        "uninstall.sh": "07d4f1efe4c6184a38465353a5ea7def4b5fc381c1798eac164974a9365155a7"
+      },
+      "components": [],
+      "drafts": {
+        "b765d472-5513-4d25-b6ce-67e3226149bd": {
+          "title": "Circuit Breaker CLI Update",
+          "visualDirection": "Existing ASCII identity with phase ledger and honest measured progress",
+          "currentVersion": 1
+        },
+        "acd390bf-7c54-49e5-9ff1-a8d10e71de81": {
+          "title": "Circuit Breaker Download Progress",
+          "visualDirection": "Measured orange character-cell download progress and purple active phase",
+          "parentDraftId": "b765d472-5513-4d25-b6ce-67e3226149bd",
+          "currentVersion": 2
+        },
+        "fcf8b81b-6fa2-419c-adf3-35242b317810": {
+          "title": "Circuit Breaker Resources Preview",
+          "visualDirection": "Compact resource watch with proportional capacity bars and scoped accounting",
+          "parentDraftId": "b765d472-5513-4d25-b6ce-67e3226149bd",
+          "currentVersion": 2
+        },
+        "42176764-36a8-4043-96be-76d32ac72f8e": {
+          "title": "Circuit Breaker CLI Uninstall",
+          "visualDirection": "Keep-data uninstall: plan, confirmation, removal ledger and final retained-data result",
+          "parentDraftId": "b765d472-5513-4d25-b6ce-67e3226149bd",
+          "currentVersion": 2
+        },
+        "724417d7-ee97-4bdc-af72-e4437734e091": {
+          "title": "Circuit Breaker CLI Purge Confirmation",
+          "visualDirection": "Explicit delete scope and typed pending confirmation",
+          "parentDraftId": "42176764-36a8-4043-96be-76d32ac72f8e",
+          "currentVersion": 2
+        },
+        "1ddc5c96-a43e-4ba7-98d0-fdeb7295a5af": {
+          "title": "Circuit Breaker \u2014 resources expanded",
+          "visualDirection": "All seven real worker roles, CPU ordered, proportional usage and scoped limits",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 2
+        },
+        "5ee98b78-bff7-422f-8666-616663c0bb00": {
+          "title": "Circuit Breaker \u2014 cb help overview",
+          "visualDirection": "Compact one-column command reference, grouped by operator task",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 1
+        },
+        "9e5fc28d-12ff-4d20-8598-60d0ca250dd4": {
+          "title": "Circuit Breaker \u2014 status",
+          "visualDirection": "App and shared service state with aligned active-since timestamps",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 2
+        },
+        "19ccb781-d3c5-435e-aff9-e3171c6a211e": {
+          "title": "Circuit Breaker \u2014 doctor",
+          "visualDirection": "Top-down evidence, low-storage failure and skipped authenticated diagnostics",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 1
+        },
+        "085c71d3-dc4e-46aa-9d04-dc9b0a4dd489": {
+          "title": "Circuit Breaker \u2014 logs",
+          "visualDirection": "Append-only aligned severity/component stream with multiline continuation",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 2
+        },
+        "fc381433-4441-452b-8959-e1f24b39dd8d": {
+          "title": "Circuit Breaker \u2014 backup",
+          "visualDirection": "Completed full-state backup phases with private snapshot and off-host encryption",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-09-30T21:19:09.306144+00:00"
+    },
+    "npm-cli-purge": {
+      "targetKind": "new-ui",
+      "projectId": "6f07cdb8-a9ff-437e-9c3e-4ee8be947161",
+      "activeDraftId": "724417d7-ee97-4bdc-af72-e4437734e091",
+      "sourceTarget": "npm-cli-lifecycle",
+      "sourceDraftId": "42176764-36a8-4043-96be-76d32ac72f8e",
+      "designSystemPath": ".superdesign/cli-design-system.md",
+      "contextFiles": [
+        ".superdesign/cli-design-system.md",
+        ".superdesign/cli-purge-workers-brief.md",
+        "install.sh:669:724",
+        "uninstall.sh:16:99"
+      ],
+      "fingerprints": {
+        ".superdesign/cli-design-system.md": "6c48ebecac4e134d3e72979792bf0a6d22e37cc63ae8853874d506f9ee3c4f79",
+        ".superdesign/cli-purge-workers-brief.md": "03897ea87eb1b6d83d41f611649e7b9585b6f411578a88be4447d453599bbbca",
+        "install.sh": "69363cc55526000b6beee3be24e21baa9f46d69b5fbf6971af7c368ae75ccc3e",
+        "uninstall.sh": "07d4f1efe4c6184a38465353a5ea7def4b5fc381c1798eac164974a9365155a7"
+      },
+      "components": [],
+      "drafts": {
+        "724417d7-ee97-4bdc-af72-e4437734e091": {
+          "title": "Circuit Breaker CLI Purge Confirmation",
+          "visualDirection": "Explicit delete scope and typed pending confirmation",
+          "parentDraftId": "42176764-36a8-4043-96be-76d32ac72f8e",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-09-30T20:59:42.173566+00:00"
+    },
+    "npm-cli-resources-expanded": {
+      "targetKind": "new-ui",
+      "projectId": "6f07cdb8-a9ff-437e-9c3e-4ee8be947161",
+      "activeDraftId": "1ddc5c96-a43e-4ba7-98d0-fdeb7295a5af",
+      "sourceTarget": "npm-cli-lifecycle",
+      "sourceDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+      "designSystemPath": ".superdesign/cli-design-system.md",
+      "contextFiles": [
+        ".superdesign/cli-design-system.md",
+        ".superdesign/cli-purge-workers-brief.md",
+        "deploy/cli/cb_resources.py:31:39",
+        "deploy/cli/cb_resources.py:1190:1350"
+      ],
+      "fingerprints": {
+        ".superdesign/cli-design-system.md": "6c48ebecac4e134d3e72979792bf0a6d22e37cc63ae8853874d506f9ee3c4f79",
+        ".superdesign/cli-purge-workers-brief.md": "03897ea87eb1b6d83d41f611649e7b9585b6f411578a88be4447d453599bbbca",
+        "deploy/cli/cb_resources.py": "f9527427128858270811f405de703cce753c88104ed557435f2e7d103f1b0e7a"
+      },
+      "components": [],
+      "drafts": {
+        "1ddc5c96-a43e-4ba7-98d0-fdeb7295a5af": {
+          "title": "Circuit Breaker \u2014 resources expanded",
+          "visualDirection": "All seven real worker roles, CPU ordered, proportional usage and scoped limits",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-09-30T20:59:42.173566+00:00"
+    },
+    "npm-cli-help": {
+      "targetKind": "new-ui",
+      "projectId": "6f07cdb8-a9ff-437e-9c3e-4ee8be947161",
+      "activeDraftId": "5ee98b78-bff7-422f-8666-616663c0bb00",
+      "sourceTarget": "npm-cli-lifecycle",
+      "sourceDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+      "designSystemPath": ".superdesign/cli-design-system.md",
+      "contextFiles": [
+        ".superdesign/cli-design-system.md",
+        ".superdesign/cli-help-brief.md",
+        "docs/design/2026-09-30-v0.4.7-npm-cli-design.md",
+        "cb:2329:2365"
+      ],
+      "fingerprints": {
+        ".superdesign/cli-design-system.md": "6c48ebecac4e134d3e72979792bf0a6d22e37cc63ae8853874d506f9ee3c4f79",
+        ".superdesign/cli-help-brief.md": "48e5ac9de0b8f4be06b6238e0124a4d892b63113c5c5e172c519ae2ca9cd1adb",
+        "docs/design/2026-09-30-v0.4.7-npm-cli-design.md": "fbf526d8df54520dbb7890f43cb59890bbccf1a4bbc67dc567b72eae02f5fdaa",
+        "cb": "9908208d6166445ccde7b2bf9eb7a055cd1c76a9925881cfb9960bafca23b9d7"
+      },
+      "components": [],
+      "drafts": {
+        "5ee98b78-bff7-422f-8666-616663c0bb00": {
+          "title": "Circuit Breaker \u2014 cb help overview",
+          "visualDirection": "Compact one-column command reference, grouped by operator task",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-30T20:59:42.173566+00:00"
+    },
+    "npm-cli-status": {
+      "targetKind": "new-ui",
+      "projectId": "6f07cdb8-a9ff-437e-9c3e-4ee8be947161",
+      "activeDraftId": "9e5fc28d-12ff-4d20-8598-60d0ca250dd4",
+      "sourceTarget": "npm-cli-lifecycle",
+      "sourceDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+      "designSystemPath": ".superdesign/cli-design-system.md",
+      "contextFiles": [
+        ".superdesign/cli-design-system.md",
+        ".superdesign/cli-status-doctor-brief.md",
+        "cb:247:261",
+        "cb:705:769",
+        "cb:1050:1180"
+      ],
+      "fingerprints": {
+        ".superdesign/cli-design-system.md": "6c48ebecac4e134d3e72979792bf0a6d22e37cc63ae8853874d506f9ee3c4f79",
+        ".superdesign/cli-status-doctor-brief.md": "334ea40ea276fbc2478a90bee723d4516fad5e3a3b9f0df12b156d5346976037",
+        "cb": "9908208d6166445ccde7b2bf9eb7a055cd1c76a9925881cfb9960bafca23b9d7"
+      },
+      "components": [],
+      "drafts": {
+        "9e5fc28d-12ff-4d20-8598-60d0ca250dd4": {
+          "title": "Circuit Breaker \u2014 status",
+          "visualDirection": "App and shared service state with aligned active-since timestamps",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-09-30T21:06:04.235623+00:00"
+    },
+    "npm-cli-doctor": {
+      "targetKind": "new-ui",
+      "projectId": "6f07cdb8-a9ff-437e-9c3e-4ee8be947161",
+      "activeDraftId": "19ccb781-d3c5-435e-aff9-e3171c6a211e",
+      "sourceTarget": "npm-cli-lifecycle",
+      "sourceDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+      "designSystemPath": ".superdesign/cli-design-system.md",
+      "contextFiles": [
+        ".superdesign/cli-design-system.md",
+        ".superdesign/cli-status-doctor-brief.md",
+        "cb:247:261",
+        "cb:705:769",
+        "cb:1050:1180"
+      ],
+      "fingerprints": {
+        ".superdesign/cli-design-system.md": "6c48ebecac4e134d3e72979792bf0a6d22e37cc63ae8853874d506f9ee3c4f79",
+        ".superdesign/cli-status-doctor-brief.md": "334ea40ea276fbc2478a90bee723d4516fad5e3a3b9f0df12b156d5346976037",
+        "cb": "9908208d6166445ccde7b2bf9eb7a055cd1c76a9925881cfb9960bafca23b9d7"
+      },
+      "components": [],
+      "drafts": {
+        "19ccb781-d3c5-435e-aff9-e3171c6a211e": {
+          "title": "Circuit Breaker \u2014 doctor",
+          "visualDirection": "Top-down evidence, low-storage failure and skipped authenticated diagnostics",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 1
+        }
+      },
+      "updatedAt": "2026-09-30T21:06:04.235623+00:00"
+    },
+    "npm-cli-logs": {
+      "targetKind": "new-ui",
+      "projectId": "6f07cdb8-a9ff-437e-9c3e-4ee8be947161",
+      "activeDraftId": "085c71d3-dc4e-46aa-9d04-dc9b0a4dd489",
+      "sourceTarget": "npm-cli-lifecycle",
+      "sourceDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+      "designSystemPath": ".superdesign/cli-design-system.md",
+      "contextFiles": [
+        ".superdesign/cli-design-system.md",
+        ".superdesign/cli-logs-backup-brief.md",
+        "cb:1180:1218",
+        "cb:1433:1545",
+        "apps/backend/src/app/services/backup/snapshot.py:168:285"
+      ],
+      "fingerprints": {
+        ".superdesign/cli-design-system.md": "6c48ebecac4e134d3e72979792bf0a6d22e37cc63ae8853874d506f9ee3c4f79",
+        ".superdesign/cli-logs-backup-brief.md": "5f363694ab7d1c3c29d1279a252dde931bee6034b8f678157efad58401a8b9cb",
+        "cb": "9908208d6166445ccde7b2bf9eb7a055cd1c76a9925881cfb9960bafca23b9d7",
+        "apps/backend/src/app/services/backup/snapshot.py": "4eed4df72abf756d8072a75d0a8db7a91759de1f429e9259de91b011a88cf464"
+      },
+      "components": [],
+      "drafts": {
+        "085c71d3-dc4e-46aa-9d04-dc9b0a4dd489": {
+          "title": "Circuit Breaker \u2014 logs",
+          "visualDirection": "Append-only aligned severity/component stream with multiline continuation",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-09-30T21:19:09.306144+00:00"
+    },
+    "npm-cli-backup": {
+      "targetKind": "new-ui",
+      "projectId": "6f07cdb8-a9ff-437e-9c3e-4ee8be947161",
+      "activeDraftId": "fc381433-4441-452b-8959-e1f24b39dd8d",
+      "sourceTarget": "npm-cli-lifecycle",
+      "sourceDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+      "designSystemPath": ".superdesign/cli-design-system.md",
+      "contextFiles": [
+        ".superdesign/cli-design-system.md",
+        ".superdesign/cli-logs-backup-brief.md",
+        "cb:1180:1218",
+        "cb:1433:1545",
+        "apps/backend/src/app/services/backup/snapshot.py:168:285"
+      ],
+      "fingerprints": {
+        ".superdesign/cli-design-system.md": "6c48ebecac4e134d3e72979792bf0a6d22e37cc63ae8853874d506f9ee3c4f79",
+        ".superdesign/cli-logs-backup-brief.md": "5f363694ab7d1c3c29d1279a252dde931bee6034b8f678157efad58401a8b9cb",
+        "cb": "9908208d6166445ccde7b2bf9eb7a055cd1c76a9925881cfb9960bafca23b9d7",
+        "apps/backend/src/app/services/backup/snapshot.py": "4eed4df72abf756d8072a75d0a8db7a91759de1f429e9259de91b011a88cf464"
+      },
+      "components": [],
+      "drafts": {
+        "fc381433-4441-452b-8959-e1f24b39dd8d": {
+          "title": "Circuit Breaker \u2014 backup",
+          "visualDirection": "Completed full-state backup phases with private snapshot and off-host encryption",
+          "parentDraftId": "fcf8b81b-6fa2-419c-adf3-35242b317810",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-09-30T21:19:09.306144+00:00"
     }
   }
 }
