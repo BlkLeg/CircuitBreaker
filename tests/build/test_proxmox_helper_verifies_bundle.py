@@ -232,106 +232,202 @@ def test_a_release_without_sums_is_refused(rel: Release) -> None:
     assert "No SHA256SUMS" in r.stdout
 
 
-def test_openssl_before_3_is_refused_with_the_found_version(rel: Release) -> None:
+def test_openssl_before_3_refuses_a_signed_bundle_naming_pve_8(rel: Release) -> None:
     rel.fake_openssl("OpenSSL 1.1.1w  11 Sep 2023")
     r = rel.verify()
     _refused(r)
     assert "OpenSSL 3 is required" in r.stdout
     assert "1.1.1w" in r.stdout
+    assert "Proxmox VE 8 or newer" in r.stdout
+    assert "apt-get install openssl" not in r.stdout
 
 
-def test_no_openssl_at_all_is_refused(rel: Release) -> None:
+def test_no_openssl_at_all_refuses_a_signed_bundle(rel: Release) -> None:
     rel.fake_openssl("")
     r = rel.verify()
     _refused(r)
     assert "OpenSSL 3 is required" in r.stdout
 
 
-# ── Wiring: the real func_do_install lines, run against fake curl and pct ────
+def test_openssl_1_1_still_installs_the_pinned_unsigned_v046(rel: Release) -> None:
+    """PVE 7 ships OpenSSL 1.1.1; the unsigned v0.4.6 needs no signature check."""
+    rel.fake_openssl("OpenSSL 1.1.1w  11 Sep 2023")
+    rel.sig.unlink()
+    r = rel.verify(pin_this_tarball=True, version="0.4.6")
+    _ok(r)
+    assert "predates bundle signing" in r.stdout
+    assert "SHA256 checksum verified" in r.stdout
 
 
-def _install_segment() -> str:
-    """func_do_install from the host temp dir to the in-container extraction."""
-    body = _function("func_do_install")
-    seg = re.search(r"^  local host_release_dir\n.*?^  pct exec \"\$CTID\" -- bash -c \"mkdir -p /tmp/cb-bundle[^\n]*\n",
-                    body, re.MULTILINE | re.DOTALL)
-    assert seg, "release download/push segment not found in func_do_install"
-    return seg.group(0)
+# ── Wiring: the real func_do_install, run against fake PVE tools ─────────────
 
 
-def test_verification_sits_between_download_and_push() -> None:
+def test_the_release_is_verified_before_anything_is_created() -> None:
     body = _function("func_do_install")
     download = body.index('download_release_files "$host_release_dir" "$release_json" "$tarball_name"')
     verify = body.index('verify_release_files "$host_release_dir" "$tarball_name" "$cb_version"')
+    template = body.index("pveam update")
+    create = body.index('"${PCT_CMD[@]}"')
     push = body.index('push_release_files "$CTID" "$host_release_dir"')
-    assert download < verify < push
-    assert "pct " not in body[download:verify], "nothing may reach the container before verification"
+    assert body.index('"${CB_RELEASE_API}/latest"') < download < verify < template < create < push
+    assert "pct " not in body[:verify], "nothing may touch a container before verification"
+    assert "pveam " not in body[:verify], "no template is fetched for a release that will be refused"
 
 
-def _run_install_segment(rel: Release, tmp: Path) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
-    assets = tmp / "assets"
-    assets.mkdir()
-    for f in rel.dir.iterdir():
-        (assets / f.name).write_bytes(f.read_bytes())
-    release = {"tag_name": "v0.4.7", "assets": [
-        {"name": f.name, "browser_download_url": f"https://dl.invalid/{f.name}"} for f in assets.iterdir()]}
-    rel._exe("curl", f"""#!/bin/sh
+class Pve:
+    """Fake curl, pct and pveam on PATH, logging what the helper asked of them."""
+
+    def __init__(self, rel: Release, tmp: Path, *, assets: tuple[str, ...] | None = None,
+                 release_api_fails: bool = False, create_fails: bool = False,
+                 no_template: bool = False) -> None:
+        self.rel = rel
+        self.assets = tmp / "assets"
+        self.assets.mkdir()
+        for f in rel.dir.iterdir():
+            if assets is None or f.name in assets:
+                (self.assets / f.name).write_bytes(f.read_bytes())
+        release = {"tag_name": "v0.4.7", "assets": [
+            {"name": f.name, "browser_download_url": f"https://dl.invalid/{f.name}"}
+            for f in self.assets.iterdir()]}
+        (tmp / "release.json").write_text(json.dumps(release))
+        # No -o: the /latest release JSON. -o <file> <url>: the asset.
+        rel._exe("curl", f"""#!/bin/sh
 out=""; url=""
 while [ $# -gt 0 ]; do
   case "$1" in -o) out="$2"; shift 2 ;; http*) url="$1"; shift ;; *) shift ;; esac
 done
-cp "{assets}/$(basename "$url")" "$out"
+[ -n "$out" ] || {{ {"exit 22" if release_api_fails else f'cat "{tmp}/release.json"; exit 0'}; }}
+cp "{self.assets}/$(basename "$url")" "$out"
 """)
-    pct_log = tmp / "pct.log"
-    container = tmp / "container"
-    container.mkdir()
-    rel._exe("pct", f"""#!/bin/sh
-echo "$@" >> "{pct_log}"
+        self.log = tmp / "pve.log"
+        self.container = tmp / "container"
+        self.container.mkdir()
+        # The apt-get step fails on purpose: it ends the run right after the
+        # push and extraction, before anything writes outside tmp_path.
+        rel._exe("pct", f"""#!/bin/sh
+echo "pct $@" >> "{self.log}"
 case "$1" in
-  exec) shift 3; [ "$1" = mkdir ] && mkdir -p "{container}$3" ;;
-  push) cp "$3" "{container}$4" ;;
+  create) exit {1 if create_fails else 0} ;;
+  exec) shift 3
+        case "$*" in *apt-get*) exit 1 ;; esac
+        [ "$1" = mkdir ] && mkdir -p "{self.container}$3" ;;
+  push) cp "$3" "{self.container}$4" ;;
 esac
 exit 0
 """)
-    hostdirs = tmp / "hostdirs"
-    hostdirs.mkdir()
-    script = "\n".join([
-        STUBS,
-        _constant("CB_GITHUB_REPO"),
-        _constant("CB_CT_RELEASE_DIR"),
-        _library(),
-        f'_cb_embedded_release_keys() {{ cat "{rel.keys}"; }}',
-        _function("download_release_files"),
-        _function("push_release_files"),
-        _function("release_verify_fail"),
-        _function("verify_release_files"),
-        "segment() {",
-        f"  local release_json='{json.dumps(release)}'",
-        f'  local tarball_name="{TARBALL}" cb_version="0.4.7" CTID=101',
-        _install_segment(),
-        "  echo EXTRACT_REACHED",
-        "}",
-        "segment",
-        'echo "RC=$?"',
-    ])
-    env = {**os.environ, "PATH": f"{rel.bin}:{os.environ['PATH']}", "TMPDIR": str(hostdirs)}
-    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, check=False)
-    return r, pct_log, hostdirs
+        rel._exe("pveam", f"""#!/bin/sh
+echo "pveam $@" >> "{self.log}"
+[ "$1" = available ] && {{ {"exit 0" if no_template else "echo 'system debian-12-standard_12.7-1_amd64.tar.zst'"}; }}
+exit 0
+""")
+        rel._exe("pvesm", f'#!/bin/sh\necho "pvesm $@" >> "{self.log}"\nexit 0\n')
+        rel._exe("uname", '#!/bin/sh\n[ "$1" = -m ] && echo x86_64 || echo Linux\n')
+        self.hostdirs = tmp / "hostdirs"
+        self.hostdirs.mkdir()
+
+    def run(self) -> subprocess.CompletedProcess[str]:
+        rel = self.rel
+        script = "\n".join([
+            STUBS,
+            "clear() { :; }",
+            # Only the "Press Enter" prompts; the library's `while read` loops need the builtin.
+            'read() { if [[ "$1" == -rp ]]; then return 0; fi; builtin read "$@"; }',
+            "sleep() { :; }",
+            "post_create_config() { :; }",
+            "post_start_config() { :; }",
+            'wait_for_ip() { CT_IP=192.0.2.10; }',
+            _constant("CB_GITHUB_REPO"),
+            'CB_RELEASE_API="https://api.invalid/releases"',
+            _constant("CB_CT_RELEASE_DIR"),
+            _library(),
+            f'_cb_embedded_release_keys() {{ cat "{rel.keys}"; }}',
+            *(_function(n) for n in (
+                "detect_template", "build_pct_cmd", "download_release_files", "push_release_files",
+                "drop_host_release_dir",
+                "release_verify_fail", "verify_release_files", "build_installer_cmd", "func_do_install")),
+            "CTID=101 CT_TYPE=1 HN=cb PW=secret CORES=2 RAM=4096 DISK=20 SWAP=512",
+            'BRIDGE=vmbr0 IPV4_MODE=dhcp IPV6_MODE=none MTU=1500 STORAGE=local-lvm TEMPLATE_STORAGE=local',
+            'CT_TAGS="cb" SSH_KEY_MODE=none ROOT_ACCESS=1 FUSE=0 TUN_TAP=0 NESTING=1 KEYCTL=0 MKNOD=0',
+            'PROTECTION=0 VERBOSE=0 INSTALL_MODE=default CB_NO_TLS=true CB_FQDN="" CB_PORT=8088 CB_DOCKER=false',
+            'CLEANUP_CTID="" CB_HOST_RELEASE_DIR=""',
+            "func_do_install",
+            'echo "RC=$? CLEANUP_CTID=$CLEANUP_CTID"',
+        ])
+        env = {**os.environ, "PATH": f"{rel.bin}:{os.environ['PATH']}", "TMPDIR": str(self.hostdirs)}
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, check=False)
+
+    def calls(self) -> str:
+        return self.log.read_text() if self.log.exists() else ""
 
 
-def test_a_verified_bundle_is_pushed_and_extracted(rel: Release, tmp_path: Path) -> None:
-    r, pct_log, hostdirs = _run_install_segment(rel, tmp_path)
-    assert "RC=0" in r.stdout, r.stdout + r.stderr
-    assert "EXTRACT_REACHED" in r.stdout
-    assert "push 101" in pct_log.read_text()
-    assert list(hostdirs.iterdir()) == [], "the host temp dir is removed"
-
-
-def test_a_tampered_bundle_never_reaches_the_container(rel: Release, tmp_path: Path) -> None:
-    rel.tarball.write_bytes(b"evil")
-    r, pct_log, hostdirs = _run_install_segment(rel, tmp_path)
+def _nothing_created(pve: Pve, r: subprocess.CompletedProcess[str]) -> None:
     assert "RC=1" in r.stdout, r.stdout + r.stderr
+    assert "pct " not in pve.calls(), "no container may be created or touched"
+    assert "pveam " not in pve.calls(), "no template may be fetched"
+    assert re.search(r"^RC=1 CLEANUP_CTID=$", r.stdout, re.MULTILINE), "no container is left for cleanup()"
+    assert list(pve.hostdirs.iterdir()) == [], "the host temp dir is removed"
+
+
+def test_a_tampered_bundle_creates_no_container(rel: Release, tmp_path: Path) -> None:
+    rel.tarball.write_bytes(b"evil")
+    pve = Pve(rel, tmp_path)
+    r = pve.run()
     assert "SHA256 mismatch" in r.stdout
-    assert "EXTRACT_REACHED" not in r.stdout
-    assert not pct_log.exists(), "pct must not run for a bundle that failed verification"
-    assert list(hostdirs.iterdir()) == [], "the host temp dir is removed on failure too"
+    _nothing_created(pve, r)
+
+
+def test_an_unsigned_unpinned_release_creates_no_container(rel: Release, tmp_path: Path) -> None:
+    pve = Pve(rel, tmp_path, assets=(TARBALL, "SHA256SUMS"))
+    r = pve.run()
+    assert "refusing an unsigned bundle" in r.stdout
+    _nothing_created(pve, r)
+
+
+def test_a_failed_download_creates_no_container(rel: Release, tmp_path: Path) -> None:
+    pve = Pve(rel, tmp_path, assets=(TARBALL,))
+    r = pve.run()
+    assert "SHA256SUMS not found in the release" in r.stdout
+    _nothing_created(pve, r)
+
+
+def test_an_unreachable_release_api_creates_no_container(rel: Release, tmp_path: Path) -> None:
+    pve = Pve(rel, tmp_path, release_api_fails=True)
+    r = pve.run()
+    assert "Failed to fetch latest release" in r.stdout
+    _nothing_created(pve, r)
+
+
+def test_a_verified_bundle_is_created_then_pushed_and_the_host_dir_removed(rel: Release, tmp_path: Path) -> None:
+    pve = Pve(rel, tmp_path)
+    r = pve.run()
+    assert "Signature verified" in r.stdout, r.stdout + r.stderr
+    calls = pve.calls()
+    assert "pct create 101" in calls
+    assert calls.index("pct create 101") < calls.index("pct push 101")
+    assert sorted(p.name for p in (pve.container / "tmp" / "cb-release").iterdir()) == sorted(
+        [TARBALL, "SHA256SUMS", "SHA256SUMS.sig"])
+    assert "tar -xzf" in calls
+    assert list(pve.hostdirs.iterdir()) == []
+
+
+def test_a_failed_pct_create_still_removes_the_host_dir(rel: Release, tmp_path: Path) -> None:
+    pve = Pve(rel, tmp_path, create_fails=True)
+    r = pve.run()
+    assert "pct create failed" in r.stdout, r.stdout + r.stderr
+    assert "pct push" not in pve.calls()
+    assert list(pve.hostdirs.iterdir()) == []
+
+
+def test_a_missing_template_still_removes_the_host_dir(rel: Release, tmp_path: Path) -> None:
+    pve = Pve(rel, tmp_path, no_template=True)
+    r = pve.run()
+    assert "No Debian 12 template found" in r.stdout, r.stdout + r.stderr
+    assert "pct " not in pve.calls()
+    assert list(pve.hostdirs.iterdir()) == []
+
+
+def test_an_interrupt_removes_the_host_dir_too() -> None:
+    """The EXIT/INT trap's cleanup() must know the host temp dir."""
+    assert 'CB_HOST_RELEASE_DIR="$host_release_dir"' in _function("func_do_install")
+    assert "drop_host_release_dir" in _function("cleanup")
+    assert 'rm -rf -- "$CB_HOST_RELEASE_DIR"' in _function("drop_host_release_dir")

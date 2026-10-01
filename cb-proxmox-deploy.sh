@@ -106,6 +106,7 @@ TEMPLATE_STORAGE=""
 TEMPLATE=""
 CT_IP=""
 CLEANUP_CTID=""
+CB_HOST_RELEASE_DIR=""  # host temp dir with the downloaded release files
 INSTALL_MODE="default"
 
 # PVE info
@@ -127,6 +128,8 @@ cleanup() {
   fi
   # Clean up temp SSH key file
   rm -f /tmp/cb-ssh-keys-$$.pub 2>/dev/null
+  # Downloaded release files on the host, if an install was cut short
+  drop_host_release_dir
 }
 trap 'cleanup; exit 130' INT TERM EXIT
 
@@ -601,6 +604,14 @@ download_release_files() {
   done
 }
 
+# Remove the host temp dir holding the downloaded release files, if any.
+drop_host_release_dir() {
+  if [[ -n "$CB_HOST_RELEASE_DIR" ]]; then
+    rm -rf -- "$CB_HOST_RELEASE_DIR"
+    CB_HOST_RELEASE_DIR=""
+  fi
+}
+
 # Report a refused bundle: $1 what failed, $2 what to do about it. Logs both
 # and shows $1 in a dialog. Always returns 1.
 release_verify_fail() {
@@ -633,14 +644,15 @@ verify_release_files() {
     return 1
   fi
 
-  ssl_version="$(openssl version 2>/dev/null || true)"
-  if [[ ! "$ssl_version" =~ ^OpenSSL\ ([0-9]+)\. ]] || (( BASH_REMATCH[1] < 3 )); then
-    release_verify_fail "OpenSSL 3 is required to verify the release bundle (found: ${ssl_version:-no openssl})" \
-      "Proxmox VE 8 and 9 ship OpenSSL 3; upgrade this host (apt-get install openssl) and run the helper again"
-    return 1
-  fi
-
   if [[ -f "$sig" ]]; then
+    # Only a signature check needs OpenSSL 3, so a PVE 7 host (OpenSSL 1.1.1)
+    # can still install the pinned, unsigned v0.4.6.
+    ssl_version="$(openssl version 2>/dev/null || true)"
+    if [[ ! "$ssl_version" =~ ^OpenSSL\ ([0-9]+)\. ]] || (( BASH_REMATCH[1] < 3 )); then
+      release_verify_fail "OpenSSL 3 is required to verify the release signature (found: ${ssl_version:-no openssl})" \
+        "Signed releases (v${CB_FIRST_SIGNED_RELEASE} and later) need OpenSSL 3, i.e. Proxmox VE 8 or newer"
+      return 1
+    fi
     tried="$(cb_release_keys | cut -d' ' -f1 | paste -sd, -)"
     if key_id="$(cb_verify_sums_signature "$sums" "$sig")"; then
       msg_ok "Signature verified (key ${key_id})"
@@ -1343,11 +1355,59 @@ func_do_install() {
   echo "  🚀  Creating Circuit Breaker LXC..."
   echo ""
 
+  # ── Download and verify the bundle on the PVE host ───────────────────────
+  # Before any template or container: a release that will be refused must
+  # leave nothing behind on the host. The container later runs the install.sh
+  # from inside this tarball, so a tampered tarball must never reach it.
+  msg_info "Downloading Circuit Breaker bundle..."
+  local host_arch
+  case "$(uname -m)" in
+    x86_64)  host_arch="amd64" ;;
+    aarch64) host_arch="arm64" ;;
+    *) msg_err "Unsupported architecture: $(uname -m)"; read -rp "  Press Enter to return to menu..."; return 1 ;;
+  esac
+
+  local release_json cb_version tarball_name tarball_url
+  if ! release_json=$(curl -fsSL "${CB_RELEASE_API}/latest" 2>/dev/null); then
+    msg_err "Failed to fetch latest release from GitHub"
+    read -rp "  Press Enter to return to menu..."
+    return 1
+  fi
+  cb_version=$(echo "$release_json" | jq -r '.tag_name' | tr -d v)
+  tarball_name="circuit-breaker_${cb_version}_linux_${host_arch}.tar.gz"
+  tarball_url=$(echo "$release_json" | jq -r ".assets[] | select(.name==\"${tarball_name}\") | .browser_download_url")
+
+  if [[ -z "$tarball_url" ]] || [[ "$tarball_url" == "null" ]]; then
+    msg_err "Bundle ${tarball_name} not found in release v${cb_version}"
+    read -rp "  Press Enter to return to menu..."
+    return 1
+  fi
+
+  # Tarball, SHA256SUMS and SHA256SUMS.sig in a private directory that lives
+  # until push_release_files; every return below removes it, and cleanup()
+  # does on an interrupt.
+  local host_release_dir
+  host_release_dir="$(mktemp -d)" || { msg_err "Could not create a temporary directory"; return 1; }
+  CB_HOST_RELEASE_DIR="$host_release_dir"
+  if ! download_release_files "$host_release_dir" "$release_json" "$tarball_name"; then
+    drop_host_release_dir
+    read -rp "  Press Enter to return to menu..."
+    return 1
+  fi
+  echo "  ✔️  Bundle downloaded: v${cb_version} (${host_arch})"
+
+  if ! verify_release_files "$host_release_dir" "$tarball_name" "$cb_version"; then
+    drop_host_release_dir
+    msg_err "Release bundle refused; no container was created"
+    return 1
+  fi
+
   # ── Template ────────────────────────────────────────────────────────────────
   pveam update >/dev/null 2>&1
   detect_template
   if [[ -z "$TEMPLATE" ]]; then
     msg_err "No Debian 12 template found."
+    drop_host_release_dir
     read -rp "  Press Enter to return to menu..."
     return 1
   fi
@@ -1365,6 +1425,7 @@ func_do_install() {
     if ! timeout 300 pveam download "$TEMPLATE_STORAGE" "$TEMPLATE" >/dev/null 2>&1; then
       msg_err "Template download failed or timed out (5m limit)."
       msg_warn "Check: pvesm status && pvesm list $TEMPLATE_STORAGE"
+      drop_host_release_dir
       read -rp "  Press Enter to return to menu..."
       return 1
     fi
@@ -1387,6 +1448,7 @@ func_do_install() {
     echo "       $create_err"
     msg_warn "Debug: pvesm status | journalctl -u pvedaemon -n 20"
     CLEANUP_CTID=""
+    drop_host_release_dir
     read -rp "  Press Enter to return to menu..."
     return 1
   fi
@@ -1399,6 +1461,7 @@ func_do_install() {
   pct unlock "$CTID" 2>/dev/null || true
   if ! pct start "$CTID" 2>&1; then
     msg_err "Failed to start container $CTID."
+    drop_host_release_dir
     read -rp "  Press Enter to return to menu..."
     return 1
   fi
@@ -1409,6 +1472,7 @@ func_do_install() {
     if ! wait_for_ip "$CTID"; then
       msg_err "No DHCP address within 60s. Check bridge $BRIDGE."
       CLEANUP_CTID=""
+      drop_host_release_dir
       read -rp "  Press Enter to return to menu..."
       return 1
     fi
@@ -1422,53 +1486,14 @@ func_do_install() {
   # ── Post-start config ──────────────────────────────────────────────────────
   post_start_config
 
-  # ── Download bundle on PVE host ─────────────────────────────────────────────
-  msg_info "Downloading Circuit Breaker bundle..."
-  local host_arch
-  case "$(uname -m)" in
-    x86_64)  host_arch="amd64" ;;
-    aarch64) host_arch="arm64" ;;
-    *) msg_err "Unsupported architecture: $(uname -m)"; return 1 ;;
-  esac
-
-  local release_json cb_version tarball_name tarball_url
-  release_json=$(curl -fsSL "${CB_RELEASE_API}/latest" 2>/dev/null) \
-    || { msg_err "Failed to fetch latest release from GitHub"; return 1; }
-  cb_version=$(echo "$release_json" | jq -r '.tag_name' | tr -d v)
-  tarball_name="circuit-breaker_${cb_version}_linux_${host_arch}.tar.gz"
-  tarball_url=$(echo "$release_json" | jq -r ".assets[] | select(.name==\"${tarball_name}\") | .browser_download_url")
-
-  if [[ -z "$tarball_url" ]] || [[ "$tarball_url" == "null" ]]; then
-    msg_err "Bundle ${tarball_name} not found in release v${cb_version}"
-    return 1
-  fi
-
-  # Tarball, SHA256SUMS and SHA256SUMS.sig, so install.sh can verify the
-  # bundle; a private directory rather than fixed /tmp names.
-  local host_release_dir
-  host_release_dir="$(mktemp -d)" || { msg_err "Could not create a temporary directory"; return 1; }
-  if ! download_release_files "$host_release_dir" "$release_json" "$tarball_name"; then
-    rm -rf -- "$host_release_dir"
-    return 1
-  fi
-  echo "  ✔️  Bundle downloaded: v${cb_version} (${host_arch})"
-
-  # Verify here, on the host: the container runs the install.sh from inside
-  # this tarball, so a tampered tarball must never reach it.
-  if ! verify_release_files "$host_release_dir" "$tarball_name" "$cb_version"; then
-    rm -rf -- "$host_release_dir"
-    msg_err "Release bundle refused; nothing was copied into container $CTID"
-    return 1
-  fi
-
   # ── Push bundle into container ────────────────────────────────────────────
   msg_info "Pushing bundle into container..."
   if ! push_release_files "$CTID" "$host_release_dir"; then
-    rm -rf -- "$host_release_dir"
+    drop_host_release_dir
     msg_err "Failed to push the release files into container $CTID"
     return 1
   fi
-  rm -rf -- "$host_release_dir"
+  drop_host_release_dir
   pct exec "$CTID" -- bash -c "mkdir -p /tmp/cb-bundle && tar -xzf '${CB_CT_RELEASE_DIR}/${tarball_name}' -C /tmp/cb-bundle"
 
   # ── Install dependencies (curl+jq needed by installer) ───────────────────
