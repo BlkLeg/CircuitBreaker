@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { fetchJson, NetworkError, HttpStatusError, USER_AGENT } from '../src/http.js';
+import { fetchJson, request, NetworkError, HttpStatusError, USER_AGENT } from '../src/http.js';
 
 const okFetch = (body, status = 200) => async () => new Response(JSON.stringify(body), { status });
 
@@ -31,6 +31,28 @@ test('transport failures and timeouts are NetworkError', async () => {
   await assert.rejects(fetchJson('https://x', { fetchImpl: boom }), (e) => e instanceof NetworkError && e.code === 'NETWORK');
   const hang = (url, init) => new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
   await assert.rejects(fetchJson('https://x', { fetchImpl: hang, timeoutMs: 50 }), (e) => e instanceof NetworkError);
+});
+
+// Headers arrive at once; the body then waits `stallMs` before its chunk, and errors if the request signal aborts.
+const stallingFetch = (stallMs, text) => async (url, init) => new Response(new ReadableStream({
+  start(controller) {
+    const timer = setTimeout(() => { controller.enqueue(new TextEncoder().encode(text)); controller.close(); }, stallMs);
+    init.signal.addEventListener('abort', () => { clearTimeout(timer); controller.error(init.signal.reason); });
+  },
+}), { status: 200 });
+
+test("request's timer stops at the headers: a slow body is not aborted by it", async () => {
+  const response = await request('https://x', { fetchImpl: stallingFetch(150, '{"a":1}'), timeoutMs: 50 });
+  assert.deepEqual(await response.json(), { a: 1 });
+});
+
+test('fetchJson bounds the body read and reports a stalled body as NetworkError', async () => {
+  await assert.rejects(fetchJson('https://x', { fetchImpl: stallingFetch(1000, '{}'), timeoutMs: 50 }),
+    (e) => e instanceof NetworkError && e.code === 'NETWORK');
+});
+
+test('fetchJson leaves invalid JSON as a SyntaxError', async () => {
+  await assert.rejects(fetchJson('https://x', { fetchImpl: stallingFetch(0, 'nope') }), SyntaxError);
 });
 
 test('with NODE_USE_ENV_PROXY=1 and HTTP_PROXY set, requests go through the proxy', async (t) => {
