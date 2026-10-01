@@ -43,10 +43,12 @@ REQUIRED_PACKED = {
 }
 # The code's budget. npm-shrinkwrap.json is dependency metadata, not code, and
 # has its own budget: it grows with sigstore's tree, which deserves a look anyway.
-# 64 KiB held the foundation; 80 KiB takes the verification pipeline and
-# install --plan (sub-plan 02) with little headroom, so each later sub-plan that
-# adds code has to argue for its own growth here.
-UNPACKED_SIZE_BUDGET = 80 * 1024
+# 64 KiB held the foundation; 80 KiB took the verification pipeline and
+# install --plan (sub-plan 02); 84 KiB takes that plan's final review fixes (the
+# release-answer checks and the one-pass hash and archive scan), again with
+# little headroom, so each later sub-plan that adds code has to argue for its
+# own growth here.
+UNPACKED_SIZE_BUDGET = 84 * 1024
 SHRINKWRAP_SIZE_BUDGET = 40 * 1024
 SHRINKWRAP = PKG / "npm-shrinkwrap.json"
 ENTRY_BUDGET = 40
