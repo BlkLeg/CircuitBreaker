@@ -101,8 +101,9 @@ the command above; it upgrades only the single-container (mono) image.
 | `--force-deps` | Reinstall system dependencies as well |
 
 For an offline or air-gapped host, download the release tarball
-(`circuit-breaker_<version>_linux_<arch>.tar.gz`), the release's `SHA256SUMS` and
-its `SHA256SUMS.sig` from [GitHub Releases](https://github.com/BlkLeg/CircuitBreaker/releases) on a
+(`circuit-breaker_<version>_linux_<arch>.tar.gz`), the release's `SHA256SUMS` and,
+when the release has one, its `SHA256SUMS.sig` from
+[GitHub Releases](https://github.com/BlkLeg/CircuitBreaker/releases) on a
 connected machine, and check it there:
 
 ```bash
@@ -111,9 +112,11 @@ sha256sum -c --ignore-missing SHA256SUMS
 
 The installer verifies a bundle it downloads itself. For one you hand it with
 `--local-bundle`, it verifies the signature and hash when `SHA256SUMS` and
-`SHA256SUMS.sig` are both next to the tarball. Releases before 0.4.7 have no
-signature, so the check above is yours there. Then copy the tarball, `SHA256SUMS`,
-`SHA256SUMS.sig` and `install.sh` to the host and run:
+`SHA256SUMS.sig` are both next to the tarball. Releases from 0.4.7 on publish a
+`SHA256SUMS.sig`; earlier releases have none, so for those the check above is yours.
+Keep the tarball's release file name: the installer finds its line in `SHA256SUMS`
+by that name. Then copy the tarball, `SHA256SUMS`, `SHA256SUMS.sig` when the release
+has one, and `install.sh` to the host and run:
 
 ```bash
 sudo bash install.sh --local-bundle circuit-breaker_<version>_linux_amd64.tar.gz --airgap --unattended
