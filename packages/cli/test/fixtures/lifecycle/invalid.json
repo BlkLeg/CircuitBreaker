@@ -1790,6 +1790,18 @@
   }
  },
  {
+  "name": "no leap day in a century year",
+  "kind": "event",
+  "base": "checkpoint dated in the first century",
+  "set": {
+   "/at": "0100-02-29T00:00:00Z"
+  },
+  "expect": {
+   "path": "/at",
+   "reason": "real calendar date"
+  }
+ },
+ {
   "name": "history beyond 100 operations",
   "kind": "history",
   "base": "index with an unfinished legacy record",

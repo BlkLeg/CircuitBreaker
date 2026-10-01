@@ -423,6 +423,19 @@
    }
   },
   {
+   "name": "checkpoint dated in the first century",
+   "document": {
+    "schema_version": 1,
+    "operation_id": "op-00500228-001",
+    "sequence": 6,
+    "at": "0004-02-29T00:00:00Z",
+    "source": "native",
+    "type": "checkpoint",
+    "state": "recovery_saved",
+    "generation": 5
+   }
+  },
+  {
    "name": "coordinator diagnostic before an operation",
    "document": {
     "schema_version": 1,

@@ -91,8 +91,10 @@ function regex(pattern) {
   return regexes.get(pattern);
 }
 
+// setUTCFullYear, not Date.UTC: Date.UTC reads years 0-99 as 1900-1999.
 function realDate(year, month, day) {
-  const date = new Date(Date.UTC(year, month - 1, day));
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
   return year >= 1 && date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 const FORMATS = {
