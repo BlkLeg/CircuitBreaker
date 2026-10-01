@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readFile, stat, realpath } from 'node:fs/promises';
+import { readFile, stat, realpath, statfs } from 'node:fs/promises';
 import { EXIT } from './exit-codes.js';
 import { CLI_VERSION } from './package-info.js';
 import { findNativeCommand } from './inventory.js';
@@ -9,6 +9,9 @@ import { checkTrustedFile } from './trust.js';
 import { forwardToNative, FORWARD_MARKER } from './bridge.js';
 import { renderHelp } from './help.js';
 import { runVersion } from './version.js';
+import { runInstallPlan } from './install-plan.js';
+import { debArch } from './release-resolve.js';
+import { TRUSTED_KEYS } from './release-trust.js';
 
 export function defaultDeps() {
   return {
@@ -24,6 +27,11 @@ export function defaultDeps() {
     proc: process,
     trustedUids: [0],
     cliVersion: CLI_VERSION,
+    fetchImpl: fetch,
+    statfs,
+    sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+    keys: TRUSTED_KEYS,
+    arch: debArch(process.arch),
   };
 }
 
@@ -84,6 +92,7 @@ async function dispatch(argv, deps) {
     return EXIT.OK;
   }
   if (command === 'version' || command === '--version') return runVersion(rest, deps);
+  if (command === 'install') return runInstallPlan(rest, deps);
   const native = findNativeCommand(command);
   if (!native) return refuse(deps, EXIT.USAGE, `unknown command '${command}'. Run 'circuitbreaker help'.`);
   if (native.lifecycle) {
