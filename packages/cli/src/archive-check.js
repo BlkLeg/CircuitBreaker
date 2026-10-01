@@ -1,6 +1,5 @@
 import { createReadStream } from 'node:fs';
 import { createGunzip } from 'node:zlib';
-import { posix } from 'node:path';
 
 export const ARCHIVE_LIMITS = Object.freeze({ maxEntries: 200_000, maxTotalBytes: 2 * 1024 ** 3 });
 
@@ -57,6 +56,9 @@ function linkProblem(kind, name, segments, target, symlinks) {
       return `${kind} ${name} points through symlink ${stack.join('/')} (${target})`;
     }
   }
+  if (kind === 'hardlink' && symlinks.has(stack.join('/'))) {
+    return `${kind} ${name} targets symlink ${stack.join('/')}`;
+  }
   return null;
 }
 
@@ -87,7 +89,7 @@ export function checkArchive(path, limits = ARCHIVE_LIMITS) {
   return new Promise((resolve) => {
     let buffer = Buffer.alloc(0);
     let skip = 0;
-    let collect = null; // { kind: 'L' | 'K' | 'x', remaining, chunks, pad }
+    let collect = null; // { kind: 'L' | 'K' | 'x' | 'g', remaining, chunks, pad }
     let pending = {};
     let entries = 0;
     let totalBytes = 0;
@@ -143,7 +145,12 @@ export function checkArchive(path, limits = ARCHIVE_LIMITS) {
           else {
             const records = paxRecords(data);
             if (!records) return fail('malformed pax extended header');
-            for (const key of ['path', 'linkpath', 'size']) if (key in records) pending[key] = records[key];
+            if (Object.keys(records).some((key) => key.startsWith('GNU.sparse.'))) {
+              return fail('GNU sparse headers are not supported');
+            }
+            if (collect.kind === 'x') {
+              for (const key of ['path', 'linkpath', 'size']) if (key in records) pending[key] = records[key];
+            }
           }
           skip = collect.pad;
           collect = null;
@@ -165,12 +172,14 @@ export function checkArchive(path, limits = ARCHIVE_LIMITS) {
         const type = String.fromCharCode(header[156] || 48);
         let size = number(header, 124, 12);
         const pad = (512 - (size % 512)) % 512;
-        if (type === 'L' || type === 'K' || type === 'x') {
+        if (type === 'L' || type === 'K' || type === 'x' || type === 'g') {
           if (size > 1024 * 1024) return fail('oversized extended header');
           collect = { kind: type, remaining: size, chunks: [], pad };
           continue;
         }
-        if (type === 'g') { skip = size + pad; continue; }
+        if (pending.size !== undefined && !FILE_TYPES.has(type)) {
+          return fail(`pax size on non-file entry type '${type}' is not supported`);
+        }
         if (pending.size !== undefined) {
           if (!/^[0-9]+$/.test(pending.size)) return fail('malformed pax size');
           size = Number(pending.size);

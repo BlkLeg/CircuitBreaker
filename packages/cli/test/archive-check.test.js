@@ -153,3 +153,51 @@ test('a flipped header byte is a checksum failure', async () => {
   assert.equal(r.ok, false);
   assert.match(r.reason, /checksum/);
 });
+
+const hiddenEvil = () => gunzipSync(makeTarGz([{ name: 'evil', type: '2', linkname: '/etc/shadow' }])).subarray(0, 512);
+
+for (const [label, carrier] of [
+  ['symlink', { name: 'sl', type: '2', linkname: 'ok' }],
+  ['hardlink', { name: 'hl', type: '1', linkname: 'ok' }],
+]) {
+  test(`refuses a pax size on a ${label} entry`, async () => {
+    const r = await refused([
+      { name: 'ok', data: Buffer.from('x') },
+      { name: 'pax', type: 'x', data: pax({ size: '512' }) },
+      carrier,
+      { name: 'benign', data: hiddenEvil() },
+    ]);
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /pax size/);
+  });
+}
+
+test('refuses a hardlink to an in-archive symlink, whatever the order', async () => {
+  const sym = { name: 'a/s', type: '2', linkname: '..' };
+  const hard = { name: 'h', type: '1', linkname: 'a/s' };
+  for (const entries of [[sym, hard], [hard, sym]]) {
+    const r = await refused([...entries, { name: 'h/pwn', data: Buffer.from('x') }]);
+    assert.equal(r.ok, false);
+  }
+  const only = await refused([sym, hard]);
+  assert.equal(only.ok, false);
+  assert.match(only.reason, /hardlink h targets symlink/);
+});
+
+test('refuses GNU sparse pax records in x and g headers', async () => {
+  const sparse = pax({
+    'GNU.sparse.major': '1', 'GNU.sparse.minor': '0',
+    'GNU.sparse.name': '../sparse-escape', 'GNU.sparse.realsize': '4',
+  });
+  for (const type of ['x', 'g']) {
+    const r = await refused([{ name: 'pax', type, data: sparse }, { name: 'benign', data: Buffer.from('x') }]);
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /sparse/);
+  }
+});
+
+test('refuses a GNU sparse (type S) entry', async () => {
+  const r = await refused([{ name: 'sp', type: 'S', data: Buffer.from('x') }]);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /unsupported entry type/);
+});
