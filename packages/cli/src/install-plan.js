@@ -2,10 +2,10 @@ import { parseArgs } from 'node:util';
 import { stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { EXIT } from './exit-codes.js';
-import { fetchJson, fetchBytes } from './http.js';
+import { fetchJson, fetchBytes, NetworkError } from './http.js';
 import { resolveTarget, debArch } from './release-resolve.js';
 import { stagingDir } from './staging.js';
-import { downloadAsset } from './release-download.js';
+import { downloadAsset, discardAsset } from './release-download.js';
 import { verifyAttestation, sigstoreCacheDir } from './attestation.js';
 import { verifyBundle } from './bundle-verify.js';
 import { TRUSTED_KEYS } from './release-trust.js';
@@ -32,6 +32,9 @@ const EXIT_FOR = {
   PREFLIGHT: EXIT.PREFLIGHT,
   EACCES: EXIT.PERMISSION,
   EPERM: EXIT.PERMISSION,
+  // Out of room or quota on a write no step mapped itself: still disk space.
+  ENOSPC: EXIT.PREFLIGHT,
+  EDQUOT: EXIT.PREFLIGHT,
 };
 const CODE_NAME = Object.fromEntries(Object.entries(EXIT).map(([key, value]) => [value, key]));
 
@@ -83,12 +86,26 @@ function checkOptions(options, env) {
   return airgap;
 }
 
+// GitHub's API answers JSON; anything else (a captive portal, a proxy's error
+// page) is the network misbehaving, exit 4. Only these answers are mapped: a
+// SyntaxError from anywhere else is not GitHub's and is never blamed on it.
+function githubJson(fetchImpl) {
+  return async (url) => {
+    try {
+      return await fetchJson(url, { fetchImpl });
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new NetworkError(`${new URL(url).host} answered with something that is not JSON (${error.message})`, error);
+      throw error;
+    }
+  };
+}
+
 // Provenance through the same fetch as every other request of this run, and a
 // sigstore cache beside staging.
 export function defaultAttest(deps, fetchImpl) {
   return (sha256) => verifyAttestation({
     sha256,
-    fetchJson: (url) => fetchJson(url, { fetchImpl }),
+    fetchJson: githubJson(fetchImpl),
     fetchBytes: (url, options) => fetchBytes(url, { ...options, fetchImpl }),
     tufCachePath: sigstoreCacheDir({ env: deps.env, home: deps.home }),
   });
@@ -127,14 +144,26 @@ async function planDownload(options, deps, fetchImpl) {
     channel: options.channel,
     cliVersion: deps.cliVersion,
     arch: deps.arch === undefined ? debArch(process.arch) : deps.arch,
-    fetchJson: (url) => fetchJson(url, { fetchImpl }),
+    fetchJson: githubJson(fetchImpl),
   });
   const dir = await stagingDir({ env: deps.env, home: deps.home, version: target.version, arch: target.arch, uid: deps.euid });
   const io = { fetchImpl, statfs: deps.statfs, sleep: deps.sleep };
   const sumsPath = target.sums ? await downloadAsset(target.sums, dir, io) : null;
   const sigPath = target.sig ? await downloadAsset(target.sig, dir, io) : null;
   const tarballPath = await downloadAsset(target.tarball, dir, io);
-  return { origin: 'download', target, tarballPath, sumsPath, sigPath };
+  const staged = { dir, assets: [target.sums, target.sig, target.tarball].filter(Boolean) };
+  return { origin: 'download', target, tarballPath, sumsPath, sigPath, staged };
+}
+
+// A download that verification refused is not kept: staging would otherwise
+// hand the same bytes back, and refuse them, on every later run.
+async function discardRefused({ dir, assets }) {
+  try {
+    for (const asset of assets) await discardAsset(asset, dir);
+    return 'the downloaded files were discarded, so the next run fetches them again';
+  } catch (error) {
+    return `the downloaded files could not be discarded (${error.code ?? error.message}); remove ${dir} before retrying`;
+  }
 }
 
 function size(bytes) {
@@ -171,7 +200,7 @@ function renderPlan(plan, result, server) {
   ];
   let text = 'Install plan (no changes made)\n';
   for (const [label, value] of rows) text += `${label.padEnd(10)} ${value}\n`;
-  if (server) text += `\nThis host already runs Circuit Breaker ${server.version}; an install would be an update (sub-plan 05).\n`;
+  if (server) text += `\nThis host already runs Circuit Breaker ${server.version}; an install would be an update.\n`;
   return text;
 }
 
@@ -223,13 +252,15 @@ export async function runInstallPlan(args, deps) {
       keys: deps.keys ?? TRUSTED_KEYS,
       attest: deps.attest ?? defaultAttest(deps, fetchImpl),
     });
-    if (!result.ok) return refuse(deps, json, EXIT_FOR[result.code], result.reason);
+    if (!result.ok) {
+      const reason = plan.staged ? `${result.reason}; ${await discardRefused(plan.staged)}` : result.reason;
+      return refuse(deps, json, EXIT_FOR[result.code], reason);
+    }
     const lookup = await loadIdentityFor(deps);
     const server = lookup.status === 'found' ? { version: lookup.identity.version, mode: lookup.identity.mode } : null;
     deps.out(json ? `${JSON.stringify(planJson(plan, result, server))}\n` : renderPlan(plan, result, server));
     return EXIT.OK;
   } catch (error) {
-    if (error instanceof SyntaxError) return refuse(deps, json, EXIT.NETWORK, `GitHub answered with something that is not JSON (${error.message})`);
     const code = EXIT_FOR[error.code];
     if (code === undefined) throw error;
     return refuse(deps, json, code, error.message);

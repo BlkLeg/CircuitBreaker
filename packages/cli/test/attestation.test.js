@@ -230,6 +230,32 @@ test('the default verifier maps set-up failures: TUF to network, an unusable cac
   await assert.rejects(defaultCreateVerifier(options, { load: async () => { throw missing; } }), (e) => e === missing);
 });
 
+test('a set-up SyntaxError is a corrupt cache file when one fails to parse, otherwise a bad mirror answer', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'cb-tuf-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const repo = join(dir, 'tuf-repo-cdn.sigstore.dev');
+  await mkdir(join(repo, 'targets'), { recursive: true });
+  await writeFile(join(repo, 'root.json'), '{"signed": {}}');
+  await writeFile(join(repo, 'targets', 'trusted_root.json'), '{}');
+  const options = { tufCachePath: dir };
+  const syntax = () => new SyntaxError('Unexpected end of JSON input');
+  await assert.rejects(defaultCreateVerifier(options, { load: await fakeSigstore({ createError: syntax() }) }),
+    (e) => e instanceof NetworkError && /not JSON/.test(e.message));
+  await writeFile(join(repo, 'timestamp.json'), '{"signed": {"_ty');
+  await assert.rejects(defaultCreateVerifier(options, { load: await fakeSigstore({ createError: syntax() }) }),
+    (e) => e.code === 'PREFLIGHT' && e.message.includes(join(repo, 'timestamp.json')) && /remove it and retry/.test(e.message));
+});
+
+test('real sigstore: a truncated cached root.json is a preflight error naming the cache', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'cb-tuf-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const repo = join(dir, 'sigstore', 'tuf-repo-cdn.sigstore.dev');
+  await mkdir(join(repo, 'targets'), { recursive: true });
+  await writeFile(join(repo, 'root.json'), '{"signed": {"_type": "ro');
+  await assert.rejects(defaultCreateVerifier({ tufCachePath: join(dir, 'sigstore'), retry: { retries: 0 }, timeout: 2000 }),
+    (e) => e.code === 'PREFLIGHT' && e.message.includes(join(dir, 'sigstore')) && e.message.includes('root.json'));
+});
+
 test('real sigstore: an unreachable TUF mirror is a network error', async (t) => {
   const seeds = require('@sigstore/tuf/seeds.json');
   const dir = await mkdtemp(join(tmpdir(), 'cb-tuf-'));

@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readdir, readFile, symlink, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { downloadAsset } from '../src/release-download.js';
+import { downloadAsset, discardAsset } from '../src/release-download.js';
 
 const BODY = Buffer.from('0123456789abcdef'.repeat(64)); // 1024 bytes
 const asset = { id: 7, name: 'bundle.tar.gz', size: BODY.length, url: 'https://dl/bundle.tar.gz' };
@@ -159,3 +160,33 @@ for (const [label, contentRangeFor] of [
     assert.deepEqual(await readFile(path), BODY);
   });
 }
+
+test('a full disk while writing is a preflight failure, not a retried network error', async (t) => {
+  if (!existsSync('/dev/full')) {
+    t.skip('needs /dev/full, which answers every write with ENOSPC (Linux)');
+    return;
+  }
+  const d = await dir();
+  await writeFile(join(d, 'bundle.tar.gz.asset.json'), JSON.stringify({ id: 7, size: 1024, url: asset.url }));
+  await symlink('/dev/full', join(d, 'bundle.tar.gz.part'));
+  const s = server();
+  await assert.rejects(downloadAsset(asset, d, { fetchImpl: s.fetchImpl, statfs: roomy, sleep: noSleep }),
+    (e) => e.code === 'PREFLIGHT' && /no space left/.test(e.message) && e.message.includes(d));
+  assert.equal(s.calls.length, 1);
+});
+
+test('the disk-space check runs before anything is written to staging', async () => {
+  const d = await dir();
+  const tight = async () => ({ bavail: 1, bsize: 4096 });
+  await assert.rejects(downloadAsset(asset, d, { fetchImpl: server().fetchImpl, statfs: tight, sleep: noSleep }), { code: 'PREFLIGHT' });
+  assert.deepEqual(await readdir(d), []);
+});
+
+test('discardAsset removes the staged file, its .part and its identity record', async () => {
+  const d = await dir();
+  for (const suffix of ['', '.part', '.asset.json']) await writeFile(join(d, `bundle.tar.gz${suffix}`), 'x');
+  await writeFile(join(d, 'SHA256SUMS'), 'kept');
+  await discardAsset(asset, d);
+  assert.deepEqual(await readdir(d), ['SHA256SUMS']);
+  await discardAsset(asset, d);
+});

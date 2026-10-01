@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign, createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readdir, readFile as fsReadFile, stat, realpath } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, mkdir, writeFile, readdir, readFile as fsReadFile, stat, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { run } from '../src/main.js';
@@ -276,6 +277,111 @@ test('too little disk space for the bundle is a preflight failure', async () => 
   h.deps.statfs = async () => ({ bavail: 1, bsize: 4096 });
   assert.equal(await run(['install', '--plan'], h.deps), EXIT.PREFLIGHT);
   assert.match(h.output.err, /not enough free space/);
+  assert.deepEqual(await readdir(h.staging('0.4.7')), [], 'nothing is written before the space check');
+});
+
+test('a full disk while staging is a preflight failure with one JSON result, not a network retry', async (t) => {
+  if (!existsSync('/dev/full')) {
+    t.skip('needs /dev/full, which answers every write with ENOSPC (Linux)');
+    return;
+  }
+  const rel = release();
+  const tarballUrl = `${DL}/v0.4.7/${name('0.4.7')}`;
+  const served = { n: 0 };
+  const h = await host({ fetchImpl: github(rel, { overrides: { [tarballUrl]: () => { served.n += 1; return new Response(rel.tarball); } } }).fetchImpl, keys: rel.keys });
+  // A .part whose writes land on /dev/full, as a full disk answers them.
+  const dir = h.staging('0.4.7');
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeFile(join(dir, `${name('0.4.7')}.asset.json`), JSON.stringify({ id: 100, size: rel.tarball.length, url: tarballUrl }));
+  await symlink('/dev/full', join(dir, `${name('0.4.7')}.part`));
+  assert.equal(await run(['install', '--plan', '--json'], h.deps), EXIT.PREFLIGHT);
+  const refused = JSON.parse(h.output.out);
+  assert.equal(refused.error.code, 'PREFLIGHT');
+  assert.match(refused.error.reason, /no space left/);
+  assert.equal(served.n, 1);
+});
+
+test('out-of-space and quota errors from any step are preflight failures', async () => {
+  const rel = release();
+  for (const code of ['ENOSPC', 'EDQUOT']) {
+    const h = await host({ fetchImpl: github(rel).fetchImpl, keys: rel.keys });
+    h.deps.attest = async () => { throw Object.assign(new Error(`${code}: no space left on device, write`), { code }); };
+    assert.equal(await run(['install', '--plan', '--json'], h.deps), EXIT.PREFLIGHT, code);
+    assert.equal(JSON.parse(h.output.out).error.code, 'PREFLIGHT', code);
+  }
+});
+
+test('a staged file that fails verification is discarded, so the next run downloads it afresh', async () => {
+  const rel = release();
+  const gh = github(rel);
+  const h = await host({ fetchImpl: gh.fetchImpl, keys: rel.keys });
+  assert.equal(await run(['install', '--plan'], h.deps), EXIT.OK, h.output.err);
+  const staged = join(h.staging('0.4.7'), name('0.4.7'));
+  const bytes = await fsReadFile(staged);
+  bytes[bytes.length - 1] ^= 1;
+  await writeFile(staged, bytes);
+  h.output.err = '';
+  assert.equal(await run(['install', '--plan'], h.deps), EXIT.TRUST);
+  assert.match(h.output.err, /SHA256 mismatch/);
+  assert.match(h.output.err, /discarded/);
+  assert.deepEqual(await readdir(h.staging('0.4.7')), []);
+  const fetched = () => gh.calls.filter((url) => url === gh.tarballUrl).length;
+  const before = fetched();
+  h.output.err = '';
+  assert.equal(await run(['install', '--plan'], h.deps), EXIT.OK, h.output.err);
+  assert.equal(fetched(), before + 1);
+});
+
+test('a download refused once is fetched again on the next run, never reused from staging', async () => {
+  const rel = release();
+  for (const file of [name('0.4.7'), 'SHA256SUMS', 'SHA256SUMS.sig']) {
+    const good = { [name('0.4.7')]: rel.tarball, SHA256SUMS: rel.sums, 'SHA256SUMS.sig': rel.sig }[file];
+    const bad = Buffer.from(good);
+    bad[0] ^= 1;
+    const served = { n: 0 };
+    const url = `${DL}/v0.4.7/${file}`;
+    const h = await host({ fetchImpl: github(rel, { overrides: { [url]: () => new Response(served.n++ === 0 ? bad : good) } }).fetchImpl, keys: rel.keys });
+    assert.equal(await run(['install', '--plan', '--json'], h.deps), EXIT.TRUST, file);
+    assert.equal(JSON.parse(h.output.out).error.code, 'TRUST', file);
+    h.output.out = '';
+    assert.equal(await run(['install', '--plan', '--json'], h.deps), EXIT.OK, `${file}: ${h.output.err}`);
+    assert.equal(served.n, 2, file);
+  }
+});
+
+test('a GitHub answer that is not JSON is a network failure, from the release or the attestation API', async () => {
+  const rel = release();
+  const html = () => new Response('<html>rate limited</html>');
+  const r = await host({ fetchImpl: github(rel, { overrides: { [`${RELEASE_API}/tags/v0.4.7`]: html } }).fetchImpl, keys: rel.keys });
+  assert.equal(await run(['install', '--plan', '--json'], r.deps), EXIT.NETWORK);
+  assert.equal(JSON.parse(r.output.out).error.code, 'NETWORK');
+  assert.match(r.output.err, /api\.github\.com answered with something that is not JSON/);
+
+  const a = await host({ fetchImpl: github(rel, { overrides: { [`${ATTESTATION_API}/sha256:${rel.sha256}`]: html } }).fetchImpl, keys: rel.keys });
+  delete a.deps.attest;
+  assert.equal(await run(['install', '--plan'], a.deps), EXIT.NETWORK);
+  assert.match(a.output.err, /api\.github\.com answered with something that is not JSON/);
+});
+
+test('a corrupt sigstore cache is a preflight failure that names it, not a GitHub fault', async () => {
+  const rel = release();
+  const attestations = `${ATTESTATION_API}/sha256:${rel.sha256}`;
+  const fetchImpl = async (url) => {
+    if (url === attestations) return Response.json({ attestations: [{ bundle: { mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json' } }] });
+    throw new Error(`unexpected fetch of ${url}`);
+  };
+  const h = await host({ fetchImpl, keys: rel.keys });
+  delete h.deps.attest;
+  const cache = join(h.root, 'cache', 'circuitbreaker', 'sigstore');
+  await mkdir(join(cache, 'tuf-repo-cdn.sigstore.dev', 'targets'), { recursive: true });
+  // tuf-js rewrites root.json in place; an interrupted write leaves it truncated.
+  await writeFile(join(cache, 'tuf-repo-cdn.sigstore.dev', 'root.json'), '{"signed": {"_type": "ro');
+  assert.equal(await run(['install', '--plan', '--json', '--local-bundle', await localBundle(rel)], h.deps), EXIT.PREFLIGHT);
+  const { error } = JSON.parse(h.output.out);
+  assert.equal(error.code, 'PREFLIGHT');
+  assert.ok(error.reason.includes(cache), error.reason);
+  assert.match(error.reason, /remove it and retry/);
+  assert.doesNotMatch(h.output.err, /GitHub/);
 });
 
 test('a release that is not published is unsupported', async () => {
@@ -326,7 +432,8 @@ test('an existing install is reported, and the plan says an install would be an 
   const rel = release();
   const h = await host({ fetchImpl: github(rel).fetchImpl, keys: rel.keys, identity: { version: '0.4.6' } });
   assert.equal(await run(['install', '--plan'], h.deps), EXIT.OK, h.output.err);
-  assert.match(h.output.out, /This host already runs Circuit Breaker 0\.4\.6; an install would be an update \(sub-plan 05\)\.\n$/);
+  assert.match(h.output.out, /\nThis host already runs Circuit Breaker 0\.4\.6; an install would be an update\.\n$/);
+  assert.doesNotMatch(h.output.out, /sub-plan/);
 
   const j = await host({ fetchImpl: github(rel).fetchImpl, keys: rel.keys, identity: { version: '0.4.6' } });
   assert.equal(await run(['install', '--plan', '--json'], j.deps), EXIT.OK, j.output.err);

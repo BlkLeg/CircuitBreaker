@@ -1,6 +1,7 @@
 // Build provenance: GitHub attestations for the bundle tarball, verified with
 // sigstore against the release workflow on main. Required when online; the
 // caller skips it in air-gap mode, where the signature alone decides.
+import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fetchBytes as httpFetchBytes, NetworkError } from './http.js';
@@ -45,10 +46,44 @@ function codesOf(error) {
   return codes;
 }
 
-function setupError(error, sigstore, cachePath) {
+function hasSyntaxError(error) {
+  for (let e = error, depth = 0; e && depth < 6; e = e.cause, depth += 1) {
+    if (e instanceof SyntaxError) return true;
+  }
+  return false;
+}
+
+// The first metadata file in the TUF cache that is not valid JSON, or null.
+// tuf-js rewrites these in place (not atomically), so an interrupted run can
+// leave one truncated, and root.json is parsed unguarded on every run after.
+async function corruptCacheFile(cachePath) {
+  let entries;
+  try {
+    entries = await readdir(cachePath, { recursive: true, withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const path = join(entry.parentPath ?? entry.path, entry.name);
+    let text;
+    try { text = await readFile(path, 'utf8'); } catch { continue; }
+    try { JSON.parse(text); } catch { return path; }
+  }
+  return null;
+}
+
+async function setupError(error, sigstore, cachePath) {
   const codes = codesOf(error);
   const fsCode = codes.find((code) => FS_CODES.has(code));
   if (fsCode) return new StagingError(`the sigstore cache ${cachePath} is not usable (${fsCode}); fix its ownership or remove it and retry`);
+  // JSON that did not parse: a cached metadata file (a preflight problem on
+  // this host, which repeats until the cache is removed) or the mirror's answer.
+  if (hasSyntaxError(error)) {
+    const corrupt = cachePath ? await corruptCacheFile(cachePath) : null;
+    if (corrupt) return new StagingError(`the sigstore cache ${cachePath} is corrupt (${corrupt} is not valid JSON); remove it and retry`);
+    return new NetworkError(`${TUF_HOST} answered with something that is not JSON (${error.message})`, error);
+  }
   if (error instanceof sigstore.TUFError) {
     return new NetworkError(`could not load sigstore's trusted root from ${TUF_HOST}: ${codes.join(' / ')}`, error);
   }
@@ -57,9 +92,10 @@ function setupError(error, sigstore, cachePath) {
 
 // Builds sigstore's verifier once: the import and the TUF refresh happen here,
 // before any bundle is looked at, and their failures propagate (a TUF failure
-// as NetworkError, an unusable cache as a PREFLIGHT StagingError, anything else
-// as it is). The returned check answers false only for sigstore's verification
-// errors; any other throw is a fault and propagates. Imported on first use, so
+// or an unparsable mirror answer as NetworkError, an unusable or corrupt cache
+// as a PREFLIGHT StagingError, anything else as it is). The returned check
+// answers false only for sigstore's verification errors; any other throw is a
+// fault and propagates. Imported on first use, so
 // commands that never verify provenance never load sigstore.
 export async function defaultCreateVerifier(options, { load = () => import('sigstore') } = {}) {
   const sigstore = await load();
@@ -67,7 +103,7 @@ export async function defaultCreateVerifier(options, { load = () => import('sigs
   try {
     verifier = await sigstore.createVerifier(options);
   } catch (error) {
-    throw setupError(error, sigstore, options.tufCachePath);
+    throw await setupError(error, sigstore, options.tufCachePath);
   }
   const rejections = [sigstore.VerificationError, sigstore.PolicyError, sigstore.ValidationError];
   return async (bundle) => {
