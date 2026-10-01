@@ -577,15 +577,22 @@ cb_lifecycle_lock_release() {
 }
 
 # In a subshell that is about to exec something that must not hold the lock:
-# close the descriptor and drop the handoff variables.
+# close the descriptor and drop the handoff variables. The event descriptor
+# goes too: a daemon left holding it would keep the coordinator reading the
+# operation's events until the daemon exits.
 _cb_lifecycle_drop_lock() {
   local fd
+  if _cb_lifecycle_event_fd_valid; then
+    fd="$CB_LIFECYCLE_EVENT_FD"
+    exec {fd}>&-
+  fi
   for fd in "${_CB_LIFECYCLE_LOCK_FD:-}" "${CB_LIFECYCLE_LOCK_FD:-}"; do
     if [[ "$fd" =~ ^[1-9][0-9]{0,4}$ ]] && (( fd >= 3 )); then
       exec {fd}<&-
     fi
   done
-  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" "${_CB_LIFECYCLE_CACHE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
+  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" "${_CB_LIFECYCLE_CACHE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION \
+    CB_LIFECYCLE_EVENT_FD
 }
 
 # Run a command in the foreground without the lock, so that nothing it leaves

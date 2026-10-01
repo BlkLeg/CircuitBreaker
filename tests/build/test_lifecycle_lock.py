@@ -740,7 +740,7 @@ def test_sigkill_of_the_parent_keeps_exclusion_until_the_mutating_child_exits(
             os.kill(child_pid, signal.SIGKILL)
 
 
-REPORT = 'echo "$BASHPID ${CB_LIFECYCLE_LOCK_FD-unset} ${CB_LIFECYCLE_OPERATION-unset}" >"$1"'
+REPORT = 'echo "$BASHPID ${CB_LIFECYCLE_LOCK_FD-unset} ${CB_LIFECYCLE_OPERATION-unset} ${CB_LIFECYCLE_EVENT_FD-unset}" >"$1"'
 STARTERS = {
     # Started in the background by the lock holder.
     "spawned": f"cb_lifecycle_spawn_unlocked bash -c '{REPORT}; exec sleep 60' helper \"$PIDFILE\"\n",
@@ -756,17 +756,20 @@ def test_an_unlocked_helper_does_not_keep_the_lock(tmp_path: Path, procs: list[P
     pidfile = tmp_path / "helper"
     parent = bash_bg(
         procs,
+        # A daemon holding the event descriptor would keep the coordinator reading until it exits.
+        f'exec {{ev}}>"{tmp_path / "events"}"\nexport CB_LIFECYCLE_EVENT_FD=$ev\n'
         f'cb_lifecycle_lock_acquire "cb restart"\ncb_lifecycle_lock_bind_operation {OP}\n'
         + STARTERS[how]
-        + 'echo "ready $CB_LIFECYCLE_LOCK_FD"\nread -r _ || true\n',
+        + 'echo "ready $CB_LIFECYCLE_LOCK_FD $CB_LIFECYCLE_EVENT_FD"\nread -r _ || true\n',
         state,
         {"PIDFILE": str(pidfile)},
     )
-    fd = parent.line().split()[1]
-    helper_pid, lock_fd, operation = _wait_for(pidfile).split()
+    fd, event_fd = parent.line().split()[1:]
+    helper_pid, lock_fd, operation, event = _wait_for(pidfile).split()
     try:
-        assert (lock_fd, operation) == ("unset", "unset")
+        assert (lock_fd, operation, event) == ("unset", "unset", "unset")
         assert not Path(f"/proc/{helper_pid}/fd/{fd}").exists()
+        assert not Path(f"/proc/{helper_pid}/fd/{event_fd}").exists()
         parent.kill()
         assert _running(int(helper_pid))
         assert contend(state, tmp_path)[0] == 0
