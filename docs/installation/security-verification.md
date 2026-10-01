@@ -249,9 +249,13 @@ From 0.4.7, every release publishes `SHA256SUMS.sig`, an Ed25519 signature over
 when `SHA256SUMS` and `SHA256SUMS.sig` sit next to the tarball. Verification needs
 OpenSSL 3.
 
-Without `--version`, the installer accepts an unsigned release only if it is exactly
-0.4.6, the last unsigned release. Any other release below 0.4.7 needs an explicit
-`--version X.Y.Z` (no leading `v`). A non-canonical version always needs a signature.
+Without `--version`, the installer accepts an unsigned release only if its tarball
+is byte-for-byte the published 0.4.6 bundle, the last unsigned release: `install.sh`
+pins the SHA-256 of the 0.4.6 amd64 and arm64 tarballs. A forged release tagged
+`v0.4.6` does not match the pin and is refused. Any other release below 0.4.7 needs an
+explicit `--version X.Y.Z`. A non-canonical version always needs a signature.
+`--skip-signature` skips the signature check but still checks the SHA-256; use it only
+for a bundle you already trust.
 The build-provenance attestation is checked only when `gh` is installed and logged
 in, never when air-gapped, and a failed check never blocks the install.
 

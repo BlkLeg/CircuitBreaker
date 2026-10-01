@@ -667,13 +667,14 @@ cb_verify_sums_signature() {
 }
 
 # Check one tarball ($2) against its own line in SHA256SUMS ($1). The line is
-# chosen by exact name (./<basename>), never with --ignore-missing, so a sums
-# file that does not list this tarball cannot "verify" it.
+# chosen by exact name (./<basename> as release.yml writes it, or a bare
+# <basename> as `sha256sum *` writes it), never with --ignore-missing, so a
+# sums file that does not list this tarball cannot "verify" it.
 # 0: match. 1: mismatch. 3: not listed.
 cb_verify_sums_entry() {
   local sums="$1" tarball="$2" name expected actual
   name="$(basename -- "$tarball")"
-  expected="$(awk -v want="./${name}" '$2 == want { print $1; exit }' "$sums" 2>/dev/null)" || return 3
+  expected="$(awk -v want="${name}" '$2 == "./" want || $2 == want { print $1; exit }' "$sums" 2>/dev/null)" || return 3
   [[ -n "$expected" ]] || return 3
   actual="$(sha256sum -- "$tarball" | cut -d' ' -f1)" || return 1
   [[ "$actual" == "$expected" ]] || return 1
@@ -734,14 +735,24 @@ DOCKER_AVAILABLE=false
 INSTALL_DOCKER=true
 SKIP_CHECKSUM=false
 SKIP_SIGNATURE=false
-# Installer policy (not in the shared library): the last release that shipped
-# without SHA256SUMS.sig. Only this release, or an older one the operator asked
-# for with --version, may be installed unsigned.
-CB_LAST_UNSIGNED_RELEASE="0.4.6"
+# Installer policy (not in the shared library): the bundles of v0.4.6, the
+# last release published without SHA256SUMS.sig, as "<sha256>  <file name>"
+# copied from that release's SHA256SUMS. Without --version, an unsigned
+# release is installed only if its tarball is byte-for-byte one of these.
+# A hash, not a version string: a tag name is whatever the publisher typed, so
+# a version exception would let anyone able to publish a release tag a forged
+# bundle v0.4.6, make it the newest, and have default installs accept it
+# unsigned for as long as this installer is in use. Only the genuine bytes
+# match the hash. An older release the operator names with --version may still
+# be installed unsigned (see cb_unsigned_release_allowed).
+CB_UNSIGNED_PIN_AMD64="377a62236a792df994e63c54fef38aca2ab76b38246fd4de33b913514f7a35d5  circuit-breaker_0.4.6_linux_amd64.tar.gz"
+CB_UNSIGNED_PIN_ARM64="1c93f507cbac803da6dc6fd0ef3da62083ef87b09bcba3531b7bd61a1624c93f  circuit-breaker_0.4.6_linux_arm64.tar.gz"
 # True only when the operator passed --version; CB_VERSION is later overwritten
 # from the release tag, which is not operator intent.
 CB_VERSION_EXPLICIT=false
-# Private temp dir for downloaded release metadata; removed by _cb_on_exit.
+# Private (0700) temp dir holding the downloaded tarball, its SHA256SUMS and
+# SHA256SUMS.sig, and the extracted bundle; removed by stage0_install_bundle
+# once the tree is installed, and by _cb_on_exit on every other exit path.
 CB_PRIVATE_TMP=""
 DOCKER_MODE=false
 
@@ -996,7 +1007,7 @@ _cb_note_err() {
 _cb_on_exit() {
   local status=$?
   trap - ERR
-  # Private download directory (see stage0_download_bundle).
+  # Private download and extraction directory (see stage0_download_bundle).
   if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
     rm -rf -- "$CB_PRIVATE_TMP"
     CB_PRIVATE_TMP=""
@@ -1664,21 +1675,26 @@ cb_check_attestation() {
   fi
 }
 
-# Whether a release with no SHA256SUMS.sig may be installed. $1 version.
-# Only a canonical X.Y.Z (no leading zeros, no v: the caller has already stripped the tag's one v) qualifies, because the tag is
-# attacker-influenced and non-canonical forms (0.4.6.1, 00.4.7) mis-order under
-# version sorting. Then: the operator asked for that older version with
-# --version, or it is exactly the last release that shipped unsigned.
+# Whether a downloaded release with no SHA256SUMS.sig may be installed.
+# $1 version, $2 tarball.
+# - The tarball is one of the pinned v0.4.6 bundles (CB_UNSIGNED_PIN_*),
+#   matched by SHA-256 and file name: those exact bytes are known good.
+# - Or the operator asked for an older release with --version. Only a
+#   canonical X.Y.Z (no leading zeros, no v: --version and the tag each have
+#   their one v stripped) qualifies, because non-canonical forms (0.4.6.1,
+#   00.4.7) mis-order under version sorting.
+# Everything else must be signed.
 cb_unsigned_release_allowed() {
-  local v="$1"
+  local v="$1" tarball="$2" actual pin
+  actual="$(sha256sum -- "$tarball" | cut -d' ' -f1)" || return 1
+  for pin in "$CB_UNSIGNED_PIN_AMD64" "$CB_UNSIGNED_PIN_ARM64"; do
+    if [[ "${actual}  $(basename -- "$tarball")" == "$pin" ]]; then
+      return 0
+    fi
+  done
+  [[ "$CB_VERSION_EXPLICIT" == "true" ]] || return 1
   [[ "$v" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || return 1
-  if [[ "$v" == "$CB_LAST_UNSIGNED_RELEASE" ]]; then
-    return 0
-  fi
-  if [[ "$CB_VERSION_EXPLICIT" == "true" ]] && ! cb_release_requires_signature "$v"; then
-    return 0
-  fi
-  return 1
+  ! cb_release_requires_signature "$v"
 }
 
 # Decide whether a bundle may be installed: signature first, then hash.
@@ -1736,9 +1752,9 @@ cb_check_bundle() {
     fi
   elif [[ "$SKIP_SIGNATURE" == "true" ]]; then
     cb_warn "Skipping signature verification (--skip-signature); the SHA256 is still checked"
-  elif [[ "$origin" == "download" ]] && ! cb_unsigned_release_allowed "$version"; then
+  elif [[ "$origin" == "download" ]] && ! cb_unsigned_release_allowed "$version" "$tarball"; then
     cb_fail "Release v${version} publishes no SHA256SUMS.sig" \
-      "Every release from v${CB_FIRST_SIGNED_RELEASE} on is signed, and the newest release must be signed too; refusing an unsigned one. For a deliberate older install pass --version <x> (x below ${CB_FIRST_SIGNED_RELEASE}), or pass --skip-signature only for a bundle you already trust"
+      "Every release from v${CB_FIRST_SIGNED_RELEASE} on is signed, and an unsigned newest release is accepted only if it is the genuine v0.4.6 bundle; refusing this one. For a deliberate older install pass --version <x> (x below ${CB_FIRST_SIGNED_RELEASE}, without a leading v), or pass --skip-signature only for a bundle you already trust"
   elif [[ "$origin" == "download" ]]; then
     cb_warn "Release v${version} predates bundle signing (v${CB_FIRST_SIGNED_RELEASE}); checking its SHA256 only"
   else
@@ -1834,12 +1850,18 @@ stage0_download_bundle() {
     asset_size="$(printf '%s' "$release_json" \
       | jq -r --arg n "$tarball_name" '.assets[] | select(.name==$n) | .size')"
 
-    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "$tarball_url" -o "/tmp/${tarball_name}" &
+    # Private (0700) directory, not a predictable /tmp name another local user
+    # could pre-create or swap between the check and the extraction. It holds
+    # the tarball, SHA256SUMS, SHA256SUMS.sig and the extracted tree, and is
+    # removed by stage0_install_bundle, or by _cb_on_exit on any other exit.
+    CB_PRIVATE_TMP="$(mktemp -d)"
+    local tarball_path="${CB_PRIVATE_TMP}/${tarball_name}"
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "$tarball_url" -o "$tarball_path" &
     local curl_pid=$!
     if [[ "$asset_size" =~ ^[0-9]+$ ]] && (( asset_size > 0 )); then
       while kill -0 "$curl_pid" 2>/dev/null; do
         local got pct
-        got="$(stat -c '%s' "/tmp/${tarball_name}" 2>/dev/null || echo 0)"
+        got="$(stat -c '%s' "$tarball_path" 2>/dev/null || echo 0)"
         pct=$(( (got * 100) / asset_size ))
         # Clamped to 99: cb_progress takes a decimal fraction, so "0.100" would
         # parse as 0.10 and the bar would jump BACKWARDS to 10% on the last
@@ -1851,12 +1873,10 @@ stage0_download_bundle() {
       done
     fi
     wait "$curl_pid" || cb_fail "Download failed" "$tarball_url"
-    cb_ok "Downloaded $(du -h "/tmp/${tarball_name}" | cut -f1)"
+    cb_ok "Downloaded $(du -h "$tarball_path" | cut -f1)"
 
     local sums_path="" sig_path=""
     if [[ "$SKIP_CHECKSUM" != "true" ]]; then
-      # Private (0700) directory, removed by _cb_on_exit on every exit path.
-      CB_PRIVATE_TMP="$(mktemp -d)"
       if cb_fetch_release_asset "$release_json" SHA256SUMS "$CB_PRIVATE_TMP"; then
         sums_path="${CB_PRIVATE_TMP}/SHA256SUMS"
       fi
@@ -1864,13 +1884,9 @@ stage0_download_bundle() {
         sig_path="${CB_PRIVATE_TMP}/SHA256SUMS.sig"
       fi
     fi
-    cb_check_bundle "/tmp/${tarball_name}" "$sums_path" "$sig_path" download "$CB_VERSION"
-    if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
-      rm -rf -- "$CB_PRIVATE_TMP"
-      CB_PRIVATE_TMP=""
-    fi
+    cb_check_bundle "$tarball_path" "$sums_path" "$sig_path" download "$CB_VERSION"
 
-    CB_BUNDLE_TARBALL="/tmp/${tarball_name}"
+    CB_BUNDLE_TARBALL="$tarball_path"
   fi
 
   # Extract bundle
@@ -1886,12 +1902,17 @@ stage0_download_bundle() {
   # permitted"), which otherwise aborts extraction outright. Dropping both is
   # safe because stage0_install_bundle unconditionally chowns/chmods every
   # subtree it copies from here.
+  #
+  # Extracted inside CB_PRIVATE_TMP (created here for --local-bundle, whose
+  # tarball lives elsewhere), never a fixed /tmp path.
   cb_step "Extracting bundle"
-  rm -rf /tmp/cb-bundle
-  mkdir -p /tmp/cb-bundle
-  tar -xzf "$CB_BUNDLE_TARBALL" -C /tmp/cb-bundle --no-same-owner --no-same-permissions \
+  if [[ -z "${CB_PRIVATE_TMP:-}" ]]; then
+    CB_PRIVATE_TMP="$(mktemp -d)"
+  fi
+  CB_BUNDLE_DIR="${CB_PRIVATE_TMP}/bundle"
+  mkdir -- "$CB_BUNDLE_DIR"
+  tar -xzf "$CB_BUNDLE_TARBALL" -C "$CB_BUNDLE_DIR" --no-same-owner --no-same-permissions \
     || cb_fail "Bundle extraction failed" "Tarball may be corrupted: $CB_BUNDLE_TARBALL — re-run to re-download"
-  CB_BUNDLE_DIR="/tmp/cb-bundle"
   # PBS is the release layout. PyInstaller onefile (root-level binary, no
   # python/) stays installable for one cycle so the journey can prove the
   # upgrade every existing native host will perform; Task 8 removes it.
@@ -1982,11 +2003,14 @@ stage0_install_bundle() {
     cb_ok "Agent binaries installed"
   fi
 
-  # Cleanup
-  rm -rf /tmp/cb-bundle
-  if [[ -z "$CB_LOCAL_BUNDLE" ]] && [[ -n "${CB_BUNDLE_TARBALL:-}" ]]; then
-    rm -f "$CB_BUNDLE_TARBALL"
+  # Cleanup: the private directory holds the extracted tree and, for a
+  # download, the tarball and its SHA256SUMS(.sig). A --local-bundle tarball
+  # lives outside it and is left where the operator put it.
+  if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
+    rm -rf -- "$CB_PRIVATE_TMP"
+    CB_PRIVATE_TMP=""
   fi
+  CB_BUNDLE_DIR=""
 }
 
 
@@ -2061,7 +2085,8 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --version)
-      CB_VERSION="$2"
+      # One leading v is dropped: the release API is queried for tags/v<version>.
+      CB_VERSION="${2#v}"
       CB_VERSION_EXPLICIT=true
       shift 2
       ;;

@@ -139,6 +139,21 @@ def test_an_asc_entry_does_not_stand_in_for_the_tarball(rel: Release) -> None:
     assert bash('cb_verify_sums_entry "$1" "$2"', str(rel.sums), str(rel.tarball)).returncode == 3
 
 
+def test_a_bare_name_entry_written_by_sha256sum_star_is_found(rel: Release) -> None:
+    """`make sign` and users run `sha256sum * > SHA256SUMS`: no ./ prefix."""
+    digest = hashlib.sha256(rel.tarball.read_bytes()).hexdigest()
+    rel.sums.write_text("0" * 64 + f"  {TARBALL}.asc\n" + f"{digest}  {TARBALL}\n")
+    assert bash('cb_verify_sums_entry "$1" "$2"', str(rel.sums), str(rel.tarball)).returncode == 0
+    rel.tarball.write_bytes(b"tampered")
+    assert bash('cb_verify_sums_entry "$1" "$2"', str(rel.sums), str(rel.tarball)).returncode == 1
+
+
+def test_a_bare_name_asc_entry_does_not_stand_in_for_the_tarball(rel: Release) -> None:
+    digest = hashlib.sha256(rel.tarball.read_bytes()).hexdigest()
+    rel.sums.write_text(f"{digest}  {TARBALL}.asc\n{digest}  sub/{TARBALL}\n")
+    assert bash('cb_verify_sums_entry "$1" "$2"', str(rel.sums), str(rel.tarball)).returncode == 3
+
+
 @pytest.mark.parametrize(
     ("version", "required"),
     [("0.4.6", False), ("0.4.6-rc.1", False), ("0.3.9", False), ("", False),

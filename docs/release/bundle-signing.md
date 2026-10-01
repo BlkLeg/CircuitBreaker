@@ -11,10 +11,18 @@ as well as by the environment's branch rule.
 
 - A signed release (0.4.7 and later) installs only if `SHA256SUMS.sig` verifies
   against a key in the trusted list. This needs OpenSSL 3.
-- An unsigned release is accepted without `--version` only if it is exactly 0.4.6
-  (`CB_LAST_UNSIGNED_RELEASE`, the last unsigned release) with a canonical tag.
-- Any other release below 0.4.7 needs an explicit `--version X.Y.Z`, with no leading `v`.
-- A non-canonical version always needs a signature.
+- Without `--version`, an unsigned release is accepted only if its tarball is
+  byte-for-byte the published 0.4.6 bundle (the last unsigned release). `install.sh`
+  pins the SHA-256 of the amd64 and arm64 0.4.6 tarballs (`CB_UNSIGNED_PIN_AMD64`,
+  `CB_UNSIGNED_PIN_ARM64`). It pins a hash, not a version, because a tag name is
+  whatever the publisher typed: a forged release tagged `v0.4.6` would otherwise
+  install unsigned. Any other unsigned release fails.
+- An older release you ask for with `--version X.Y.Z` (below 0.4.7) may be unsigned.
+  The installer warns and checks its SHA-256 only. One leading `v` is accepted.
+- A non-canonical version (`0.4.6.1`, `00.4.7`) always needs a signature.
+- `SHA256SUMS` is checked against the tarball in every case.
+- `--skip-signature` skips the signature but still checks the SHA-256. Use it only for
+  a bundle you already trust.
 - The build-provenance attestation is checked only when `gh` is installed and logged
   in. It is never checked when air-gapped, and a failed check never blocks the install.
 

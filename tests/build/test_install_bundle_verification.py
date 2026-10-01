@@ -8,6 +8,7 @@ stubbed to plain lines. Keys are throwaway, generated per test.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
@@ -31,10 +32,19 @@ def _function(name: str) -> str:
     return body.group(0)
 
 
-def _last_unsigned() -> str:
-    line = re.search(r'^CB_LAST_UNSIGNED_RELEASE="[^"]*"$', INSTALL_SH.read_text(), re.MULTILINE)
-    assert line, "CB_LAST_UNSIGNED_RELEASE assignment not found in install.sh"
-    return line.group(0)
+PINNED_V046 = {
+    "CB_UNSIGNED_PIN_AMD64": "377a62236a792df994e63c54fef38aca2ab76b38246fd4de33b913514f7a35d5"
+                             "  circuit-breaker_0.4.6_linux_amd64.tar.gz",
+    "CB_UNSIGNED_PIN_ARM64": "1c93f507cbac803da6dc6fd0ef3da62083ef87b09bcba3531b7bd61a1624c93f"
+                             "  circuit-breaker_0.4.6_linux_arm64.tar.gz",
+}
+
+
+def _unsigned_pins() -> str:
+    """install.sh's CB_UNSIGNED_PIN_* assignments, verbatim."""
+    lines = re.findall(r'^CB_UNSIGNED_PIN_[A-Z0-9]+="[^"]*"$', INSTALL_SH.read_text(), re.MULTILINE)
+    assert lines, "CB_UNSIGNED_PIN_* assignments not found in install.sh"
+    return "\n".join(lines)
 
 
 def _library() -> str:
@@ -78,7 +88,13 @@ class Setup:
 
     def check(self, sums: str, sig: str, origin: str, version: str, *,
               skip_checksum: bool = False, skip_signature: bool = False,
-              airgap: bool = True, keys: Path | None = None, explicit: bool = False) -> subprocess.CompletedProcess[str]:
+              airgap: bool = True, keys: Path | None = None, explicit: bool = False,
+              pin_this_tarball: bool = False) -> subprocess.CompletedProcess[str]:
+        # The real pins name the v0.4.6 bundles; a test that needs a pinned
+        # tarball repoints one pin at its own throwaway tarball, after the
+        # real assignments, so they are still exercised everywhere else.
+        own_pin = (f'CB_UNSIGNED_PIN_AMD64="{hashlib.sha256(self.tarball.read_bytes()).hexdigest()}'
+                   f'  {self.tarball.name}"') if pin_this_tarball else ""
         script = "\n".join([
             "set -euo pipefail",
             STUBS,
@@ -86,7 +102,8 @@ class Setup:
             f'_cb_embedded_release_keys() {{ cat "{keys or self.keys}"; }}',
             f"SKIP_CHECKSUM={'true' if skip_checksum else 'false'}",
             f"SKIP_SIGNATURE={'true' if skip_signature else 'false'}",
-            _last_unsigned(),
+            _unsigned_pins(),
+            own_pin,
             f"CB_VERSION_EXPLICIT={'true' if explicit else 'false'}",
             f"CB_AIRGAP={'true' if airgap else 'false'}",
             'CB_GITHUB_REPO="BlkLeg/CircuitBreaker"',
@@ -158,11 +175,37 @@ def test_an_unreadable_signature_file_fails(s: Setup) -> None:
     assert "SHA256SUMS.sig is unreadable" in r.stdout
 
 
-def test_a_release_before_signing_warns_and_checks_the_hash(s: Setup) -> None:
-    r = s.check(str(s.sums), "", "download", "0.4.6")
+def test_the_pinned_v046_bundle_is_accepted_unsigned_and_its_hash_checked(s: Setup) -> None:
+    r = s.check(str(s.sums), "", "download", "0.4.6", pin_this_tarball=True)
     assert r.returncode == 0, r.stdout
     assert "predates bundle signing" in r.stdout
     assert "SHA256 checksum verified" in r.stdout
+
+
+def test_a_pinned_bundle_still_fails_a_mismatching_sums_entry(s: Setup) -> None:
+    r = s.check(str(s.sums), "", "download", "0.4.6", pin_this_tarball=True)
+    assert r.returncode == 0, r.stdout
+    s.sums.write_text(f"{'0' * 64}  ./{TARBALL}\n")
+    r = s.check(str(s.sums), "", "download", "0.4.6", pin_this_tarball=True)
+    assert r.returncode == 1
+    assert "SHA256 mismatch" in r.stdout
+
+
+def test_a_forged_unsigned_v046_is_refused_on_the_default_path(s: Setup) -> None:
+    """The tag says 0.4.6 but the bytes are not the published v0.4.6 bundle."""
+    r = s.check(str(s.sums), "", "download", "0.4.6")
+    assert r.returncode == 1
+    assert "publishes no SHA256SUMS.sig" in r.stdout
+    assert "genuine v0.4.6 bundle" in r.stdout
+
+
+def test_the_pins_are_the_published_v046_hashes() -> None:
+    """Copied from v0.4.6's SHA256SUMS; one per architecture the installer supports."""
+    text = INSTALL_SH.read_text()
+    for name, value in PINNED_V046.items():
+        assert f'{name}="{value}"' in text
+    assert "CB_LAST_UNSIGNED_RELEASE" not in text, "the version-string exception must not come back"
+    assert '"$CB_UNSIGNED_PIN_AMD64" "$CB_UNSIGNED_PIN_ARM64"' in _function("cb_unsigned_release_allowed")
 
 
 def test_a_download_without_sums_fails(s: Setup) -> None:
@@ -261,7 +304,7 @@ def test_the_option_is_parsed_and_documented() -> None:
     assert re.search(r"^SKIP_SIGNATURE=false$", text, re.MULTILINE)
 
 
-def test_default_path_accepts_only_the_last_unsigned_release(s: Setup) -> None:
+def test_default_path_refuses_an_older_unsigned_release(s: Setup) -> None:
     r = s.check(str(s.sums), "", "download", "0.4.3")
     assert r.returncode == 1
     assert "publishes no SHA256SUMS.sig" in r.stdout
@@ -324,8 +367,128 @@ def test_a_release_not_publishing_the_asset_returns_1_without_failing(s: Setup) 
     assert "RC=1" in r.stdout
 
 
-def test_a_double_v_tag_is_not_read_as_the_last_unsigned_release(s: Setup) -> None:
-    """Tag vv0.4.6 leaves CB_VERSION=v0.4.6 after the installer's single strip."""
+def test_v_prefixed_versions_are_never_accepted_unsigned_by_version(s: Setup) -> None:
+    """Tag vv0.4.6 (or --version vv0.4.3) leaves a v after the single strip."""
     assert s.check(str(s.sums), "", "download", "v0.4.6").returncode == 1
     assert s.check(str(s.sums), "", "download", "v0.4.3", explicit=True).returncode == 1
-    assert s.check(str(s.sums), "", "download", "0.4.6").returncode == 0
+    assert s.check(str(s.sums), "", "download", "0.4.6").returncode == 1
+    assert s.check(str(s.sums), "", "download", "0.4.6", pin_this_tarball=True).returncode == 0
+
+
+def test_explicit_version_with_a_v_is_normalised_at_parse() -> None:
+    """`--version v0.4.5` must query tags/v0.4.5, not tags/vv0.4.5."""
+    arm = re.search(r"^    --version\)\n(.*?)^      ;;$", INSTALL_SH.read_text(), re.MULTILINE | re.DOTALL)
+    assert arm, "--version) arm not found in install.sh's parser"
+    script = "\n".join([
+        "set -euo pipefail", 'CB_VERSION=""', "CB_VERSION_EXPLICIT=false",
+        'while [[ $# -gt 0 ]]; do', 'case "$1" in', "--version)", arm.group(1), ";;", "esac", "done",
+        'echo "V=$CB_VERSION E=$CB_VERSION_EXPLICIT"',
+    ])
+    for given, want in (("v0.4.5", "0.4.5"), ("0.4.5", "0.4.5"), ("vv0.4.5", "v0.4.5")):
+        r = subprocess.run(["bash", "-c", script, "bash", "--version", given], capture_output=True, text=True)
+        assert r.stdout.strip() == f"V={want} E=true", r.stdout + r.stderr
+
+
+def _bundle_tarball(path: Path) -> None:
+    """A minimal PBS-layout bundle: the two executables the extractor checks."""
+    src = path.parent / "src"
+    for rel in ("bin/circuit-breaker", "python/bin/python3"):
+        f = src / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("#!/bin/sh\n")
+        f.chmod(0o755)
+    subprocess.run(["tar", "-czf", str(path), "-C", str(src), "."], check=True)
+
+
+DOWNLOAD_STUBS = STUBS + """
+cb_section() { :; }
+cb_progress() { :; }
+cb_check_bundle() { echo "CHECK $1 | $2 | $3 | $4 | $5"; }
+"""
+
+
+def _run_download_stage(tmp: Path, local_bundle: str, curl_body: str) -> subprocess.CompletedProcess[str]:
+    bindir = tmp / "bin"
+    bindir.mkdir(exist_ok=True)
+    curl = bindir / "curl"
+    curl.write_text(curl_body)
+    curl.chmod(0o755)
+    script = "\n".join([
+        "set -euo pipefail", DOWNLOAD_STUBS,
+        f'TMPDIR="{tmp / "tmp"}"', "export TMPDIR",
+        'CB_VERSION="0.4.7"', f'CB_LOCAL_BUNDLE="{local_bundle}"', 'ARCH="amd64"',
+        'CB_RELEASE_API="https://api.invalid/releases"', 'CB_GITHUB_REPO="BlkLeg/CircuitBreaker"',
+        "SKIP_CHECKSUM=false", "SKIP_SIGNATURE=false", 'CB_PRIVATE_TMP=""',
+        'CB_BUNDLE_TARBALL=""', 'CB_BUNDLE_DIR=""',
+        _function("cb_fetch_release_asset"),
+        _function("stage0_download_bundle"),
+        "stage0_download_bundle",
+        'echo "PRIVATE=$CB_PRIVATE_TMP"', 'echo "DIR=$CB_BUNDLE_DIR"', 'echo "TARBALL=$CB_BUNDLE_TARBALL"',
+        'stat -c "MODE=%a" "$CB_PRIVATE_TMP"',
+        'ls "$CB_BUNDLE_DIR/bin/circuit-breaker" >/dev/null && echo EXTRACTED',
+    ])
+    (tmp / "tmp").mkdir(exist_ok=True)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"}
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+
+
+def _vars(stdout: str) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line and not line.startswith("CHECK"))
+
+
+def test_a_downloaded_bundle_lives_and_is_extracted_in_a_private_dir(tmp_path: Path) -> None:
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    _bundle_tarball(assets / TARBALL)
+    (assets / "SHA256SUMS").write_text("sums\n")
+    (assets / "SHA256SUMS.sig").write_text("sig\n")
+    release = {"tag_name": "v0.4.7", "assets": [
+        {"name": n, "size": (assets / n).stat().st_size, "browser_download_url": f"https://dl.invalid/{n}"}
+        for n in (TARBALL, "SHA256SUMS", "SHA256SUMS.sig")]}
+    (assets / "release.json").write_text(json.dumps(release))
+    # Fake curl: `-o <file> <url>` copies the asset named by the URL; no -o
+    # prints the release JSON.
+    curl = f"""#!/bin/sh
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift 2 ;; http*) url="$1"; shift ;; *) shift ;; esac
+done
+if [ -n "$out" ]; then cp "{assets}/$(basename "$url")" "$out"; else cat "{assets}/release.json"; fi
+"""
+    r = _run_download_stage(tmp_path, "", curl)
+    assert r.returncode == 0, r.stdout + r.stderr
+    v = _vars(r.stdout)
+    private = v["PRIVATE"]
+    assert private.startswith(str(tmp_path / "tmp") + "/"), private
+    assert v["MODE"] == "700"
+    assert v["TARBALL"] == f"{private}/{TARBALL}"
+    assert v["DIR"] == f"{private}/bundle"
+    assert "EXTRACTED" in r.stdout
+    assert f"CHECK {private}/{TARBALL} | {private}/SHA256SUMS | {private}/SHA256SUMS.sig | download | 0.4.7" in r.stdout
+
+
+def test_a_local_bundle_is_extracted_in_a_private_dir_and_left_in_place(tmp_path: Path) -> None:
+    local = tmp_path / "operator" / TARBALL
+    local.parent.mkdir()
+    _bundle_tarball(local)
+    r = _run_download_stage(tmp_path, str(local), "#!/bin/sh\nexit 99\n")
+    assert r.returncode == 0, r.stdout + r.stderr
+    v = _vars(r.stdout)
+    assert v["PRIVATE"].startswith(str(tmp_path / "tmp") + "/")
+    assert v["MODE"] == "700"
+    assert v["DIR"] == f"{v['PRIVATE']}/bundle"
+    assert v["TARBALL"] == str(local)
+    assert "EXTRACTED" in r.stdout
+
+
+def test_no_fixed_tmp_bundle_paths_remain_and_install_removes_the_private_dir() -> None:
+    for name in ("stage0_download_bundle", "stage0_install_bundle"):
+        body = _function(name)
+        assert "/tmp/cb-bundle" not in body
+        assert "/tmp/${tarball_name}" not in body
+    install = _function("stage0_install_bundle")
+    assert 'rm -rf -- "$CB_PRIVATE_TMP"' in install
+    assert 'rm -f "$CB_BUNDLE_TARBALL"' not in install, "a --local-bundle tarball is the operator's file"
+    # The check must not drop the directory the tarball and tree live in.
+    download = _function("stage0_download_bundle")
+    assert 'rm -rf -- "$CB_PRIVATE_TMP"' not in download

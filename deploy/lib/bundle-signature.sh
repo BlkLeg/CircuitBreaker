@@ -82,13 +82,14 @@ cb_verify_sums_signature() {
 }
 
 # Check one tarball ($2) against its own line in SHA256SUMS ($1). The line is
-# chosen by exact name (./<basename>), never with --ignore-missing, so a sums
-# file that does not list this tarball cannot "verify" it.
+# chosen by exact name (./<basename> as release.yml writes it, or a bare
+# <basename> as `sha256sum *` writes it), never with --ignore-missing, so a
+# sums file that does not list this tarball cannot "verify" it.
 # 0: match. 1: mismatch. 3: not listed.
 cb_verify_sums_entry() {
   local sums="$1" tarball="$2" name expected actual
   name="$(basename -- "$tarball")"
-  expected="$(awk -v want="./${name}" '$2 == want { print $1; exit }' "$sums" 2>/dev/null)" || return 3
+  expected="$(awk -v want="${name}" '$2 == "./" want || $2 == want { print $1; exit }' "$sums" 2>/dev/null)" || return 3
   [[ -n "$expected" ]] || return 3
   actual="$(sha256sum -- "$tarball" | cut -d' ' -f1)" || return 1
   [[ "$actual" == "$expected" ]] || return 1
