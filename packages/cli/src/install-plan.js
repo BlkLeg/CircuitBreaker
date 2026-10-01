@@ -11,8 +11,9 @@ import { verifyBundle } from './bundle-verify.js';
 import { TRUSTED_KEYS } from './release-trust.js';
 import { loadIdentityFor } from './identity.js';
 import { conforms, redactText } from './lifecycle-contract.js';
+import { createResultWriter, refuseWith } from './events.js';
 
-const USAGE = 'usage: circuitbreaker install --plan [--version VERSION | --channel stable|candidate] [--local-bundle PATH] [--airgap] [--json]';
+const USAGE = 'usage: circuitbreaker install --plan [--version VERSION | --channel stable|candidate] [--local-bundle PATH] [--airgap] [--json] [--events=jsonl]';
 
 const LOCAL_NAME = /^circuit-breaker_(.+)_linux_(amd64|arm64)\.tar\.gz$/;
 // Same truthy spellings as install.sh's CB_AIRGAP.
@@ -35,7 +36,6 @@ const EXIT_FOR = {
   ENOSPC: EXIT.PREFLIGHT,
   EDQUOT: EXIT.PREFLIGHT,
 };
-const CODE_NAME = Object.fromEntries(Object.entries(EXIT).map(([key, value]) => [value, key]));
 
 function parseOptions(args) {
   let parsed;
@@ -51,6 +51,8 @@ function parseOptions(args) {
         'local-bundle': { type: 'string' },
         airgap: { type: 'boolean' },
         json: { type: 'boolean' },
+        // Read by main before any command runs (it frames stderr); only jsonl gets here.
+        events: { type: 'string' },
       },
     });
   } catch (error) {
@@ -140,7 +142,8 @@ async function planLocal(localBundle, deps) {
 
 // One immutable release, resolved once; its assets are downloaded into private
 // staging by the ids, sizes and URLs captured at resolution.
-async function planDownload(options, deps, fetchImpl) {
+async function planDownload(options, deps, fetchImpl, phases) {
+  phases.start('resolve');
   const target = await resolveTarget({
     version: options.version,
     channel: options.channel,
@@ -148,13 +151,42 @@ async function planDownload(options, deps, fetchImpl) {
     arch: deps.arch === undefined ? debArch(process.arch) : deps.arch,
     fetchJson: githubJson(fetchImpl),
   });
+  phases.start('download');
   const dir = await stagingDir({ env: deps.env, home: deps.home, version: target.version, arch: target.arch, uid: deps.euid });
   const io = { fetchImpl, statfs: deps.statfs, sleep: deps.sleep };
-  const sumsPath = target.sums ? await downloadAsset(target.sums, dir, io) : null;
-  const sigPath = target.sig ? await downloadAsset(target.sig, dir, io) : null;
-  const tarballPath = await downloadAsset(target.tarball, dir, io);
-  const staged = { dir, assets: [target.sums, target.sig, target.tarball].filter(Boolean) };
-  return { origin: 'download', target, tarballPath, sumsPath, sigPath, staged };
+  const assets = [target.sums, target.sig, target.tarball].filter(Boolean);
+  const total = assets.reduce((sum, asset) => sum + asset.size, 0);
+  const paths = new Map();
+  let done = 0;
+  // downloadAsset checks each file holds exactly the size the release
+  // declares, so these are measured bytes on disk.
+  for (const asset of assets) {
+    paths.set(asset, await downloadAsset(asset, dir, io));
+    done += asset.size;
+    phases.progress(done, total);
+  }
+  const staged = { dir, assets };
+  return {
+    origin: 'download', target, tarballPath: paths.get(target.tarball), sumsPath: paths.get(target.sums) ?? null, sigPath: paths.get(target.sig) ?? null, staged,
+  };
+}
+
+// The coordinator's phase events in event mode, and nothing otherwise. One
+// phase is open at a time: starting the next completes it, and a refusal
+// fails it.
+function phaseEvents(events) {
+  let open = null;
+  const close = (status) => {
+    if (open) events?.phase(open, status);
+    open = null;
+  };
+  return {
+    start(phase) { close('completed'); open = phase; events?.phase(phase, 'started'); },
+    skip(phase) { events?.phase(phase, 'skipped'); },
+    progress(done, total) { events?.progress(open, done, total, 'bytes'); },
+    complete: () => close('completed'),
+    fail: () => close('failed'),
+  };
 }
 
 // A download that verification refused is not kept: staging would otherwise
@@ -228,12 +260,9 @@ function planJson(plan, result, server) {
 // (lifecycle contract §1.7), so neither repeats a credential or a terminal
 // escape, and the --json result always validates.
 function refuse(deps, json, code, reason) {
-  const text = redactText(reason);
-  deps.err(`circuitbreaker install: ${text}\n`);
-  if (json) {
-    deps.out(`${JSON.stringify({ schema_version: 1, action: 'install', plan: true, outcome: 'refused', error: { code: CODE_NAME[code], reason: text } })}\n`);
-  }
-  return code;
+  return refuseWith(deps, {
+    prefix: 'circuitbreaker install', code, reason, result: json ? { schema_version: 1, action: 'install', plan: true } : null,
+  });
 }
 
 // The identity's version is free text; the result carries it escaped when it
@@ -246,23 +275,31 @@ function serverVersion(version) {
 // do. It writes only to the per-user staging cache (and sigstore's cache beside
 // it), never elevates, extracts or runs the installer, and in air-gap mode
 // makes no network request at all.
-export async function runInstallPlan(args, deps) {
-  let json = false;
+export async function runInstallPlan(args, given) {
+  const deps = { ...given, result: given.result ?? createResultWriter(given.out) };
+  // Read before parsing, so a usage error still answers --json.
+  const json = args.includes('--json');
+  const phases = phaseEvents(deps.events);
   try {
     const options = parseOptions(args);
-    json = options.json;
     if (!options.plan) {
       throw new InstallPlanError('UNSUPPORTED',
         "installing is not in this build of the CLI; run 'circuitbreaker install --plan' to see what an install would do, or use install.sh");
     }
     const airgap = checkOptions(options, deps.env);
     const fetchImpl = deps.fetchImpl ?? fetch;
-    const plan = options.localBundle !== undefined ? await planLocal(options.localBundle, deps) : await planDownload(options, deps, fetchImpl);
+    if (options.localBundle !== undefined) {
+      phases.skip('resolve');
+      phases.skip('download');
+    }
+    const plan = options.localBundle !== undefined ? await planLocal(options.localBundle, deps) : await planDownload(options, deps, fetchImpl, phases);
+    phases.complete();
     // The result reports the bundle's path exactly, so a path it cannot carry
     // is refused here rather than reported altered.
     if (!conforms('result', 'path', plan.tarballPath) || !conforms('result', 'file_name', basename(plan.tarballPath))) {
       throw new InstallPlanError('USAGE', 'the bundle path holds a control character (or is over 4096 characters), which no plan can report; move the bundle to a plain path');
     }
+    phases.start('verify');
     const result = await verifyBundle({
       ...plan,
       airgap,
@@ -270,14 +307,18 @@ export async function runInstallPlan(args, deps) {
       attest: deps.attest ?? defaultAttest(deps, fetchImpl),
     });
     if (!result.ok) {
+      phases.fail();
       const reason = plan.staged ? `${result.reason}; ${await discardRefused(plan.staged)}` : result.reason;
       return refuse(deps, json, EXIT_FOR[result.code], reason);
     }
+    phases.complete();
     const lookup = await loadIdentityFor(deps);
     const server = lookup.status === 'found' ? { version: serverVersion(lookup.identity.version), mode: lookup.identity.mode } : null;
-    deps.out(json ? `${JSON.stringify(planJson(plan, result, server))}\n` : renderPlan(plan, result, server));
+    if (json) deps.result.write(planJson(plan, result, server));
+    else deps.out(renderPlan(plan, result, server));
     return EXIT.OK;
   } catch (error) {
+    phases.fail();
     const code = EXIT_FOR[error.code];
     if (code === undefined) throw error;
     return refuse(deps, json, code, error.message);

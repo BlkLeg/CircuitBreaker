@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { run } from '../src/main.js';
 import { EXIT } from '../src/exit-codes.js';
 import { NATIVE_COMMANDS } from '../src/inventory.js';
+import { parseDocument } from '../src/lifecycle-contract.js';
 
 async function host({ identity, cbBody = "require('node:fs').writeFileSync(process.env.OUT, JSON.stringify(process.argv.slice(2)));" } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'cb-main-'));
@@ -247,4 +248,77 @@ test('a non-root run never trust-checks the identity file', async () => {
   deps.realpath = async (p) => { seen.push(p); return realpath(p); };
   assert.equal(await run(['status'], deps), EXIT.OK);
   assert.ok(!seen.includes(identityPath), 'identity path must not be realpath-checked');
+});
+
+// --- Machine streams (lifecycle contract §7, ruling R16).
+
+const eventLines = (text) => {
+  assert.ok(text.endsWith('\n'), JSON.stringify(text));
+  return text.slice(0, -1).split('\n').map((line) => parseDocument('event', line));
+};
+
+test('with --events=jsonl every refusal main makes is a framed, redacted diagnostic', async () => {
+  for (const [argv, code, echo] of [
+    [['rm', '--events=jsonl', 'token=hunter2'], EXIT.USAGE, null],
+    [['token=hunter2', '--events=jsonl'], EXIT.USAGE, 'hunter2'],
+    [['update', '--events', 'jsonl'], EXIT.UNSUPPORTED, null],
+    [['history', '--events=jsonl'], EXIT.USAGE, null],
+    [['version', '--events=jsonl'], EXIT.USAGE, null],
+  ]) {
+    const { deps, output } = await host({ identity: {} });
+    assert.equal(await run(argv, deps), code, argv.join(' '));
+    const [diagnostic, ...rest] = eventLines(output.err);
+    assert.deepEqual(rest, [], argv.join(' '));
+    assert.equal(diagnostic.type, 'diagnostic');
+    assert.equal(diagnostic.level, 'error');
+    if (echo) assert.ok(!diagnostic.message.includes(echo), diagnostic.message);
+    assert.equal(output.out, '');
+  }
+});
+
+test('a loop refusal is framed too, before anything else runs', async () => {
+  const { deps, output } = await host({ identity: {} });
+  deps.env.CIRCUITBREAKER_FORWARDED = '1';
+  assert.equal(await run(['install', '--plan', '--events=jsonl'], deps), EXIT.USAGE);
+  assert.deepEqual(eventLines(output.err).map((e) => [e.type, e.code]), [['diagnostic', 'USAGE']]);
+});
+
+test('--events takes only jsonl', async () => {
+  for (const argv of [['install', '--plan', '--events=yaml'], ['history', '--events'], ['install', '--plan', '--json', '--events', 'text']]) {
+    const { deps, output } = await host({ identity: {} });
+    assert.equal(await run(argv, deps), EXIT.USAGE, argv.join(' '));
+    assert.match(output.err, /^circuitbreaker: --events takes jsonl/);
+    if (argv.includes('--json')) assert.equal(parseDocument('result', output.out.trimEnd()).error.code, 'USAGE');
+    else assert.equal(output.out, '');
+  }
+});
+
+test('forwarded management arguments are never read as stream flags', async () => {
+  for (const args of [['logs', '--events=jsonl', '--json'], ['status', '--events=yaml', '--json']]) {
+    const { deps, output } = await host({ identity: {} });
+    assert.equal(await run(args, deps), EXIT.OK, args.join(' '));
+    assert.deepEqual(JSON.parse(await readFile(deps.env.OUT, 'utf8')), args);
+    assert.deepEqual(output, { out: '', err: '' });
+  }
+});
+
+test('an injected result writer and event writer receive what the run produces', async () => {
+  const { deps } = await host({ identity: {} });
+  const written = [];
+  const framed = [];
+  deps.result = { written: false, write(doc) { written.push(doc); this.written = true; } };
+  deps.events = { diagnostic: (message, options) => framed.push([message, options?.code]) };
+  deps.env.CB_LIFECYCLE_ROOT = '/nonexistent-lifecycle-root';
+  assert.equal(await run(['history', '--json'], deps), EXIT.OK);
+  assert.deepEqual(written, [{ schema_version: 1, action: 'history', outcome: 'listed', operations: [] }]);
+  assert.equal(await run(['history', '--json', '--events=jsonl'], deps), EXIT.USAGE);
+  assert.equal(framed.length, 1);
+  assert.equal(framed[0][1], 'USAGE');
+});
+
+test('help lists history and says where each machine stream goes', async () => {
+  const { deps, output } = await host({ identity: {} });
+  assert.equal(await run(['help'], deps), EXIT.OK);
+  assert.match(output.out, /\n {2}history +Lifecycle operations recorded on this host; read-only \[--json\]\n/);
+  assert.match(output.out, /\nMachine output: --json prints one final JSON result on stdout; install --plan --events=jsonl writes JSONL events, and nothing else, on stderr\.\n/);
 });

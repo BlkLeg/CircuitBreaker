@@ -10,6 +10,10 @@ signature, the bundle's hash, its build provenance and the archive's contents be
 plan. It changes nothing on the host. With `--airgap` and `--local-bundle` it makes no network
 requests, verifying a bundle you already have against the `SHA256SUMS` and `SHA256SUMS.sig` beside it.
 
+`circuitbreaker history` lists the lifecycle operations recorded on the host from their read-only
+summary, without elevating. With `--json`, `install --plan` and `history` print one final JSON
+result on stdout; `install --plan --events=jsonl` writes JSONL events, and nothing else, on stderr.
+
 This package is not published yet. Install Circuit Breaker with `install.sh` or the mono image;
 see the project's installation guide.
 

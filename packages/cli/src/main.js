@@ -10,6 +10,8 @@ import { forwardToNative, FORWARD_MARKER } from './bridge.js';
 import { renderHelp } from './help.js';
 import { runVersion } from './version.js';
 import { runInstallPlan } from './install-plan.js';
+import { runHistory } from './lifecycle-state.js';
+import { createEventWriter, createResultWriter, exitName, refuseWith } from './events.js';
 import { debArch } from './release-resolve.js';
 import { TRUSTED_KEYS } from './release-trust.js';
 
@@ -32,11 +34,15 @@ export function defaultDeps() {
     sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
     keys: TRUSTED_KEYS,
     arch: debArch(process.arch),
+    now: Date.now,
   };
 }
 
+// In event mode a refusal is a framed diagnostic carrying its code; otherwise
+// stderr reads as it always has.
 function refuse(deps, code, message) {
-  deps.err(`circuitbreaker: ${message}\n`);
+  if (deps.events) deps.events.diagnostic(message, { code: exitName(code) });
+  else deps.err(`circuitbreaker: ${message}\n`);
   return code;
 }
 
@@ -93,6 +99,7 @@ async function dispatch(argv, deps) {
   }
   if (command === 'version' || command === '--version') return runVersion(rest, deps);
   if (command === 'install') return runInstallPlan(rest, deps);
+  if (command === 'history') return runHistory(rest, deps);
   const native = findNativeCommand(command);
   if (!native) return refuse(deps, EXIT.USAGE, `unknown command '${command}'. Run 'circuitbreaker help'.`);
   if (native.lifecycle) {
@@ -102,10 +109,53 @@ async function dispatch(argv, deps) {
   return forwardManagement(command, rest, deps);
 }
 
+const EVENTS_FLAG = /^--events(?:=(.*))?$/su;
+// Commands this CLI answers itself; every other inventory command is forwarded.
+const OWN_COMMANDS = new Set(['help', '--help', '-h', 'version', '--version', 'install', 'history']);
+
+// The machine streams argv asks for (lifecycle contract §7), read before any
+// command runs so its usage and unexpected errors are framed too. A forwarded
+// management command's arguments belong to the native cb and are never read.
+function requestedStreams(argv) {
+  const [command, ...rest] = argv;
+  if (!OWN_COMMANDS.has(command) && findNativeCommand(command)?.lifecycle === false) return { events: false, invalid: null, json: false };
+  let events = false;
+  let invalid = null;
+  for (let i = 0; i < rest.length; i += 1) {
+    const flag = EVENTS_FLAG.exec(rest[i]);
+    if (!flag) continue;
+    const value = flag[1] ?? rest[i + 1];
+    if (flag[1] === undefined) i += 1;
+    if (value === 'jsonl') events = true;
+    else invalid = value ?? '';
+  }
+  return { events, invalid, json: rest.includes('--json') };
+}
+
+// The --json result members of the commands whose result is a lifecycle
+// result, so a run that fails before the command answers still prints one.
+function resultMembers(command) {
+  if (command === 'install') return { schema_version: 1, action: 'install', plan: true };
+  if (command === 'history') return { schema_version: 1, action: 'history' };
+  return null;
+}
+
+// Runs one command. deps.events (event mode only) and deps.result are the
+// injected writers of the two machine streams; by default events go to
+// deps.err as JSON lines and the one result to deps.out.
 export async function run(argv, deps = defaultDeps()) {
+  const streams = requestedStreams(argv);
+  const events = streams.events ? (deps.events ?? createEventWriter({ write: deps.err, now: deps.now ?? Date.now })) : null;
+  const io = { ...deps, events, result: deps.result ?? createResultWriter(deps.out) };
+  // In event mode nothing reaches stderr unframed, whatever a command writes.
+  if (events) io.err = (text) => events.diagnostic(text);
+  const members = streams.json ? resultMembers(argv[0]) : null;
   try {
-    return await dispatch(argv, deps);
+    if (streams.invalid !== null) {
+      return refuseWith(io, { prefix: 'circuitbreaker', code: EXIT.USAGE, reason: `--events takes jsonl, not '${streams.invalid}'`, result: members });
+    }
+    return await dispatch(argv, io);
   } catch (error) {
-    return refuse(deps, EXIT.UNSUPPORTED, `unexpected error: ${error.code ?? error.message}`);
+    return refuseWith(io, { prefix: 'circuitbreaker', code: EXIT.UNSUPPORTED, reason: `unexpected error: ${error.code ?? error.message}`, result: members });
   }
 }

@@ -496,11 +496,12 @@ test('every --json result validates against the lifecycle result contract, hosti
       assert.ok(!h.output.err.includes(secret), `${JSON.stringify(argv)} reached stderr unredacted: ${h.output.err}`);
     }
   }
-  // An unknown option fails parsing before --json is known, so it has no
-  // result (Task 4 pre-scans argv); its diagnostic is still redacted.
+  // An unknown option fails parsing, and --json was asked for all the same:
+  // one refused result, redacted like its diagnostic.
   const unknown = await host({ env: { CB_AIRGAP: 'true' } });
   assert.equal(await run(['install', '--plan', '--json', '--token=hunter2'], unknown.deps), EXIT.USAGE);
-  assert.equal(unknown.output.out, '');
+  assert.equal(parseDocument('result', unknown.output.out.trimEnd()).error.code, 'USAGE');
+  assert.ok(!unknown.output.out.includes('hunter2'), unknown.output.out);
   assert.ok(!unknown.output.err.includes('hunter2'), unknown.output.err);
 
   const rel = release();
@@ -543,4 +544,88 @@ test('help lists install --plan under this CLI and says host-changing installs c
   assert.equal(await run(['help'], h.deps), EXIT.OK);
   assert.match(h.output.out, /This CLI:\n {2}install --plan +Resolve, download and verify a release; changes nothing \[--json\]\n/);
   assert.match(h.output.out, /\nInstall, update and uninstall that change the host arrive in later builds; `install --plan` shows what an install would do\.\n/);
+});
+
+// --- Event mode (lifecycle contract §6-7, ruling R16).
+
+function streams(output) {
+  assert.ok(output.err.endsWith('\n'), JSON.stringify(output.err));
+  const events = output.err.slice(0, -1).split('\n').map((line) => parseDocument('event', line));
+  assert.deepEqual(events.map((e) => e.sequence), events.map((_, i) => i + 1), 'one rising coordinator sequence');
+  for (const e of events) assert.deepEqual([e.source, e.operation_id], ['coordinator', null]);
+  assert.doesNotMatch(output.err + output.out, /[\u001b\u009b]/u);
+  const lines = output.out.split('\n');
+  assert.deepEqual([lines.length, lines[1]], [2, ''], 'stdout is one document and its newline');
+  return { events, result: parseDocument('result', lines[0]) };
+}
+const shape = (e) => [e.type, e.phase ?? e.level, e.status ?? e.code ?? (e.type === 'progress' ? `${e.done}/${e.total} ${e.unit}` : undefined)];
+
+test('--events=jsonl frames an online plan phase by phase, with measured download bytes', async () => {
+  const rel = release();
+  const plain = await host({ fetchImpl: github(rel).fetchImpl, keys: rel.keys });
+  assert.equal(await run(['install', '--plan', '--json', '--version', '0.4.7'], plain.deps), EXIT.OK, plain.output.err);
+  const h = await host({ fetchImpl: github(rel).fetchImpl, keys: rel.keys });
+  assert.equal(await run(['install', '--plan', '--json', '--events=jsonl', '--version', '0.4.7'], h.deps), EXIT.OK, h.output.err);
+  const { events, result } = streams(h.output);
+  assert.equal(h.output.out, plain.output.out.replaceAll(plain.root, h.root), 'the result is the same with or without events');
+  assert.equal(result.outcome, 'verified');
+  const sizes = [rel.sums.length, rel.sig.length, rel.tarball.length];
+  const total = sizes.reduce((a, b) => a + b);
+  assert.deepEqual(events.map(shape), [
+    ['phase', 'resolve', 'started'], ['phase', 'resolve', 'completed'],
+    ['phase', 'download', 'started'],
+    ['progress', 'download', `${sizes[0]}/${total} bytes`],
+    ['progress', 'download', `${sizes[0] + sizes[1]}/${total} bytes`],
+    ['progress', 'download', `${total}/${total} bytes`],
+    ['phase', 'download', 'completed'],
+    ['phase', 'verify', 'started'], ['phase', 'verify', 'completed'],
+  ]);
+  for (const e of events.filter((x) => x.status === 'completed')) assert.equal(typeof e.duration_ms, 'number');
+});
+
+test('--events=jsonl without --json frames the plan and leaves stdout human', async () => {
+  const rel = release();
+  const bundle = await localBundle(rel);
+  const h = await host({ keys: rel.keys, env: { CB_AIRGAP: 'true' } });
+  assert.equal(await run(['install', '--plan', '--events', 'jsonl', '--local-bundle', bundle], h.deps), EXIT.OK, h.output.err);
+  assert.match(h.output.out, /^Install plan \(no changes made\)\n/);
+  const events = h.output.err.trimEnd().split('\n').map((line) => parseDocument('event', line));
+  assert.deepEqual(events.map(shape), [
+    ['phase', 'resolve', 'skipped'], ['phase', 'download', 'skipped'],
+    ['phase', 'verify', 'started'], ['phase', 'verify', 'completed'],
+  ]);
+});
+
+test('in event mode a refusal fails its phase and is a framed diagnostic, never unframed stderr', async () => {
+  const rel = release();
+  const untrusted = await host({ fetchImpl: github(release({ trusted: false })).fetchImpl, keys: rel.keys });
+  assert.equal(await run(['install', '--plan', '--json', '--events=jsonl'], untrusted.deps), EXIT.TRUST);
+  const refused = streams(untrusted.output);
+  assert.deepEqual(refused.events.slice(-2).map(shape), [['phase', 'verify', 'failed'], ['diagnostic', 'error', 'TRUST']]);
+  assert.equal(refused.events.at(-1).message, refused.result.error.reason.slice(0, 900));
+  assert.equal(refused.result.error.code, 'TRUST');
+
+  for (const argv of [['--version', 'token=abcdef'], ['--channel', 'http://admin:s3cret@proxy.lan'], ['--token=hunter2'], []]) {
+    const h = await host({ env: { CB_AIRGAP: 'true' } });
+    assert.equal(await run(['install', '--plan', '--json', '--events=jsonl', ...argv], h.deps), EXIT.USAGE, argv.join(' '));
+    const { events, result } = streams(h.output);
+    assert.deepEqual(events.map(shape), [['diagnostic', 'error', 'USAGE']], argv.join(' '));
+    for (const secret of ['abcdef', 's3cret', 'hunter2']) assert.ok(!(h.output.err + h.output.out).includes(secret));
+    assert.equal(result.error.code, 'USAGE');
+  }
+});
+
+test('an unexpected error still ends in one result, framed in event mode', async () => {
+  const rel = release();
+  // A path component over NAME_MAX: stat fails with ENAMETOOLONG, which no step maps.
+  const bundle = join(await mkdtemp(join(tmpdir(), 'cb-local-')), 'x'.repeat(300), name('0.4.7'));
+  const h = await host({ keys: rel.keys, env: { CB_AIRGAP: 'true' } });
+  assert.equal(await run(['install', '--plan', '--json', '--local-bundle', bundle], h.deps), EXIT.UNSUPPORTED);
+  assert.deepEqual(parseDocument('result', h.output.out.trimEnd()).error, { code: 'UNSUPPORTED', reason: 'unexpected error: ENAMETOOLONG' });
+  assert.equal(h.output.err, 'circuitbreaker: unexpected error: ENAMETOOLONG\n');
+  const e = await host({ keys: rel.keys, env: { CB_AIRGAP: 'true' } });
+  assert.equal(await run(['install', '--plan', '--json', '--events=jsonl', '--local-bundle', bundle], e.deps), EXIT.UNSUPPORTED);
+  const { events, result } = streams(e.output);
+  assert.deepEqual(events.map(shape), [['phase', 'resolve', 'skipped'], ['phase', 'download', 'skipped'], ['diagnostic', 'error', 'UNSUPPORTED']]);
+  assert.equal(result.error.code, 'UNSUPPORTED');
 });

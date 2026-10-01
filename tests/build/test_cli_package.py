@@ -56,7 +56,11 @@ REQUIRED_PACKED = {
 # takes that task's review fixes (measured 139,977 B): the bounded text and
 # installed-version definitions, the interruption, step and recovery-attempt
 # rules, the shared redaction, and install --plan redacting what it echoes.
-UNPACKED_SIZE_BUDGET = 138 * 1024
+# 163 KiB takes sub-plan 03 Task 4 (measured 165,750 B): events.js (10.0 KB:
+# the event and result writers, the bounded descriptor decoder and the native
+# step runner), lifecycle-state.js (10.6 KB: history over the trusted index),
+# and main, install --plan, help and README growing the two machine streams.
+UNPACKED_SIZE_BUDGET = 163 * 1024
 SHRINKWRAP_SIZE_BUDGET = 40 * 1024
 SHRINKWRAP = PKG / "npm-shrinkwrap.json"
 ENTRY_BUDGET = 40
