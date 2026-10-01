@@ -112,6 +112,7 @@ dependency bump or an agent change still needs `npx playwright test` or
 - New `workflow_dispatch` inputs need the `# checkov:skip=CKV_GHA_7` comment
   or the required Checkov check goes red.
 - Only `promote` may declare `environment: release`.
+- The Stage job declares `environment: release-signing` (the bundle key; `main` only, no reviewers); `release` stays promote-only. Setup and rotation: `docs/release/bundle-signing.md`.
 - The change only takes effect for releases dispatched from a ref that
   contains it; a fix on `dev` does nothing until it reaches `main`.
 

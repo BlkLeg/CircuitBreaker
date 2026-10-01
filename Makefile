@@ -229,13 +229,13 @@ release-candidate: ## Build, gate and stage a DRAFT for VERSION from HEAD, then 
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
 	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=true
 	@echo "Dispatched. When the draft is staged the run waits for your approval on the 'release' environment (gh run watch, or Review deployments on the run page)."
-	@echo "Soak the draft before approving with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' && install.sh --local-bundle ..."
+	@echo "Soak the draft before approving with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' --pattern 'SHA256SUMS*' && install.sh --local-bundle ..."
 
 release-stage-only: ## Build, gate and stage a DRAFT for VERSION from HEAD without promoting it (promote later with release-promote)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
 	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=false
-	@echo "Dispatched. Soak the draft with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' && install.sh --local-bundle ..., then: make release-promote"
+	@echo "Dispatched. Soak the draft with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' --pattern 'SHA256SUMS*' && install.sh --local-bundle ..., then: make release-promote"
 
 release-promote: ## Promote the staged draft for VERSION to stable once approved on `release` (no rebuild; the promote creates the tag)
 	@git fetch -q origin
