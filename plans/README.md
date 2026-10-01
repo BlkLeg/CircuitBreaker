@@ -24,6 +24,7 @@ carries a status column.
 | [npm CLI implementation](./2026-09-30-v0.4.7-npm-cli-implementation.md) | 2026-09-30 | **Active** — planned; no implementation task started. Implements the [design contract](../docs/design/2026-09-30-v0.4.7-npm-cli-design.md) and approved terminal pattern, with verified staging, complete recovery, lifecycle commands and governed npm publication. |
 | [npm CLI 01 — foundation](./2026-09-30-v0.4.7-npm-cli-01-foundation.md) | 2026-09-30 | **Active** — tasks 1–8 implemented on dev; awaiting push and the maintainer actions listed in the plan. Package, identity, trusted native bridge, help/version, pack gates. Sub-plan 01 of the roadmap above. |
 | [Release bundle signing](./2026-09-30-release-bundle-signing.md) | 2026-09-30 | **Active** — planned; no task started. Ed25519 `SHA256SUMS.sig` plus build-provenance attestations; `install.sh` verifies signature then hash, offline included. Implements the [signing design](../docs/design/2026-09-30-release-bundle-signing-design.md); prerequisite of npm CLI sub-plan 02. |
+| [npm CLI 02 — verified staging](./2026-09-30-v0.4.7-npm-cli-02-verified-staging.md) | 2026-09-30 | **Active** — planned; no task started. `install --plan`: one immutable target, bounded resumable proxy-aware staging, signature → hash → sigstore provenance → archive scan, air-gap with zero requests. Adds `sigstore` (first runtime dependency) and raises the Node floor to ^22.22.2 \|\| >=24.15.0. |
 
 ## cb-agent on macOS and Windows (2026-09-30)
 
