@@ -710,6 +710,7 @@ jobs:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          set -euo pipefail
           if [ -z "${GPG_PRIVATE_KEY}" ]; then
             echo "GPG_PRIVATE_KEY not set — skipping the GPG signature of SHA256SUMS"
             exit 0
@@ -726,6 +727,10 @@ jobs:
           RELEASE_BUNDLE_SIGNING_KEY: ${{ secrets.RELEASE_BUNDLE_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::release bundles are signed only from main; this run is on ${GITHUB_REF}. Cut the candidate from main (the release-signing environment enforces the same rule)."
+            exit 1
+          fi
           if [ -z "${RELEASE_BUNDLE_SIGNING_KEY}" ]; then
             echo "::error::RELEASE_BUNDLE_SIGNING_KEY is empty. It is a secret of the release-signing environment (docs/release/bundle-signing.md); a release is never staged unsigned."
             exit 1

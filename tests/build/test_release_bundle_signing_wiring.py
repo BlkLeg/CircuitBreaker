@@ -80,3 +80,11 @@ def test_new_steps_never_soften_failure() -> None:
         if "sign_release_sums" in text or "cb_verify_sums" in text or "attest-build-provenance" in text:
             assert "continue-on-error" not in step
             assert "always()" not in str(step.get("if", ""))
+
+
+def test_signing_is_refused_off_main_before_the_key_is_written() -> None:
+    step = _steps("release")[_index("release", lambda s: _runs(s, "scripts/ci/sign_release_sums.sh"))]
+    run = step["run"]
+    guard = run.index('"${GITHUB_REF}" != "refs/heads/main"')
+    write = run.index("printf '%s\\n' \"${RELEASE_BUNDLE_SIGNING_KEY}\"")
+    assert guard < write
