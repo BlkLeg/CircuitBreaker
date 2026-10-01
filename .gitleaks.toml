@@ -172,4 +172,6 @@ regexes = ['dGVzdC12YXVsdC1rZXk=']
 id = "superdesign-content-hash-manifest"
 description = "Design-tool content hashes are file digests, not credentials"
 regexTarget = "line"
-regexes = ['"[^"]+\.(?:jsx|js|ts|tsx|css|md|json|html)": "[a-f0-9]{64}"']
+# Paths with a source extension, plus the repo-root `cb` CLI, which has none.
+# The design tool hashes shell and Python sources too (install.sh, cb_resources.py).
+regexes = ['"(?:[^"]+\.(?:jsx|js|ts|tsx|css|md|json|html|sh|py)|cb)": "[a-f0-9]{64}"']

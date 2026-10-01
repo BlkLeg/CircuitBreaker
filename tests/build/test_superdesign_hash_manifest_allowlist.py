@@ -139,6 +139,9 @@ def test_a_real_credential_carrying_the_same_value_is_still_a_finding() -> None:
         f"CB_JWT_SECRET={digest}",
         f'  "password": "{digest}",',
         f'  "enroll_token": "{_sample_enrollment_token()}",',
+        f'  "cb_token": "{digest}",',
+        f'  "cb_api_key": "{digest}",',
+        f'  "abcb": "{digest}",',
     ]
     escaped = [line for line in must_not_match if pattern.search(line)]
     assert not escaped, f"the allowlist excuses a real credential shape: {escaped}"
