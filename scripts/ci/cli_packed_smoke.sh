@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Packed-tarball smoke for @blkleg/circuitbreaker (NPM-02, NPM-05, NPM-08, NPM-10).
+# Packed-tarball smoke for @blkleg/circuitbreaker (NPM-02, NPM-03, NPM-05, NPM-08,
+# NPM-09, NPM-10).
 #
 # Packs the package exactly as `npm publish` would, installs it by name into a
 # throwaway prefix the way a user does, and drives the installed launcher. The
@@ -11,7 +12,11 @@
 # shrinkwrap with no install scripts anywhere in it (NPM-10). The
 # forwarding target is /usr/bin/echo: a real root-owned executable in a
 # root-owned directory, so the trust check runs for real without sudo, and
-# echo's output shows exactly which argv arrived.
+# echo's output shows exactly which argv arrived. Finally `install --plan`
+# runs air-gapped against a tiny local bundle: the installed package trusts
+# only the real release key, so an unsigned bundle and one signed with a
+# throwaway key are both refused (exit 5), and `install` without --plan is not
+# in this build (exit 3).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -76,5 +81,28 @@ set +e
 CIRCUITBREAKER_FORWARDED=1 "$cli" status >/dev/null 2>&1; code=$?
 set -e
 [ "$code" -eq 2 ] || fail "forwarding loop exited $code, expected 2"
+
+bundle="$work/bundle"
+mkdir -p "$bundle/src/bin" && printf '#!/bin/sh\n' > "$bundle/src/bin/circuit-breaker"
+tar -czf "$bundle/circuit-breaker_9.9.9_linux_amd64.tar.gz" -C "$bundle/src" .
+(cd "$bundle" && sha256sum circuit-breaker_9.9.9_linux_amd64.tar.gz | sed 's/  /  .\//' > SHA256SUMS)
+
+set +e
+CB_AIRGAP=true "$cli" install --plan --local-bundle "$bundle/circuit-breaker_9.9.9_linux_amd64.tar.gz" >/dev/null 2>&1; code=$?
+set -e
+[ "$code" -eq 5 ] || fail "unsigned, unpinned local bundle exited $code, expected 5"
+
+bash "$ROOT/scripts/release_signing_key.sh" "$work/throwaway.pem" 9.9.9 smoke >/dev/null
+bash "$ROOT/scripts/ci/sign_release_sums.sh" "$work/throwaway.pem" "$bundle/SHA256SUMS" "$bundle/SHA256SUMS.sig"
+set +e
+err="$(CB_AIRGAP=true "$cli" install --plan --local-bundle "$bundle/circuit-breaker_9.9.9_linux_amd64.tar.gz" 2>&1 >/dev/null)"; code=$?
+set -e
+[ "$code" -eq 5 ] || fail "throwaway-signed bundle exited $code, expected 5"
+grep -q 'Keys tried' <<<"$err" || fail "refusal did not name the trusted keys: $err"
+
+set +e
+"$cli" install >/dev/null 2>&1; code=$?
+set -e
+[ "$code" -eq 3 ] || fail "install without --plan exited $code, expected 3"
 
 printf 'cli packed smoke: %s passed on Node %s\n' "$tarball" "$(node -v)"
