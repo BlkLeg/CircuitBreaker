@@ -31,12 +31,14 @@ PACKED_ALLOWLIST = re.compile(
     r"|bin/circuitbreaker\.js"
     r"|src/[a-z-]+\.js"
     r"|schemas/[a-z-]+(?:\.schema)?\.json"
-    r"|compat/[a-z-]+\.json)$"
+    r"|compat/[a-z-]+\.json"
+    r"|trust/release-bundle-keys\.txt)$"
 )
 REQUIRED_PACKED = {
     "package.json", "README.md", "LICENSE", "bin/circuitbreaker.js",
     "src/main.js", "schemas/install-identity.schema.json",
     "schemas/native-commands.json", "compat/management.json",
+    "trust/release-bundle-keys.txt",
 }
 UNPACKED_SIZE_BUDGET = 64 * 1024
 ENTRY_BUDGET = 40
@@ -65,7 +67,7 @@ def test_manifest_identity() -> None:
     assert MANIFEST["engines"] == {"node": ">=22"}
     assert MANIFEST["license"] == "MIT"
     assert MANIFEST["repository"]["directory"] == "packages/cli"
-    assert MANIFEST["files"] == ["bin/", "src/", "schemas/", "compat/"]
+    assert MANIFEST["files"] == ["bin/", "src/", "schemas/", "compat/", "trust/"]
     assert MANIFEST["private"] is True and "publishConfig" not in MANIFEST, (
         "the CLI is published only by sub-plan 09, together with the ADR 0006 guard revision"
     )
