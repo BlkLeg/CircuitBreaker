@@ -598,6 +598,141 @@ def test_a_closed_event_descriptor_never_fails_a_durable_checkpoint(tmp_path: Pa
 
 
 @seam
+def test_progress_events_share_the_operations_sequence_and_never_touch_its_records(tmp_path: Path) -> None:
+    """Ruling R15: cb_lifecycle_emit draws from the operation's counter under the lock, after its checkpoints."""
+    state = tmp_path / "state"
+    events = tmp_path / "events.jsonl"
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    r = ok(sh(
+        f'exec {{ev}}>"{events}"\nexport CB_LIFECYCLE_EVENT_FD=$ev\n'
+        + ACQUIRE + LEGACY + 'op="$CB_LIFECYCLE_OPERATION"\necho "op=$op"\n'
+        f'cp "$CB_LIFECYCLE_ROOT/history.json" "$CB_LIFECYCLE_ROOT/private/operations/$op/journal.json" "{saved}/"\n'
+        "cb_lifecycle_emit type=phase phase=apply status=started\n"
+        "cb_lifecycle_emit type=progress phase=apply done=1 total=3 unit=steps\n"
+        "cb_lifecycle_emit type=progress phase=download done=4096 unit=bytes\n"
+        "cb_lifecycle_emit type=phase phase=apply status=completed duration_ms=1250\n"
+        'cb_lifecycle_emit type=diagnostic level=warning code=PREFLIGHT "message=$HOSTILE"\n'
+        f'cmp "$CB_LIFECYCLE_ROOT/history.json" "{saved}/history.json"\n'
+        f'cmp "$CB_LIFECYCLE_ROOT/private/operations/$op/journal.json" "{saved}/journal.json"\n'
+        "cb_lifecycle_checkpoint state=committed outcome=committed\n"
+        "cb_lifecycle_lock_release\n", state, {"HOSTILE": "token=hunter2 \x1b[31mred\x1b[0m\nnext line"}))
+    op = op_from(r)
+    parsed = [LS.parse_document("event", line.encode()) for line in events.read_text().splitlines()]
+    assert [(e["type"], e["sequence"]) for e in parsed] == [
+        ("checkpoint", 1), ("phase", 2), ("progress", 3), ("progress", 4), ("phase", 5), ("diagnostic", 6), ("checkpoint", 7)]
+    assert all(e["source"] == "native" and e["operation_id"] == op for e in parsed)
+    assert (parsed[2]["done"], parsed[2]["total"], parsed[2]["unit"]) == (1, 3, "steps")
+    assert parsed[3]["total"] is None, "an unknown total is null, never guessed"
+    assert parsed[4]["duration_ms"] == 1250
+    assert parsed[5]["message"] == "token (redacted) \\u001b[31mred\\u001b[0m\nnext line"
+    assert parsed[5]["code"] == "PREFLIGHT" and parsed[5]["level"] == "warning"
+    journal = journal_of(state, op)
+    assert [c["sequence"] for c in journal["checkpoints"]] == [1, 7] and journal["generation"] == 2
+    assert (operations(state) / op / "sequence").read_text() == "7\n"
+    assert mode(operations(state) / op / "sequence") == 0o600
+    assert "hunter2" not in events.read_text() + r.stdout + r.stderr
+    assert "{" not in r.stdout and "{" not in r.stderr, "no event leaks onto stdout or stderr"
+
+
+@seam
+def test_without_an_event_descriptor_emit_writes_nothing(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    r = ok(sh(ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n'
+              "cb_lifecycle_emit type=phase phase=apply status=started\n"
+              "CB_LIFECYCLE_EVENT_FD=1 cb_lifecycle_emit type=phase phase=apply status=completed\n"
+              "cb_lifecycle_checkpoint state=committed outcome=committed\n", state))
+    op = op_from(r)
+    assert [c["sequence"] for c in journal_of(state, op)["checkpoints"]] == [1, 2], "no sequence was spent"
+    assert "{" not in r.stdout + r.stderr
+
+
+@seam
+@pytest.mark.parametrize("members, problem", [
+    (["type=checkpoint", "state=committed", "generation=2"], "type is not a valid event type"),
+    (["type=progress", "phase=apply", "done=4", "total=3", "unit=steps"], "done exceeds total"),
+    (["type=progress", "phase=apply", "done=1", "unit=steps", "status=started"], "status is not a member of a progress event"),
+    (["type=phase", "phase=apply"], "a phase event needs status"),
+    (["type=phase", "phase=warp", "status=started"], "phase is not a valid phase"),
+    (["type=phase", "phase=apply", "status=started", "duration_ms=5"], "a duration belongs to a completed or failed phase"),
+    (["type=diagnostic", "level=info", "message=x", "password=hunter2"], "password looks like a secret field"),
+], ids=["checkpoint", "done over total", "foreign member", "missing member", "unknown phase", "early duration",
+        "secret field"])
+def test_a_malformed_event_is_refused_with_2_and_spends_no_sequence(members: list[str], problem: str, tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    events = tmp_path / "events.jsonl"
+    r = ok(sh(
+        f'exec {{ev}}>"{events}"\nexport CB_LIFECYCLE_EVENT_FD=$ev\n'
+        + ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n'
+        f"if cb_lifecycle_emit {' '.join(members)}; then echo accepted; else echo \"refused $?\"; fi\n", state))
+    assert "refused 2" in r.stdout, r.stdout + r.stderr
+    assert problem in r.stderr, r.stderr
+    assert len(events.read_text().splitlines()) == 1, "only the begin checkpoint was emitted"
+    assert (operations(state) / op_from(r) / "sequence").read_text() == "1\n"
+
+
+@seam
+def test_an_event_needs_the_lock_bound_to_its_operation(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    r = ok(sh(ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\ncb_lifecycle_lock_release\n', state))
+    op = op_from(r)
+    emit = {"request": "emit", "operation_id": op, "type": "phase", "phase": "apply", "status": "started"}
+    refused = utility(emit, state)
+    assert refused.returncode == 2 and "lock" in refused.stderr, refused.stderr
+    other = ok(sh(ACQUIRE + LEGACY + 'op="$CB_LIFECYCLE_OPERATION"\n'
+                  f"if cb_lifecycle_state emit operation_id={op} type=phase phase=apply status=started; "
+                  'then echo accepted; else echo "refused $?"; fi\n', state))
+    assert "refused 2" in other.stdout and f"not {op}" in other.stderr
+    durable = journal_of(state, op)["checkpoints"][-1]["sequence"]
+    assert (operations(state) / op / "sequence").read_text() == f"{durable}\n", "no refused event spent a sequence"
+
+
+@seam
+def test_the_clis_history_reads_what_the_utility_wrote_and_never_settles_a_killed_operation(
+    tmp_path: Path, procs: list[subprocess.Popen[str]],
+) -> None:
+    """Contract section 8 and ruling T3-n, end to end: utility-written index, coordinator reader."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.fail("node is required: the CLI's history must read the index the native utility writes")
+    state = tmp_path / "state"
+
+    def history(*flags: str) -> subprocess.CompletedProcess[str]:
+        script = "import('./src/main.js').then(async ({ run }) => { process.exitCode = await run(process.argv.slice(1)); })"
+        return subprocess.run([node, "-e", script, "history", *flags], cwd=ROOT / "packages" / "cli", capture_output=True,
+                              text=True, timeout=60, check=False, env=env_for(state))
+
+    empty = history("--json")
+    assert empty.returncode == 0 and json.loads(empty.stdout)["operations"] == [], empty.stderr
+    ok(sh(ACQUIRE + LEGACY + "cb_lifecycle_checkpoint state=committed outcome=committed\n", state))
+    holder = subprocess.Popen(
+        ["bash", "-c", prelude() + ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\nread -r _ || true\n'],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env_for(state))
+    procs.append(holder)
+    assert holder.stdout is not None
+    killed = holder.stdout.readline().strip().removeprefix("op=")
+    holder.send_signal(signal.SIGKILL)
+    holder.wait(timeout=15)
+
+    listed = history("--json")
+    assert listed.returncode == 0, listed.stderr
+    result = LS.parse_document("result", listed.stdout.rstrip("\n").encode())
+    assert result["operations"] == index_of(state)["operations"], "--json passes the index through unchanged"
+    shown = history()
+    assert shown.returncode == 0 and shown.stderr == "", shown.stderr
+    assert f"{killed}  update (legacy, native)\n  Status    in progress or interrupted (last recorded state: applying)\n" in shown.stdout
+    assert "  Status    committed\n" in shown.stdout
+
+    ok(sh(ACQUIRE + "cb_lifecycle_state list >/dev/null\n", state))
+    settled = history()
+    assert f"{killed}  update (legacy, native)\n  Status    interrupted after changes began (last checkpoint: applying)\n" in settled.stdout
+
+    (state / "history.json").chmod(0o664)
+    loose = history("--json")
+    assert loose.returncode == 6 and json.loads(loose.stdout)["error"]["code"] == "PERMISSION"
+
+
+@seam
 def test_a_write_without_the_lock_is_refused_and_changes_nothing(tmp_path: Path, procs: list[subprocess.Popen[str]]) -> None:
     state = tmp_path / "state"
     lock = make_state(state)

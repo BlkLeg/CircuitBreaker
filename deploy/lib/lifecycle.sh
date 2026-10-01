@@ -21,10 +21,12 @@
 #
 # Journals and the index are written only by the native state utility,
 # deploy/scripts/lifecycle-state.py, through cb_lifecycle_begin,
-# cb_lifecycle_checkpoint and cb_lifecycle_state below (Task 3). It runs under
-# a trusted Python 3.9+ interpreter (cb_lifecycle_python), and setup.sh keeps
-# it, this library and the release trust material in the control plane
-# /usr/local/lib/circuitbreaker, outside the release tree an update replaces.
+# cb_lifecycle_checkpoint and cb_lifecycle_state below (Task 3), and
+# cb_lifecycle_emit spends an operation's event sequence (Task 4). The utility
+# runs under a trusted Python 3.9+ interpreter (cb_lifecycle_python), and
+# setup.sh keeps it, this library and the release trust material in the
+# control plane /usr/local/lib/circuitbreaker, outside the release tree an
+# update replaces.
 #
 # The lock is flock(2) on that one inode, held through an open file
 # description. A nested installer/backup/restore call inherits the
@@ -746,6 +748,12 @@ _cb_lifecycle_request() {
         return "$CB_LIFECYCLE_EXIT_USAGE"
       fi
       json+=",\"$key\":$value"
+    elif [[ "$key" == done || "$key" == total || "$key" == duration_ms ]]; then
+      if [[ ! "$value" =~ ^(0|[1-9][0-9]{0,15})$ ]]; then
+        _cb_lifecycle_say "internal error: $key is a count"
+        return "$CB_LIFECYCLE_EXIT_USAGE"
+      fi
+      json+=",\"$key\":$value"
     else
       json+=",\"$key\":$(_cb_lifecycle_json_string "$value")"
     fi
@@ -753,7 +761,7 @@ _cb_lifecycle_request() {
   printf '%s}' "$json"
 }
 
-# Run state utility request $1 (inspect, begin, checkpoint or list) with
+# Run state utility request $1 (inspect, begin, checkpoint, emit or list) with
 # key=value members; its acknowledgement lines go to stdout and its exit code
 # is returned. Prefer cb_lifecycle_begin and cb_lifecycle_checkpoint for
 # writes: they bind the lock, track the generation and emit events.
@@ -805,11 +813,43 @@ _cb_lifecycle_remember_generation() {
 # closed or missing descriptor never fails the durable write behind it.
 _cb_lifecycle_emit_event() {
   local line="$1" fd="${CB_LIFECYCLE_EVENT_FD:-}"
-  [[ -n "$line" && "$fd" =~ ^[1-9][0-9]{0,4}$ ]] || return 0
-  (( fd >= 3 )) || return 0
-  [[ "$fd" != "${_CB_LIFECYCLE_LOCK_FD:-}" && "$fd" != "${CB_LIFECYCLE_LOCK_FD:-}" ]] || return 0
-  [[ -p "/dev/fd/$fd" || -S "/dev/fd/$fd" || -f "/dev/fd/$fd" ]] || return 0
+  [[ -n "$line" ]] && _cb_lifecycle_event_fd_valid || return 0
   ( trap '' PIPE; printf '%s\n' "$line" >&"$fd" ) 2>/dev/null || true
+}
+
+# Whether CB_LIFECYCLE_EVENT_FD names a descriptor events may go to: 3 or
+# above, not the lock, and a pipe, socket or file.
+_cb_lifecycle_event_fd_valid() {
+  local fd="${CB_LIFECYCLE_EVENT_FD:-}"
+  [[ "$fd" =~ ^[1-9][0-9]{0,4}$ ]] && (( fd >= 3 )) || return 1
+  [[ "$fd" != "${_CB_LIFECYCLE_LOCK_FD:-}" && "$fd" != "${CB_LIFECYCLE_LOCK_FD:-}" ]] || return 1
+  [[ -p "/dev/fd/$fd" || -S "/dev/fd/$fd" || -f "/dev/fd/$fd" ]]
+}
+
+# Emit one progress, phase or diagnostic event of the operation the lock is
+# bound to (ruling R15): key=value members type (phase, progress or
+# diagnostic) and that type's members, phase status [duration_ms], phase done
+# [total] unit, or level message [code]. The state utility spends the
+# operation's next sequence on it under the lock, so events and checkpoints
+# of nested native processes share one rising sequence. Without a valid
+# CB_LIFECYCLE_EVENT_FD nothing is emitted and nothing is written. Events are
+# presentation: only a malformed event (2) is an error, and any other failure
+# to emit one returns 0 so it never stops the operation.
+cb_lifecycle_emit() {
+  local op="${CB_LIFECYCLE_OPERATION:-}" out rc=0
+  _cb_lifecycle_forget_exported_state
+  _cb_lifecycle_event_fd_valid || return 0
+  if ! _cb_lifecycle_valid_operation "$op"; then
+    _cb_lifecycle_say "internal error: an event needs the operation the lock is bound to"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  out="$(cb_lifecycle_state emit operation_id="$op" "$@")" || rc=$?
+  if [[ "$rc" -eq "$CB_LIFECYCLE_EXIT_USAGE" ]]; then
+    return "$rc"
+  fi
+  [[ "$rc" -eq 0 ]] || return 0
+  _cb_lifecycle_read_ack "$out"
+  _cb_lifecycle_emit_event "$_CB_LC_ACK_EVENT"
 }
 
 # Start an operation under the lock this shell holds: the utility allocates

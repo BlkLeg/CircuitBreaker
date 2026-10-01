@@ -5,7 +5,9 @@ It is the only writer of lifecycle state under /var/lib/circuitbreaker-lifecycle
 (specs/install/lifecycle-contract.md, section 10). It reads one bounded JSON
 request on stdin, answers with `key=value` lines on stdout and exits with a
 lifecycle exit code. The requests are `inspect` and `list` (reads; `list` also
-rewrites the index) and `begin` and `checkpoint` (writes). A write requires the
+rewrites the index), `begin` and `checkpoint` (writes) and `emit`, which spends
+the operation's next event sequence on a progress, phase or diagnostic event
+and writes nothing else (ruling R15). A write requires the
 host lock that deploy/lib/lifecycle.sh holds: the descriptor named by
 CB_LIFECYCLE_LOCK_FD must hold the flock on private/lock, and the operation the
 lock is bound to must be the one the request names. A writer must also name the
@@ -1144,6 +1146,7 @@ def in_progress(journal: Doc) -> bool:
 
 _TEXT = "text"
 _INT = "int"
+_COUNT = "count"
 _REQUESTS: dict[str, dict[str, tuple[str, bool]]] = {
     "inspect": {"operation_id": ("operation_id", True)},
     "list": {},
@@ -1178,6 +1181,19 @@ _REQUESTS: dict[str, dict[str, tuple[str, bool]]] = {
         "evidence_result": ("evidence_result", False),
         "evidence_detail": (_TEXT, False),
     },
+    "emit": {
+        "operation_id": ("operation_id", True),
+        "type": ("event_type", True),
+        "phase": ("phase", False),
+        "status": ("phase_status", False),
+        "duration_ms": (_COUNT, False),
+        "done": (_COUNT, False),
+        "total": (_COUNT, False),
+        "unit": ("unit", False),
+        "level": ("level", False),
+        "message": (_TEXT, False),
+        "code": ("exit_name", False),
+    },
 }
 _RECORD_PROPS: Doc = JOURNAL["properties"]["checkpoints"]["items"]["properties"]
 _EVIDENCE_PROPS: Doc = JOURNAL["properties"]["evidence"]["items"]["properties"]
@@ -1194,6 +1210,12 @@ _MEMBER_NODES: dict[str, Doc] = {
     "exit_name": {"$ref": "#/$defs/exit_name"},
     "evidence_check": _EVIDENCE_PROPS["check"],
     "evidence_result": _EVIDENCE_PROPS["result"],
+    # Checkpoint events come only from checkpoints; emit carries the other three types.
+    "event_type": {"enum": [t for t in EVENT["properties"]["type"]["enum"] if t != "checkpoint"]},
+    "phase": EVENT["properties"]["phase"],
+    "phase_status": EVENT["properties"]["status"],
+    "unit": EVENT["properties"]["unit"],
+    "level": EVENT["properties"]["level"],
 }
 
 
@@ -1235,6 +1257,8 @@ def read_request(stream: BinaryIO) -> Doc:
             ok = isinstance(item, str) and len(item) <= MAX_REQUEST_TEXT
         elif shape == _INT:
             ok = _type_of(item) == "integer" and 1 <= item <= MAX_SAFE
+        elif shape == _COUNT:
+            ok = _type_of(item) == "integer" and 0 <= item <= MAX_SAFE
         else:
             ok = _check(_MEMBER_NODES[shape], JOURNAL["$defs"], item, "") is None
         if not ok:
@@ -1300,6 +1324,30 @@ def _checkpoint_event(journal: Doc) -> str:
     }
     _valid_or_usage("event", event)
     return canonicalize(event)
+
+
+def _emitted_event(request: Doc, sequence: int) -> Doc:
+    """The phase, progress or diagnostic event an emit request describes, as the next event of its operation."""
+    kind = request["type"]
+    fields = EVENT["x-fields"][kind]
+    allowed = set(fields["required"]) | set(fields["optional"])
+    members = {k: v for k, v in request.items() if k not in ("request", "operation_id", "type") and v is not None}
+    for key in members:
+        if key not in allowed:
+            raise StateError("USAGE", f"{key} is not a member of a {kind} event")
+    for key in fields["required"]:
+        if key not in members and key != "total":
+            raise StateError("USAGE", f"a {kind} event needs {key}")
+    if kind == "progress":
+        members.setdefault("total", None)
+    if kind == "diagnostic":
+        members["message"] = redact_text(members["message"], 900)
+    event: Doc = {"schema_version": SCHEMA_VERSION, "operation_id": request["operation_id"], "sequence": sequence,
+                  "at": _now(), "source": "native", "type": kind, **members}
+    result = validate_document("event", event)
+    if not result["ok"]:
+        raise StateError("USAGE", f"the event would break the lifecycle contract: {result['path']}: {result['reason']}")
+    return event
 
 
 # --- The sequence counter (ruling R15): one per operation, shared with its events.
@@ -1458,7 +1506,7 @@ def reconcile(tree: Tree, records: list[Record], bound: str) -> tuple[list[Recor
     return result, warnings
 
 
-# --- The four requests.
+# --- The five requests.
 
 
 def _lines(**values: Any) -> list[str]:
@@ -1693,6 +1741,39 @@ def _next_journal(op_fd: int, journal: Doc, request: Doc) -> tuple[Doc, Doc]:
     return updated, entry
 
 
+def handle_emit(request: Doc) -> list[str]:
+    """Spend the next sequence of the operation the lock is bound to on one progress, phase or diagnostic event.
+
+    Only the counter is written, by atomic replace; the journal and the index
+    are never touched, since an event is presentation and proves nothing.
+    """
+    op = request["operation_id"]
+    tree, bound = _locked_tree()
+    try:
+        if bound != op:
+            raise StateError("USAGE", f"the host lock is bound to {bound or 'no operation'}, not {op}")
+        operations = tree.open_operations(create=False)
+        if operations is None or op not in os.listdir(operations):
+            raise StateError("USAGE", f"no operation {op} exists")
+        record = read_record(operations, op, f"{tree.path}/private/operations")
+        if record.journal is None:
+            reason = redact_text(record.reason, 256, single_line=True)
+            raise StateError("UNSUPPORTED" if record.unsupported else "MANUAL", f"{op} requires inspection: {reason}")
+        op_fd = os.open(op, _OPEN_DIR, dir_fd=operations)
+        try:
+            event = _emitted_event(request, _next_sequence(op_fd, record.journal))
+            _remove_leftovers(op_fd, [".sequence."])
+            try:
+                write_atomic(op_fd, "sequence", f"{event['sequence']}\n".encode("ascii"), 0o600)
+            except OSError as error:
+                raise _write_failure(f"event sequence {event['sequence']} of {op}", error) from None
+        finally:
+            os.close(op_fd)
+        return _lines(operation_id=op, sequence=event["sequence"]) + [f"event={canonicalize(event)}"]
+    finally:
+        tree.close()
+
+
 def handle_list(_: Doc) -> list[str]:
     """Persist abandoned operations, rewrite history.json and report what retention must keep."""
     tree, bound = _locked_tree()
@@ -1719,6 +1800,7 @@ HANDLERS: dict[str, Callable[[Doc], list[str]]] = {
     "inspect": handle_inspect,
     "begin": handle_begin,
     "checkpoint": handle_checkpoint,
+    "emit": handle_emit,
     "list": handle_list,
 }
 

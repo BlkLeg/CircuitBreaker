@@ -348,7 +348,9 @@ Rules:
 - **E3** `sequence` strictly increases per (`source`, `operation_id`). A consumer drops an event
   that does not. The native sequence is allocated under the lock from a counter in the
   operation's private directory. After a restart it continues above the journal's durable
-  sequence, so nested native processes share one sequence.
+  sequence, so nested native processes share one sequence. Native progress, phase and
+  diagnostic events are emitted through `cb_lifecycle_emit` (the utility's `emit` request), and
+  checkpoint events only after the checkpoint is durable.
 - **E4** An event never authorizes, changes or proves state, including an out-of-order or invalid
   one. Only the journal is authoritative. No later plan may treat a progress event as mutation
   authority.
@@ -359,7 +361,9 @@ Rules:
   `CB_LIFECYCLE_EVENT_FD`, after validating it. It never writes them to its stdout or stderr.
 - Without that descriptor it emits no events, and standalone shell keeps its own renderer.
 - The coordinator reads the descriptor in bounded chunks and reassembles lines across partial
-  reads. It validates every line and refuses any over the bound.
+  reads. It validates every line and refuses any over the bound, never buffering more of it.
+  A descriptor event that claims `source: coordinator` is dropped. A dropped line is reported as a
+  warning diagnostic and changes nothing (`packages/cli/src/events.js`).
 - The descriptor travels with the lock handoff (`CB_LIFECYCLE_LOCK_FD`, `CB_LIFECYCLE_OPERATION`).
   A claim in the environment alone grants nothing.
 
@@ -439,7 +443,10 @@ Each entry is one of two forms:
   dropped, rewritten or reported as a success.
 
 `history --json` prints a `listed` result whose `operations` are these entries. A malformed ID in
-the index is shown as needing inspection and is never used.
+the index is shown as needing inspection and is never used: when the index is sound except for
+some entries, each entry that is not a valid summary becomes an inspection entry (`record` null)
+and the others are kept (`packages/cli/src/lifecycle-state.js`). History reads only this file; it
+never opens a journal, builds a path from an operation ID, looks a release up or elevates.
 
 The index is written under the lock, so it cannot know that a writer was killed after its last
 write. Until the next lock holder (any `begin` or `list`) persists `interrupted`, a killed
@@ -456,8 +463,8 @@ codes are:
 | --- | --- |
 | Missing root or index | empty history, exit 0 |
 | Untrusted or unreadable | exit 6 |
-| Unparsable | exit 9 |
-| Unknown `schema_version` | exit 3 |
+| Unparsable, or over its bound | exit 9 |
+| Unknown `schema_version` (the one the document declares, before any other v1 rule) | exit 3 |
 
 ## 9. Authority, presentation and secrets
 
@@ -515,6 +522,7 @@ written. Members:
 | `list` | — | held |
 | `begin` | `kind`, `action`, `adapter`; optional `plan_digest`, `identity_digest`, `source_version`, `source_artifact_digest`, `target_version`, `target_artifact_digest`, `recovery_operation_id` with `recovery_manifest_digest`, `evidence_check` with `evidence_result` and optional `evidence_detail` | held, bound to no operation |
 | `checkpoint` | `operation_id`, `expected_generation`, `state`; optional `step`, `cause`, `outcome`, `error_code` with `error_reason`, the recovery reference and evidence members of `begin` | held, bound to `operation_id` |
+| `emit` | `operation_id`, `type` (`phase`, `progress` or `diagnostic`) and that type's members (§6; a progress `total` left out is null, a diagnostic `message` is redacted to 900 code points) | held, bound to `operation_id` |
 
 A write needs the lock: `CB_LIFECYCLE_LOCK_FD` must name a descriptor of `private/lock` (same
 device and inode) that holds the flock, which a fresh description of the lock cannot take, and
@@ -525,7 +533,9 @@ A later step of the same progress state replaces the stepped record in place (J3
 
 **Acknowledgement.** On success the utility prints `key=value` lines on stdout:
 `operation_id`, `generation`, `sequence`, `state`, any `warning` (redacted, one line), and
-`event`, the checkpoint event (§6) of the record just written. `inspect` prints the summary members,
+`event`, the checkpoint event (§6) of the record just written. `emit` prints `operation_id`,
+`sequence` and `event`; it writes only the operation's `sequence` counter, never its journal or
+the index, because an event is presentation (E4). `inspect` prints the summary members,
 `status` (`finished`, `unfinished`, `running` or `abandoned`), `reported` (an abandoned operation
 is reported as `interrupted`) and `journal`, the canonical journal on one line. `list` prints
 counts, `unfinished`, `inspection`, `protected` and `releasable` lines and `retention`. The shell
