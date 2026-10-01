@@ -896,6 +896,7 @@ jobs:
       # to verify is reported as "release not found".
       contents: write
       packages: read
+      attestations: read
     outputs:
       image_digest: ${{ steps.candidate.outputs.image_digest }}
       prerelease: ${{ steps.candidate.outputs.prerelease }}
@@ -944,6 +945,30 @@ jobs:
           assert live == recorded, "the draft's SHA256SUMS no longer matches candidate.json"
           print(f"{len(live)} assets verified")
           PY
+      # The signed path, proven against the real key and the real draft
+      # assets before anyone is asked to approve.
+      - name: Verify the draft's signature, bundle hashes and provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/signed && cd /tmp/signed
+          gh release download "v${VERSION}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'SHA256SUMS' --pattern 'SHA256SUMS.sig' \
+            --pattern "circuit-breaker_${VERSION}_linux_*.tar.gz"
+          source "${GITHUB_WORKSPACE}/deploy/lib/bundle-signature.sh"
+          key_id="$(cb_verify_sums_signature SHA256SUMS SHA256SUMS.sig "${GITHUB_WORKSPACE}/deploy/keys/release-bundle-keys.txt")" \
+            || { echo "::error::the draft's SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt"; exit 1; }
+          echo "draft signed by trusted key ${key_id}"
+          checked=0
+          for tarball in circuit-breaker_"${VERSION}"_linux_*.tar.gz; do
+            cb_verify_sums_entry SHA256SUMS "${tarball}" \
+              || { echo "::error::${tarball} does not match the signed SHA256SUMS"; exit 1; }
+            gh attestation verify "${tarball}" --repo "${GITHUB_REPOSITORY}"
+            checked=$((checked + 1))
+          done
+          [ "${checked}" -ge 2 ] || { echo "::error::expected the amd64 and arm64 tarballs, verified ${checked}"; exit 1; }
       - name: Assert release readiness
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -1034,8 +1059,17 @@ jobs:
           gh release download "v${VERSION}" \
             --repo "${GITHUB_REPOSITORY}" \
             --pattern "circuit-breaker_${VERSION}_linux_amd64.tar.gz" \
-            --pattern "SHA256SUMS"
+            --pattern "SHA256SUMS" \
+            --pattern "SHA256SUMS.sig"
           ls -lh
+
+      - name: Verify the published signature
+        run: |
+          set -euo pipefail
+          source deploy/lib/bundle-signature.sh
+          key_id="$(cb_verify_sums_signature published/SHA256SUMS published/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt)" \
+            || { echo "::error::the published SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt"; exit 1; }
+          echo "published release signed by trusted key ${key_id}"
 
       - name: Verify the published tarball against the published checksums
         env:

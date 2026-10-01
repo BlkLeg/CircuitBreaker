@@ -88,3 +88,31 @@ def test_signing_is_refused_off_main_before_the_key_is_written() -> None:
     guard = run.index('"${GITHUB_REF}" != "refs/heads/main"')
     write = run.index("printf '%s\\n' \"${RELEASE_BUNDLE_SIGNING_KEY}\"")
     assert guard < write
+
+
+def test_promote_verify_checks_signature_hashes_and_provenance_before_approval() -> None:
+    step = _steps("promote-verify")[_index("promote-verify", lambda s: _runs(s, "cb_verify_sums_signature"))]
+    run = step["run"]
+    assert "--pattern 'SHA256SUMS.sig'" in run
+    assert "deploy/keys/release-bundle-keys.txt" in run
+    assert "cb_verify_sums_entry" in run
+    assert 'gh attestation verify "${tarball}" --repo "${GITHUB_REPOSITORY}"' in run
+    assert "${{" not in run
+    assert JOBS["promote-verify"]["permissions"]["attestations"] == "read"
+
+
+def test_post_publish_verifies_the_published_signature() -> None:
+    download = _steps("post-publish")[_index("post-publish", lambda s: s.get("name") == "Download the published tarball and checksums")]
+    assert '--pattern "SHA256SUMS.sig"' in download["run"]
+    verify = _index("post-publish", lambda s: _runs(s, "cb_verify_sums_signature"))
+    hashes = _index("post-publish", lambda s: s.get("name") == "Verify the published tarball against the published checksums")
+    assert verify < hashes
+
+
+def test_the_dry_run_rehearses_signing_with_a_throwaway_key() -> None:
+    step = _steps("staged-publication", DRY_RUN)[_index("staged-publication", lambda s: _runs(s, "sign_release_sums.sh"), DRY_RUN)]
+    run = step["run"]
+    assert "openssl genpkey -algorithm ed25519" in run  # generated at run time, never stored
+    assert "cb_verify_sums_signature" in run
+    assert "tampered" in run  # the negative case must fail
+    assert "secrets." not in yaml.safe_dump(step)

@@ -440,6 +440,34 @@ jobs:
           find . -maxdepth 1 -type f ! -name SHA256SUMS -exec sha256sum {} + > SHA256SUMS
           cat SHA256SUMS
 
+      # The real key never reaches a dry run. This proves the signing script,
+      # the library and the SHA256SUMS they read agree, with a key generated
+      # here and discarded with the runner.
+      - name: Rehearse bundle signing with a throwaway key
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          trap 'rm -rf "${work}"' EXIT
+          (umask 077 && openssl genpkey -algorithm ed25519 -out "${work}/key.pem")
+          pub="$(openssl pkey -in "${work}/key.pem" -pubout -outform DER | tail -c 32 | base64 -w0)"
+          id="$(printf '%s' "${pub}" | base64 -d | sha256sum | cut -c1-16)"
+          printf '%s %s 0.0.0 dry-run throwaway\n' "${id}" "${pub}" > "${work}/keys.txt"
+          scripts/ci/sign_release_sums.sh "${work}/key.pem" dist/release/SHA256SUMS "${work}/SHA256SUMS.sig"
+          source deploy/lib/bundle-signature.sh
+          got="$(cb_verify_sums_signature dist/release/SHA256SUMS "${work}/SHA256SUMS.sig" "${work}/keys.txt")"
+          [ "${got}" = "${id}" ] || { echo "::error::rehearsal signature verified by ${got}, expected ${id}"; exit 1; }
+          cp dist/release/SHA256SUMS "${work}/tampered"
+          printf 'tampered\n' >> "${work}/tampered"
+          if cb_verify_sums_signature "${work}/tampered" "${work}/SHA256SUMS.sig" "${work}/keys.txt" >/dev/null; then
+            echo "::error::a tampered SHA256SUMS verified"
+            exit 1
+          fi
+          for tarball in dist/release/circuit-breaker_*_linux_*.tar.gz; do
+            cb_verify_sums_entry dist/release/SHA256SUMS "${tarball}" \
+              || { echo "::error::${tarball} does not match the staged SHA256SUMS"; exit 1; }
+          done
+          echo "bundle signing rehearsed with throwaway key ${id}"
+
       # install.sh builds the asset name it downloads from the version and the
       # architecture. Reading the format out of install.sh rather than
       # restating it here is the point: a rename on either side fails this
