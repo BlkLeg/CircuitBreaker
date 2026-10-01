@@ -1631,7 +1631,7 @@ When the plan is done, update its row in `plans/README.md` to say so.
 
 These steps use the real private key, so the maintainer runs them. An agent must not generate, handle or print it.
 
-- [ ] **Step 1: Create the key and the environment**
+- [ ] **Step 1: Create the key and the environment** — key generated and trusted (`5f2aa2afdb764f86`, aee0c20c + ef267cbb); environment, secret and offline backup outstanding
 
 Follow *One-time setup* in `docs/release/bundle-signing.md`: `make release-signing-key`, then append the public line, update the heredoc and run the sync. Then create the environment and branch policy, set the secret, back the key up offline and shred the working copy. Commit only the public line and its two synced copies:
 
@@ -1641,7 +1641,7 @@ git commit -m "chore(release): trust the first release bundle key"
 .venv/bin/pytest tests/build/test_bundle_signature_lib.py tests/build/test_installer_ui_inline_matches_library.py -q
 ```
 
-- [ ] **Step 2: Local installer acceptance on a fresh LXC**
+- [x] **Step 2: Local installer acceptance on a fresh LXC** — run 2026-09-30 on `cb-test1` (Ubuntu 26.04.1, Proxmox LXC) with `install.sh` from `ef267cbb`+fixes (trusting key `5f2aa2afdb764f86`) and a bundle built by `make build-in-release-image`: case c refused at the signature ("does not verify … Keys tried: 5f2aa2afdb764f86"), case d refused at the hash ("SHA256 mismatch"), both before any change to the host; case b verified the hash and installed. Case a (no files, warn-and-continue) not run.
 
 Build a bundle with `make build-in-release-image`. Copy `dist/native/circuit-breaker_*_linux_amd64.tar.gz`, `install.sh` and (per case) the files below to a fresh LXC, then run `sudo bash install.sh --local-bundle <tarball> --unattended --no-tls` for each case:
 
