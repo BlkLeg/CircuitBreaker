@@ -442,7 +442,7 @@ verify-composed-mono: ## Tier 2 — build the mono image and run the compose smo
 	docker build -f Dockerfile.mono -t circuitbreaker:local-smoke .
 	scripts/ci/tier2-mono-smoke.sh circuitbreaker:local-smoke
 
-verify-cli-pack: ## npm CLI — pack the exact tarball, install it preferring the npm cache, drive the launcher (Node 22.22.2+/24.15.0+/26+)
+verify-cli-pack: ## npm CLI — pack the exact tarball, install it by name with its shrinkwrap honoured, check the tree, drive the launcher (Node 22.22.2+/24.15.0+/26+)
 	scripts/ci/cli_packed_smoke.sh
 
 # T3. Not part of `verify` and deliberately not wired into any workflow yet: it

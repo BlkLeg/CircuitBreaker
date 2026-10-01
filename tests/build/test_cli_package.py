@@ -32,15 +32,20 @@ PACKED_ALLOWLIST = re.compile(
     r"|src/[a-z-]+\.js"
     r"|schemas/[a-z-]+(?:\.schema)?\.json"
     r"|compat/[a-z-]+\.json"
-    r"|trust/release-bundle-keys\.txt)$"
+    r"|trust/release-bundle-keys\.txt"
+    r"|npm-shrinkwrap\.json)$"
 )
 REQUIRED_PACKED = {
     "package.json", "README.md", "LICENSE", "bin/circuitbreaker.js",
     "src/main.js", "schemas/install-identity.schema.json",
     "schemas/native-commands.json", "compat/management.json",
-    "trust/release-bundle-keys.txt",
+    "trust/release-bundle-keys.txt", "npm-shrinkwrap.json",
 }
+# The code's budget. npm-shrinkwrap.json is dependency metadata, not code, and
+# has its own budget: it grows with sigstore's tree, which deserves a look anyway.
 UNPACKED_SIZE_BUDGET = 64 * 1024
+SHRINKWRAP_SIZE_BUDGET = 40 * 1024
+SHRINKWRAP = PKG / "npm-shrinkwrap.json"
 ENTRY_BUDGET = 40
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
@@ -68,7 +73,7 @@ def test_manifest_identity() -> None:
     assert MANIFEST["engines"] == {"node": "^22.22.2 || ^24.15.0 || >=26.0.0"}
     assert MANIFEST["license"] == "MIT"
     assert MANIFEST["repository"]["directory"] == "packages/cli"
-    assert MANIFEST["files"] == ["bin/", "src/", "schemas/", "compat/", "trust/"]
+    assert MANIFEST["files"] == ["bin/", "src/", "schemas/", "compat/", "trust/", "npm-shrinkwrap.json"]
     assert MANIFEST["private"] is True and "publishConfig" not in MANIFEST, (
         "the CLI is published only by sub-plan 09, together with the ADR 0006 guard revision"
     )
@@ -80,7 +85,29 @@ def test_only_sigstore_and_no_install_time_scripts() -> None:
         assert not MANIFEST.get(field), f"{field} must stay empty (NPM-05)"
     hooks = set(MANIFEST.get("scripts", {})) & NPM_LIFECYCLE_SCRIPTS
     assert not hooks, f"npm would run {sorted(hooks)} unasked (NPM-10)"
-    assert (PKG / "package-lock.json").is_file(), "the dependency tree must be locked"
+    # npm never publishes package-lock.json; npm-shrinkwrap.json is the one lock
+    # that ships and that `npm install -g` honours, so users get the tree tested here.
+    assert SHRINKWRAP.is_file(), "the dependency tree must be locked in npm-shrinkwrap.json"
+    assert not (PKG / "package-lock.json").exists(), "one lockfile: npm ignores package-lock.json beside a shrinkwrap"
+
+
+def test_shrinkwrap_pins_a_registry_tree_without_install_scripts() -> None:
+    """NPM-10 for the tree users get: every locked package comes from the npm
+    registry with an integrity hash, and none has an install-time script (npm
+    records that as hasInstallScript when it writes the lock)."""
+    lock = json.loads(SHRINKWRAP.read_text(encoding="utf-8"))
+    assert lock["lockfileVersion"] == 3
+    packages = {path: entry for path, entry in lock["packages"].items() if path}
+    assert packages["node_modules/sigstore"]["version"] == "5.0.0"
+    assert lock["packages"][""]["dependencies"] == MANIFEST["dependencies"]
+    scripted = sorted(path for path, entry in packages.items() if entry.get("hasInstallScript"))
+    assert not scripted, f"locked packages with install-time scripts (NPM-10): {scripted}"
+    unpinned = sorted(
+        path for path, entry in packages.items()
+        if not str(entry.get("resolved", "")).startswith("https://registry.npmjs.org/")
+        or not str(entry.get("integrity", "")).startswith("sha512-")
+    )
+    assert not unpinned, f"locked packages without a registry tarball and sha512 integrity: {unpinned}"
 
 
 def _installed_package_manifests(modules: Path) -> list[Path]:
@@ -149,7 +176,10 @@ def test_packed_contents_are_allowlisted_and_within_budget() -> None:
     strays = sorted(p for p in paths if not PACKED_ALLOWLIST.match(p))
     assert not strays, f"npm pack would publish files outside the allowlist: {strays}"
     assert REQUIRED_PACKED <= paths, f"npm pack is missing {sorted(REQUIRED_PACKED - paths)}"
-    assert info["unpackedSize"] <= UNPACKED_SIZE_BUDGET, info["unpackedSize"]
+    sizes = {entry["path"]: entry["size"] for entry in info["files"]}
+    assert sizes["npm-shrinkwrap.json"] <= SHRINKWRAP_SIZE_BUDGET, sizes["npm-shrinkwrap.json"]
+    code_size = info["unpackedSize"] - sizes["npm-shrinkwrap.json"]
+    assert code_size <= UNPACKED_SIZE_BUDGET, code_size
     assert info["entryCount"] <= ENTRY_BUDGET, info["entryCount"]
 
 

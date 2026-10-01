@@ -12,7 +12,8 @@
     "src/",
     "schemas/",
     "compat/",
-    "trust/"
+    "trust/",
+    "npm-shrinkwrap.json"
   ],
   "os": [
     "linux"

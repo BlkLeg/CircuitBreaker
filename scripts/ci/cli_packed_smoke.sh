@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Packed-tarball smoke for @blkleg/circuitbreaker (NPM-02, NPM-05, NPM-08, NPM-10).
 #
-# Packs the package exactly as `npm publish` would, installs that .tgz into a
-# throwaway prefix, and drives the installed launcher. The install prefers the
-# npm cache: sigstore, the one runtime dependency, resolves from what
-# `npm ci --ignore-scripts` in packages/cli already put there. The
+# Packs the package exactly as `npm publish` would, installs it by name into a
+# throwaway prefix the way a user does, and drives the installed launcher. The
+# name resolves through a one-package registry on 127.0.0.1 that serves the .tgz
+# with the `_hasShrinkwrap` flag npmjs.com sets on publish, so npm honours the
+# shipped npm-shrinkwrap.json as it will for `npm install -g`. sigstore's tree
+# then comes from the npm cache that `npm ci --ignore-scripts` in packages/cli
+# filled (registry.npmjs.org only on a cache miss), and is checked against the
+# shrinkwrap with no install scripts anywhere in it (NPM-10). The
 # forwarding target is /usr/bin/echo: a real root-owned executable in a
 # root-owned directory, so the trust check runs for real without sudo, and
 # echo's output shows exactly which argv arrived.
@@ -13,7 +17,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+registry_pid=""
+trap '[ -z "$registry_pid" ] || kill "$registry_pid" 2>/dev/null; rm -rf "$work"' EXIT
 
 fail() { printf '::error::cli packed smoke: %s\n' "$*" >&2; exit 1; }
 
@@ -24,8 +29,18 @@ node -e "import('$ROOT/packages/cli/src/runtime.js').then(m=>{const p=m.unsuppor
 tarball="$(cd "$ROOT/packages/cli" && npm pack --silent --ignore-scripts --pack-destination "$work")"
 [ "$tarball" = "blkleg-circuitbreaker-${VERSION}.tgz" ] || fail "packed $tarball, expected blkleg-circuitbreaker-${VERSION}.tgz"
 
-npm install --global --prefix "$work/prefix" --prefer-offline --no-audit --no-fund "$work/$tarball" >/dev/null
-[ -d "$work/prefix/lib/node_modules/@blkleg/circuitbreaker/node_modules/sigstore" ] || fail "sigstore was not installed with the package"
+node "$ROOT/scripts/ci/cli_local_registry.mjs" "$work/$tarball" "$ROOT/packages/cli/package.json" > "$work/registry.port" &
+registry_pid=$!
+for _ in $(seq 100); do [ -s "$work/registry.port" ] && break; sleep 0.1; done
+port="$(cat "$work/registry.port")"
+[ -n "$port" ] || fail "the local registry did not start"
+
+npm install --global --prefix "$work/prefix" --prefer-offline --no-audit --no-fund \
+    "--@blkleg:registry=http://127.0.0.1:${port}/" "@blkleg/circuitbreaker@${VERSION}" >/dev/null
+installed="$work/prefix/lib/node_modules/@blkleg/circuitbreaker"
+[ -d "$installed/node_modules/sigstore" ] || fail "sigstore was not installed with the package"
+node "$ROOT/scripts/ci/cli_installed_tree_check.mjs" "$installed" \
+    || fail "the installed dependency tree is not the shipped npm-shrinkwrap.json, or runs install scripts"
 bin_entries="$(ls "$work/prefix/bin")"
 [ "$bin_entries" = "circuitbreaker" ] || fail "install created bin entries: $bin_entries"
 [ "$(ls "$work/prefix/lib/node_modules")" = "@blkleg" ] || fail "install created more than the one package"

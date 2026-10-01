@@ -63,3 +63,36 @@ export async function fetchJson(url, options = {}) {
     clearTimeout(timer);
   }
 }
+
+// Reads a whole small binary answer into a Buffer, with the same body deadline
+// and error mapping as fetchJson and no GitHub accept header. A body larger
+// than maxBytes, whether declared up front or found while streaming, is a
+// NetworkError: the server is not answering with what was asked for.
+export async function fetchBytes(url, options = {}) {
+  const { timeoutMs = 30000, maxBytes = Infinity } = options;
+  const host = new URL(url).host;
+  const bodyController = new AbortController();
+  const response = await request(url, { ...options, signal: bodyController.signal });
+  const tooLarge = () => new NetworkError(`${host} answered with more than ${maxBytes} bytes`);
+  const declared = Number(response.headers.get('content-length') ?? NaN);
+  if (declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw tooLarge();
+  }
+  const timer = setTimeout(() => bodyController.abort(new DOMException('response timed out', 'TimeoutError')), timeoutMs);
+  const chunks = [];
+  let total = 0;
+  try {
+    for await (const chunk of response.body ?? []) {
+      total += chunk.length;
+      if (total > maxBytes) throw tooLarge();
+      chunks.push(chunk);
+    }
+  } catch (error) {
+    if (error instanceof NetworkError) throw error;
+    throw new NetworkError(`could not read the answer from ${host}: ${error.cause?.code ?? error.name ?? error.message}`, error);
+  } finally {
+    clearTimeout(timer);
+  }
+  return Buffer.concat(chunks);
+}

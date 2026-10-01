@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
-import { fetchJson, request, NetworkError, HttpStatusError, USER_AGENT } from '../src/http.js';
+import { fetchJson, fetchBytes, request, NetworkError, HttpStatusError, USER_AGENT } from '../src/http.js';
 
 const okFetch = (body, status = 200) => async () => new Response(JSON.stringify(body), { status });
 
@@ -53,6 +53,32 @@ test('fetchJson bounds the body read and reports a stalled body as NetworkError'
 
 test('fetchJson leaves invalid JSON as a SyntaxError', async () => {
   await assert.rejects(fetchJson('https://x', { fetchImpl: stallingFetch(0, 'nope') }), SyntaxError);
+});
+
+test('fetchBytes returns the raw body without the GitHub accept header', async () => {
+  let seen;
+  const fetchImpl = async (url, init) => { seen = init; return new Response(Buffer.from([0x89, 0x32, 0xf0])); };
+  const body = await fetchBytes('https://blob/x', { fetchImpl });
+  assert.ok(Buffer.isBuffer(body));
+  assert.deepEqual([...body], [0x89, 0x32, 0xf0]);
+  assert.equal(seen.headers.accept, undefined);
+  assert.equal(seen.headers['user-agent'], USER_AGENT);
+});
+
+test('fetchBytes maps HTTP, transport and stall failures like fetchJson', async () => {
+  await assert.rejects(fetchBytes('https://x', { fetchImpl: okFetch({}, 403) }), (e) => e instanceof HttpStatusError && e.status === 403);
+  await assert.rejects(fetchBytes('https://x', { fetchImpl: async () => { throw new TypeError('fetch failed'); } }), (e) => e instanceof NetworkError);
+  await assert.rejects(fetchBytes('https://x', { fetchImpl: stallingFetch(1000, 'x'), timeoutMs: 50 }), (e) => e instanceof NetworkError);
+});
+
+test('fetchBytes refuses a body larger than maxBytes, declared or streamed', async () => {
+  const declared = async () => new Response('0123456789', { headers: { 'content-length': '10' } });
+  await assert.rejects(fetchBytes('https://x', { fetchImpl: declared, maxBytes: 4 }), (e) => e instanceof NetworkError && /more than 4 bytes/.test(e.message));
+  const undeclared = async () => new Response(new ReadableStream({
+    start(c) { c.enqueue(new TextEncoder().encode('0123')); c.enqueue(new TextEncoder().encode('4567')); c.close(); },
+  }));
+  await assert.rejects(fetchBytes('https://x', { fetchImpl: undeclared, maxBytes: 6 }), (e) => e instanceof NetworkError && /more than 6 bytes/.test(e.message));
+  assert.equal((await fetchBytes('https://x', { fetchImpl: undeclared, maxBytes: 8 })).toString(), '01234567');
 });
 
 test('with NODE_USE_ENV_PROXY=1 and HTTP_PROXY set, requests go through the proxy', async (t) => {
