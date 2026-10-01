@@ -122,3 +122,17 @@ def test_keygen_refuses_dangling_symlink(tmp_path: Path) -> None:
     assert "refusing to overwrite" in result.stderr
     # The target should not have been created
     assert not target.exists()
+
+
+def test_keygen_names_a_missing_output_directory_before_openssl(tmp_path: Path) -> None:
+    """OpenSSL's own error for a missing directory is opaque; say what to run."""
+    missing = tmp_path / "secure"
+    result = subprocess.run(
+        ["bash", str(KEYGEN), str(missing / "k.pem"), "0.4.7"], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 1
+    assert result.stderr.strip() == (
+        f"directory {missing} does not exist; create it with: mkdir -m 700 -p {missing}"
+    )
+    assert "openssl" not in result.stderr.lower()
+    assert not missing.exists()

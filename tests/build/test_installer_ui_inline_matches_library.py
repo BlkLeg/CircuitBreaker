@@ -89,3 +89,11 @@ def test_the_inlined_block_matches_the_library_byte_for_byte(
         f"library. Run '{_SYNC_COMMAND}' to resync it, then commit the "
         "result."
     )
+
+
+def test_blocks_lists_exactly_the_inlined_libraries() -> None:
+    """An emptied or shortened BLOCKS would make the parity tests above vacuous."""
+    assert [lib.relative_to(REPO_ROOT).as_posix() for lib, _, _ in BLOCKS] == [
+        "deploy/lib/ui.sh",
+        "deploy/lib/bundle-signature.sh",
+    ]

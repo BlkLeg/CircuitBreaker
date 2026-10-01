@@ -20,6 +20,12 @@ if [[ -e "$out" || -L "$out" ]]; then
   exit 1
 fi
 
+dir="$(dirname -- "$out")"
+if [[ ! -d "$dir" ]]; then
+  echo "directory $dir does not exist; create it with: mkdir -m 700 -p $dir" >&2
+  exit 1
+fi
+
 # umask before creation: the key must never exist with a wider mode.
 (umask 077 && openssl genpkey -algorithm ed25519 -out "$out")
 pub="$(openssl pkey -in "$out" -pubout -outform DER | tail -c 32 | base64 -w0)"
