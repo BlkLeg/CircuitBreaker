@@ -117,6 +117,11 @@ jobs:
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
+      # tests/build checks the CLI's installed dependency tree for install-time
+      # scripts (NPM-10), so Tier 0 needs it; --ignore-scripts for the same reason.
+      - name: Install CLI deps
+        run: cd packages/cli && npm ci --ignore-scripts
+
       - name: Tier 0 — static gates
         env:
           CB_DB_URL: postgresql://cb_ci:cb_ci@127.0.0.1:5432/cb_ci

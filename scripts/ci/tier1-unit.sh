@@ -70,11 +70,16 @@ cb::section "Frontend unit tests"
 ) 2>&1 | tee "$EVIDENCE/logs/frontend.log"
 
 cb::section "npm CLI unit tests"
-# node:test on the host's Node. The packed-tarball smoke, which needs the
-# package's Node 22 floor, runs in dev-ci.yml's npm-cli job and via
-# `make verify-cli-pack`. The explicit *.test.js glob is deliberate: Node 22+
-# treats a bare directory argument as a module path and fails with
-# MODULE_NOT_FOUND, while Node 20 accepts it.
+# node:test on the host's Node, even below the package's floor
+# (^22.22.2 || ^24.15.0 || >=26.0.0): the launcher would refuse Node 20, but
+# the unit tests import the modules directly, and sigstore loads there too. The
+# packed-tarball smoke, which needs the floor, runs in dev-ci.yml's npm-cli job
+# and via `make verify-cli-pack`. sigstore is the package's one runtime
+# dependency; --ignore-scripts because NPM-10 forbids install-time scripts. The
+# explicit *.test.js glob is deliberate: Node 22+ treats a bare directory
+# argument as a module path and fails with MODULE_NOT_FOUND, while Node 20
+# accepts it.
+[ -d packages/cli/node_modules ] || npm ci --ignore-scripts --prefix packages/cli
 node --test \
     --test-reporter=spec --test-reporter-destination=stdout \
     --test-reporter=junit --test-reporter-destination="$EVIDENCE/junit/cli.xml" \

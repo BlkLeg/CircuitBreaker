@@ -64,7 +64,8 @@ def test_manifest_identity() -> None:
     assert MANIFEST["bin"] == {"circuitbreaker": "bin/circuitbreaker.js"}
     assert MANIFEST["type"] == "module"
     assert MANIFEST["os"] == ["linux"]
-    assert MANIFEST["engines"] == {"node": ">=22"}
+    # sigstore 5's own engines range; runtime.js's NODE_ENGINES is pinned to it too.
+    assert MANIFEST["engines"] == {"node": "^22.22.2 || ^24.15.0 || >=26.0.0"}
     assert MANIFEST["license"] == "MIT"
     assert MANIFEST["repository"]["directory"] == "packages/cli"
     assert MANIFEST["files"] == ["bin/", "src/", "schemas/", "compat/", "trust/"]
@@ -73,11 +74,62 @@ def test_manifest_identity() -> None:
     )
 
 
-def test_no_dependencies_and_no_install_time_scripts() -> None:
-    for field in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "bundleDependencies"):
+def test_only_sigstore_and_no_install_time_scripts() -> None:
+    assert MANIFEST.get("dependencies") == {"sigstore": "5.0.0"}, "sigstore, exact, is the only runtime dependency"
+    for field in ("devDependencies", "optionalDependencies", "peerDependencies", "bundleDependencies"):
         assert not MANIFEST.get(field), f"{field} must stay empty (NPM-05)"
     hooks = set(MANIFEST.get("scripts", {})) & NPM_LIFECYCLE_SCRIPTS
     assert not hooks, f"npm would run {sorted(hooks)} unasked (NPM-10)"
+    assert (PKG / "package-lock.json").is_file(), "the dependency tree must be locked"
+
+
+def _installed_package_manifests(modules: Path) -> list[Path]:
+    """The package.json at each package root under a node_modules tree, nested trees included.
+
+    A package root is `node_modules/<name>/` or `node_modules/@scope/<name>/`. Other
+    package.json files inside a package (fixtures, `dist/esm/package.json` type
+    markers) are not packages npm installs, so they are left out.
+    """
+    trees = [modules, *(p for p in modules.rglob("node_modules") if p.is_dir())]
+    manifests: list[Path] = []
+    for tree in trees:
+        manifests.extend(tree.glob("[!@.]*/package.json"))
+        manifests.extend(tree.glob("@*/*/package.json"))
+    return sorted(manifests)
+
+
+def test_no_installed_dependency_runs_install_scripts() -> None:
+    modules = PKG / "node_modules"
+    assert modules.is_dir(), "run `npm ci --ignore-scripts` in packages/cli first"
+    manifests = _installed_package_manifests(modules)
+    assert any(m.parent.name == "sigstore" for m in manifests), "sigstore is not installed"
+    offenders = []
+    for manifest in manifests:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        hooks = set(data.get("scripts", {})) & {"preinstall", "install", "postinstall"}
+        if hooks:
+            offenders.append(f"{manifest.parent.relative_to(modules)}: {sorted(hooks)}")
+    assert not offenders, f"dependencies with install-time scripts (NPM-10): {offenders}"
+
+
+def test_package_root_discovery_covers_scoped_and_nested_trees(tmp_path: Path) -> None:
+    for rel in (
+        "plain/package.json",
+        "@scope/pkg/package.json",
+        "plain/node_modules/nested/package.json",
+        "@scope/pkg/node_modules/@inner/deep/package.json",
+        "plain/dist/esm/package.json",
+        ".package-lock.json",
+    ):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("{}", encoding="utf-8")
+    found = {m.relative_to(tmp_path).as_posix() for m in _installed_package_manifests(tmp_path)}
+    assert found == {
+        "plain/package.json",
+        "@scope/pkg/package.json",
+        "plain/node_modules/nested/package.json",
+        "@scope/pkg/node_modules/@inner/deep/package.json",
+    }
 
 
 def test_launcher_is_executable_with_a_node_shebang() -> None:

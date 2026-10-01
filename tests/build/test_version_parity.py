@@ -280,3 +280,36 @@ def test_sync_keeps_a_lockfile_in_npms_own_formatting(lock_tree: Path) -> None:
 
     after = lock.read_text()
     assert after == before.replace("1.2.3", "1.2.4")
+
+
+def test_cli_lockfile_is_checked_and_synced(lock_tree: Path) -> None:
+    """packages/cli gained a lockfile with its sigstore dependency; it versions
+    with the rest, and its dependency entries stay untouched."""
+    cli = lock_tree / "packages" / "cli"
+    cli.mkdir(parents=True)
+    (cli / "package.json").write_text(json.dumps({"name": "@blkleg/circuitbreaker", "version": "1.2.3"}))
+    lock = cli / "package-lock.json"
+    lock.write_text(
+        json.dumps(
+            {
+                "name": "@blkleg/circuitbreaker",
+                "version": "1.2.0",
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"name": "@blkleg/circuitbreaker", "version": "1.2.0"},
+                    "node_modules/sigstore": {"version": "1.2.0"},
+                },
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    problems = check_parity(lock_tree)
+    assert len(problems) == 1 and "packages/cli/package-lock.json" in problems[0]
+
+    sync_versions(lock_tree)
+
+    assert check_parity(lock_tree) == []
+    synced = json.loads(lock.read_text())
+    assert synced["version"] == "1.2.3" and synced["packages"][""]["version"] == "1.2.3"
+    assert synced["packages"]["node_modules/sigstore"]["version"] == "1.2.0"

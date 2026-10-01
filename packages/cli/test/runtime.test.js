@@ -1,28 +1,40 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { unsupportedRuntime, MIN_NODE_MAJOR } from '../src/runtime.js';
+import { readFileSync } from 'node:fs';
+import { unsupportedRuntime, NODE_ENGINES } from '../src/runtime.js';
 import { EXIT } from '../src/exit-codes.js';
 
-test('a supported Linux host with Node 22+ passes', () => {
-  assert.equal(unsupportedRuntime({ platform: 'linux', nodeVersion: '22.11.0' }), null);
-  assert.equal(unsupportedRuntime({ platform: 'linux', nodeVersion: '24.0.0' }), null);
+const linux = (nodeVersion) => unsupportedRuntime({ platform: 'linux', nodeVersion });
+
+test('Node inside the sigstore 5 engines range passes', () => {
+  for (const version of ['22.22.2', '22.23.3', '24.15.0', '24.20.1', '26.0.0', '27.3.1']) {
+    assert.equal(linux(version), null, version);
+  }
 });
 
-test('Node older than the floor is refused with the versions named', () => {
-  const message = unsupportedRuntime({ platform: 'linux', nodeVersion: '20.20.2' });
-  assert.match(message, /Node\.js 22 or newer/);
-  assert.match(message, /20\.20\.2/);
-  assert.equal(MIN_NODE_MAJOR, 22);
+test('Node outside the range is refused with the floors and the running version named', () => {
+  for (const version of ['20.20.2', '22.11.0', '22.22.1', '23.1.0', '24.0.0', '24.14.9', '25.9.0']) {
+    const message = linux(version);
+    assert.equal(message, `Node.js 22.22.2+, 24.15.0+ or 26+ is required; this is ${version}.`);
+  }
+});
+
+test('the launcher check and package.json engines state the same range', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(NODE_ENGINES, '^22.22.2 || ^24.15.0 || >=26.0.0');
+  assert.equal(manifest.engines.node, NODE_ENGINES);
 });
 
 test('non-Linux hosts are refused before the Node check', () => {
   for (const platform of ['darwin', 'win32', 'freebsd']) {
-    assert.match(unsupportedRuntime({ platform, nodeVersion: '24.0.0' }), new RegExp(`Linux only.*${platform}`));
+    assert.match(unsupportedRuntime({ platform, nodeVersion: '24.15.0' }), new RegExp(`Linux only.*${platform}`));
   }
 });
 
 test('an unparseable version is refused, not treated as new enough', () => {
-  assert.match(unsupportedRuntime({ platform: 'linux', nodeVersion: 'garbage' }), /Node\.js 22/);
+  for (const version of ['garbage', '24', '24.15', '']) {
+    assert.match(linux(version), /Node\.js 22\.22\.2\+/, version);
+  }
 });
 
 test('exit codes match the design table exactly', () => {

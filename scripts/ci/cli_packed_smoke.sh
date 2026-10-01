@@ -2,7 +2,9 @@
 # Packed-tarball smoke for @blkleg/circuitbreaker (NPM-02, NPM-05, NPM-08, NPM-10).
 #
 # Packs the package exactly as `npm publish` would, installs that .tgz into a
-# throwaway prefix with no network, and drives the installed launcher. The
+# throwaway prefix, and drives the installed launcher. The install prefers the
+# npm cache: sigstore, the one runtime dependency, resolves from what
+# `npm ci --ignore-scripts` in packages/cli already put there. The
 # forwarding target is /usr/bin/echo: a real root-owned executable in a
 # root-owned directory, so the trust check runs for real without sudo, and
 # echo's output shows exactly which argv arrived.
@@ -15,13 +17,15 @@ trap 'rm -rf "$work"' EXIT
 
 fail() { printf '::error::cli packed smoke: %s\n' "$*" >&2; exit 1; }
 
-node_major="$(node -p 'process.versions.node.split(".")[0]')"
-[ "$node_major" -ge 22 ] || fail "Node $(node -v) is below the package's floor of 22; install Node 22+ to run this smoke"
+# The package's own launcher check, so this guard cannot drift from engines.
+node -e "import('$ROOT/packages/cli/src/runtime.js').then(m=>{const p=m.unsupportedRuntime(); if(p){console.error(p);process.exit(1)}})" \
+    || fail "Node $(node -v) is below the package's floor; install a supported Node to run this smoke"
 
 tarball="$(cd "$ROOT/packages/cli" && npm pack --silent --ignore-scripts --pack-destination "$work")"
 [ "$tarball" = "blkleg-circuitbreaker-${VERSION}.tgz" ] || fail "packed $tarball, expected blkleg-circuitbreaker-${VERSION}.tgz"
 
-npm install --global --prefix "$work/prefix" --offline --no-audit --no-fund "$work/$tarball" >/dev/null
+npm install --global --prefix "$work/prefix" --prefer-offline --no-audit --no-fund "$work/$tarball" >/dev/null
+[ -d "$work/prefix/lib/node_modules/@blkleg/circuitbreaker/node_modules/sigstore" ] || fail "sigstore was not installed with the package"
 bin_entries="$(ls "$work/prefix/bin")"
 [ "$bin_entries" = "circuitbreaker" ] || fail "install created bin entries: $bin_entries"
 [ "$(ls "$work/prefix/lib/node_modules")" = "@blkleg" ] || fail "install created more than the one package"
