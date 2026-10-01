@@ -3,10 +3,13 @@
 Every case runs bash (or Python's fcntl.flock, the primitive the native state
 utility uses) as separate processes against a disposable state root under
 tmp_path, through the library's CB_LIFECYCLE_ROOT test seam. The seam is
-refused as root by design (ruling R8), so those cases skip when the suite
-itself runs as root; the refusal is tested instead. Nothing here touches the
-real /var/lib/circuitbreaker-lifecycle: an unprivileged caller of the real lock
-is refused before the library looks at the filesystem at all.
+refused as root by design (ruling R8), so when the suite itself runs as root
+(a CI image without a USER line) those cases skip in place and one root-only
+case re-runs this whole module as an unprivileged uid over a temporary root
+that uid owns; root also tests the seam's refusal, and an untrusted owner,
+directly. Nothing here touches the real /var/lib/circuitbreaker-lifecycle: an
+unprivileged caller of the real lock is refused before the library looks at
+the filesystem at all.
 
 Each script runs under `set -Eeuo pipefail` with an ERR trap, the shape of
 install.sh, so a library function that trips errexit or the trap shows up as
@@ -23,6 +26,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -48,7 +52,14 @@ OP = "op-20261001-001"
 AS_ROOT = os.geteuid() == 0
 # Root cannot use the disposable-root seam (ruling R8) and would take the real lock.
 seam = pytest.mark.skipif(
-    AS_ROOT, reason="runs unprivileged: CB_LIFECYCLE_ROOT is refused as root (ruling R8); root takes the real lock"
+    AS_ROOT, reason="runs unprivileged: CB_LIFECYCLE_ROOT is refused as root (ruling R8); root re-runs it unprivileged"
+)
+# The unprivileged uid and gid a root run drops to. Not nobody (65534): that is the kernel's
+# overflow uid, which a user namespace inside the dropped run shows for every unmapped owner,
+# so root-owned ancestors would read as owned by the caller itself and be trusted.
+DROP_UID = DROP_GID = 54321
+root_only = pytest.mark.skipif(
+    not AS_ROOT, reason="needs root to drop privileges; an unprivileged run executes these cases directly"
 )
 
 
@@ -500,6 +511,140 @@ def test_the_operation_context_must_match_the_holder(tmp_path: Path, procs: list
     assert "ERR-TRAP" not in parent.stderr()
 
 
+FORGED_OP = "op-20261001-999"
+# Ways a child could arrive carrying the library's internal state, which the same-shell
+# fast path used to trust, together with a wrong operation context.
+INTERNAL_STATE_CARRIERS = {
+    # Exported by hand into the child's environment.
+    "environment": (
+        "",
+        (
+            f'_CB_LIFECYCLE_LOCK_FD="$CB_LIFECYCLE_LOCK_FD" _CB_LIFECYCLE_LOCK_DEPTH=1 '
+            f'CB_LIFECYCLE_OPERATION={FORGED_OP} bash "$CHILD"'
+        ),
+    ),
+    # The same, naming the child's own PID as the owner (exec keeps the subshell's PID).
+    "environment naming the child's pid": (
+        "",
+        (
+            f'( exec env _CB_LIFECYCLE_LOCK_FD="$CB_LIFECYCLE_LOCK_FD" _CB_LIFECYCLE_LOCK_PID="$BASHPID" '
+            f'_CB_LIFECYCLE_LOCK_DEPTH=1 CB_LIFECYCLE_OPERATION={FORGED_OP} bash "$CHILD" )'
+        ),
+    ),
+    # A `set -a` span around the acquisition, as cb uses around other assignments.
+    "set -a around the acquisition": ("set -a\n", f'CB_LIFECYCLE_OPERATION={FORGED_OP} bash "$CHILD"'),
+}
+
+
+@pytest.mark.parametrize("carrier", list(INTERNAL_STATE_CARRIERS))
+@seam
+def test_inherited_internal_state_never_skips_the_operation_check(
+    tmp_path: Path, procs: list[Proc], carrier: str
+) -> None:
+    state = tmp_path / "state"
+    marker = tmp_path / "mutated"
+    child = child_script(tmp_path, "child.sh", 'env | grep -c "^_CB_LIFECYCLE_" >"$SEEN" || true\n' + MUTATE)
+    prefix, forged = INTERNAL_STATE_CARRIERS[carrier]
+    parent = bash_bg(
+        procs,
+        f'{prefix}cb_lifecycle_lock_acquire "cb update"\ncb_lifecycle_lock_bind_operation {OP}\nset +a\n'
+        f'rc=0\n{forged} || rc=$?\necho "forged $rc"\n'
+        'rc=0\nbash "$CHILD" || rc=$?\necho "honest $rc"\nread -r _ || true\n',
+        state,
+        {"CHILD": str(child), "MUTATION": str(marker), "SEEN": str(tmp_path / "seen")},
+    )
+    assert parent.line() == "forged 10"
+    assert not marker.exists(), "a forged operation context mutated under the lock"
+    assert parent.line() == "honest 0"
+    assert marker.exists()
+    if carrier.startswith("set -a"):
+        assert (tmp_path / "seen").read_text().strip() == "0", "set -a exported the library's internal state"
+    assert parent.finish() == 0
+    assert "ERR-TRAP" not in parent.stderr()
+
+
+@seam
+def test_a_forged_nesting_depth_does_not_outlive_the_childs_release(tmp_path: Path, procs: list[Proc]) -> None:
+    # Right descriptor, right operation, and a nesting depth the child never acquired.
+    state = tmp_path / "state"
+    child = child_script(
+        tmp_path, "child.sh",
+        'cb_lifecycle_lock_acquire "restore.sh"\ncb_lifecycle_lock_release\n'
+        'echo "child after release ${CB_LIFECYCLE_LOCK_FD-unset}"\n',
+    )
+    parent = bash_bg(
+        procs,
+        f'cb_lifecycle_lock_acquire "cb update"\ncb_lifecycle_lock_bind_operation {OP}\n'
+        '( exec env _CB_LIFECYCLE_LOCK_FD="$CB_LIFECYCLE_LOCK_FD" _CB_LIFECYCLE_LOCK_ID=0:0 '
+        '_CB_LIFECYCLE_LOCK_PID="$BASHPID" _CB_LIFECYCLE_LOCK_DEPTH=5 bash "$CHILD" )\nread -r _ || true\n',
+        state,
+        {"CHILD": str(child)},
+    )
+    assert parent.line() == "child after release unset"
+    assert parent.finish() == 0
+    assert "ERR-TRAP" not in parent.stderr()
+
+
+@seam
+def test_reentry_in_the_holding_shell_checks_the_operation_too(tmp_path: Path, procs: list[Proc]) -> None:
+    state = tmp_path / "state"
+    holder = bash_bg(
+        procs,
+        f'cb_lifecycle_lock_acquire "cb restore"\ncb_lifecycle_lock_bind_operation {OP}\n'
+        f'rc=0\nCB_LIFECYCLE_OPERATION={FORGED_OP} cb_lifecycle_lock_acquire "cb backup" || rc=$?\n'
+        'echo "rejoin $rc $CB_LIFECYCLE_OPERATION"\nread -r _ || true\n'
+        'cb_lifecycle_lock_release\necho released\nread -r _ || true\n',
+        state,
+    )
+    assert holder.line() == f"rejoin 10 {OP}"
+    assert contend(state, tmp_path)[0] == 10
+    assert holder.p.stdin is not None
+    holder.p.stdin.write("\n")
+    holder.p.stdin.flush()
+    # One release frees it: the refused rejoin did not count as a nesting level.
+    assert holder.line() == "released"
+    assert contend(state, tmp_path)[0] == 0
+    assert holder.finish() == 0
+    assert "ERR-TRAP" not in holder.stderr()
+
+
+@seam
+def test_an_inner_release_keeps_the_outer_lock(tmp_path: Path, procs: list[Proc]) -> None:
+    # cb's cmd_restore calls cmd_backup in the same shell, and both take the lock (ruling R10).
+    state = tmp_path / "state"
+    lock = state / "private" / "lock"
+    holder = bash_bg(
+        procs,
+        'cmd_backup() { cb_lifecycle_lock_acquire "cb backup" || return $?; cb_lifecycle_lock_release; }\n'
+        f'cb_lifecycle_lock_acquire "cb restore"\ncb_lifecycle_lock_bind_operation {OP}\n'
+        "cmd_backup\ncmd_backup\n"
+        # A subshell is its own holder: its release drops its own copy, not a level of the parent's.
+        '( cmd_backup; echo "subshell after release ${CB_LIFECYCLE_LOCK_FD-unset}" )\n'
+        'echo "ready $CB_LIFECYCLE_LOCK_FD $CB_LIFECYCLE_OPERATION"\nread -r _ || true\n'
+        'cb_lifecycle_lock_release\necho "released ${CB_LIFECYCLE_LOCK_FD-unset}"\nread -r _ || true\n',
+        state,
+    )
+    assert holder.line() == "subshell after release unset"
+    ready = holder.line().split()
+    assert ready[0] == "ready" and ready[2:] == [OP]
+    assert contend(state, tmp_path)[0] == 10
+    try_lock = (
+        "import fcntl, sys\nf = open(sys.argv[1], 'rb')\n"
+        "try:\n    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError:\n    sys.exit(10)\n"
+    )
+    probe = subprocess.run(
+        [sys.executable, "-c", try_lock, str(lock)], capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert probe.returncode == 10, "an inner release dropped the outer operation's lock"
+    assert holder.p.stdin is not None
+    holder.p.stdin.write("\n")
+    holder.p.stdin.flush()
+    assert holder.line() == "released unset"
+    assert contend(state, tmp_path)[0] == 0
+    assert holder.finish() == 0
+    assert "ERR-TRAP" not in holder.stderr()
+
+
 @seam
 def test_only_the_acquirer_binds_an_operation(tmp_path: Path, procs: list[Proc]) -> None:
     state = tmp_path / "state"
@@ -543,6 +688,16 @@ def test_sigkill_of_a_lone_holder_releases_exclusion(tmp_path: Path, procs: list
     assert contend(state, tmp_path)[0] == 0
 
 
+def _running(pid: int) -> bool:
+    """Whether pid is still a live process. A zombie has exited and closed every descriptor; it
+    stays in /proc until reaped, which an orphan's pid 1 in a container may never do."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return False
+    return raw[raw.rindex(")") + 2:].split()[0] != "Z"
+
+
 def _wait_for(path: Path, timeout: float = 15) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -576,12 +731,12 @@ def test_sigkill_of_the_parent_keeps_exclusion_until_the_mutating_child_exits(
         assert contend(state, tmp_path)[0] == 10
         go.write_text("")
         deadline = time.monotonic() + 15
-        while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
+        while _running(child_pid) and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert not Path(f"/proc/{child_pid}").exists(), "the child never exited"
+        assert not _running(child_pid), "the child never exited"
         assert contend(state, tmp_path)[0] == 0
     finally:
-        if Path(f"/proc/{child_pid}").exists():
+        if _running(child_pid):
             os.kill(child_pid, signal.SIGKILL)
 
 
@@ -613,7 +768,7 @@ def test_an_unlocked_helper_does_not_keep_the_lock(tmp_path: Path, procs: list[P
         assert (lock_fd, operation) == ("unset", "unset")
         assert not Path(f"/proc/{helper_pid}/fd/{fd}").exists()
         parent.kill()
-        assert Path(f"/proc/{helper_pid}").exists()
+        assert _running(int(helper_pid))
         assert contend(state, tmp_path)[0] == 0
     finally:
         os.kill(int(helper_pid), signal.SIGKILL)
@@ -751,4 +906,63 @@ def test_an_untrusted_owner_is_refused_with_6(tmp_path: Path) -> None:
     assert r.returncode == 6, r.stderr
     assert "owned by uid" in clean(r)
     assert not (tmp_path / "state").exists()
+    assert not marker.exists()
+
+
+# --- started as root ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def dropped_base() -> Iterator[Path]:
+    """A temporary directory owned by DROP_UID, below ancestors it may enter and the library trusts."""
+    base = Path(tempfile.mkdtemp(prefix="cb-lifecycle-lock-"))
+    try:
+        os.chown(base, DROP_UID, DROP_GID)
+        yield base
+    finally:
+        shutil.rmtree(base)
+
+
+def dropped_env(base: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """env_for(None) for a process running as DROP_UID, with every writable location inside base."""
+    return env_for(None, {
+        "HOME": str(base), "TMPDIR": str(base), "USER": "cb-lock-test", "LOGNAME": "cb-lock-test",
+        "PYTHONDONTWRITEBYTECODE": "1", **(extra or {}),
+    })
+
+
+@root_only
+def test_as_root_every_case_runs_unprivileged(dropped_base: Path) -> None:
+    assert str(DROP_UID) != Path("/proc/sys/kernel/overflowuid").read_text().strip()
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest", str(Path(__file__).resolve()), "-q", "-rs", "-p", "no:cacheprovider",
+         f"--basetemp={dropped_base / 'pytest'}"],
+        capture_output=True, text=True, cwd=dropped_base, env=dropped_env(dropped_base), timeout=600, check=False,
+        user=DROP_UID, group=DROP_GID, extra_groups=[],
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    summary = r.stdout.strip().splitlines()[-1]
+    assert re.match(r"\d+ passed", summary), summary
+    # Only this module's root-only cases and the user-namespace cases may skip there: every seam case runs.
+    reasons = re.findall(r"^SKIPPED \[\d+\] \S+: (.*)$", r.stdout, re.MULTILINE)
+    allowed = ("needs root to drop privileges", "needs an unprivileged user namespace")
+    assert all(reason.startswith(allowed) for reason in reasons), reasons
+
+
+@root_only
+def test_as_root_an_ancestor_owned_by_another_uid_is_refused_with_6(dropped_base: Path) -> None:
+    # The namespace-free form of test_an_untrusted_owner_is_refused_with_6, which container seccomp may skip.
+    stranger = DROP_UID + 1
+    foreign = dropped_base / "foreign"
+    foreign.mkdir(mode=0o755)
+    os.chown(foreign, stranger, stranger)
+    marker = dropped_base / "mutated"
+    r = subprocess.run(
+        ["bash", "-c", PRELUDE + MUTATE], capture_output=True, text=True, timeout=30, check=False,
+        cwd=dropped_base, user=DROP_UID, group=DROP_GID, extra_groups=[],
+        env=dropped_env(dropped_base, {"CB_LIFECYCLE_ROOT": str(foreign / "state"), "MUTATION": str(marker)}),
+    )
+    assert r.returncode == 6, r.stderr
+    assert f"owned by uid {stranger}" in clean(r)
+    assert not (foreign / "state").exists()
     assert not marker.exists()

@@ -25,6 +25,14 @@
 # helper that must not hold it (a daemon, anything detached) is started
 # through cb_lifecycle_run_unlocked or cb_lifecycle_spawn_unlocked.
 #
+# Within one shell, acquisitions nest: cb's restore runs its backup in the
+# same process and both take the lock, so each acquire counts a level and only
+# the release that matches the outermost acquire closes the descriptor. The
+# count and the descriptor live in shell variables that are never exported;
+# any copy that arrives through the environment is discarded by every acquire,
+# bind and release, so a child proves a handed-down lock only through the
+# handoff.
+#
 # CB_LIFECYCLE_ROOT relocates the tree for tests over disposable roots. It is
 # honoured only when the effective uid is not 0; as root it is refused.
 #
@@ -41,6 +49,42 @@ CB_LIFECYCLE_EXIT_USAGE=2
 CB_LIFECYCLE_EXIT_PERMISSION=6
 CB_LIFECYCLE_EXIT_PREFLIGHT=7
 CB_LIFECYCLE_EXIT_LOCKED=10
+
+# The holding state of this shell. Never exported, never read from the
+# environment: _FD is the descriptor, _ID its dev:inode, _PID the process that
+# opened or joined it ($BASHPID, so a subshell is a different holder) and
+# _DEPTH how many acquisitions in that process are still unreleased.
+_CB_LIFECYCLE_STATE_VARS=(_CB_LIFECYCLE_LOCK_FD _CB_LIFECYCLE_LOCK_ID _CB_LIFECYCLE_LOCK_PID _CB_LIFECYCLE_LOCK_DEPTH)
+
+# Drop any holding state that is exported: it came from a parent's
+# environment (or was exported by hand), and proves nothing. Every public
+# entry point runs this first.
+_cb_lifecycle_forget_exported_state() {
+  local name
+  for name in "${_CB_LIFECYCLE_STATE_VARS[@]}"; do
+    if [[ "$(declare -p "$name" 2>/dev/null || true)" =~ ^declare\ -[a-zA-Z]*x ]]; then
+      unset "$name"
+    fi
+  done
+}
+
+# Record that this process holds the lock through descriptor $1 (dev:inode $2)
+# at nesting depth $3, keeping the record out of the environment even under
+# `set -a`.
+_cb_lifecycle_set_held() {
+  _CB_LIFECYCLE_LOCK_FD="$1"
+  _CB_LIFECYCLE_LOCK_ID="$2"
+  _CB_LIFECYCLE_LOCK_PID="$BASHPID"
+  _CB_LIFECYCLE_LOCK_DEPTH="$3"
+  export -n "${_CB_LIFECYCLE_STATE_VARS[@]}"
+}
+
+# Succeeds when this very process (not a subshell or child of it) took or
+# joined the lock and has not released every level yet.
+_cb_lifecycle_held_here() {
+  [[ -n "${_CB_LIFECYCLE_LOCK_FD:-}" && "${_CB_LIFECYCLE_LOCK_PID:-}" == "$BASHPID" ]] \
+    && [[ "${_CB_LIFECYCLE_LOCK_DEPTH:-}" =~ ^[1-9][0-9]{0,5}$ ]]
+}
 
 _cb_lifecycle_say() {
   printf 'lifecycle lock: %s\n' "$*" >&2
@@ -348,20 +392,36 @@ _cb_lifecycle_inherit() {
   _cb_lifecycle_fd_holds "$fd" "$lock" "$id" || return 1
   _cb_lifecycle_read_owner "$private" || return 1
   [[ "$_CB_LC_OWNER_OPERATION" == "$operation" ]] || return 1
-  _CB_LIFECYCLE_LOCK_FD="$fd"
-  _CB_LIFECYCLE_LOCK_ID="$id"
+  _cb_lifecycle_set_held "$fd" "$id" 1
   export CB_LIFECYCLE_LOCK_FD="$fd" CB_LIFECYCLE_OPERATION="$operation"
+}
+
+# Nest one more level on the lock this process already holds. The caller's
+# operation context must still be the one the lock is bound to, exactly as a
+# child's would; a different one is refused with 10 and changes nothing.
+_cb_lifecycle_reenter() {
+  local private="$1" lock="$2" id="$3" operation="${CB_LIFECYCLE_OPERATION:-}"
+  if ! _cb_lifecycle_fd_holds "$_CB_LIFECYCLE_LOCK_FD" "$lock" "$id"; then
+    return 1
+  fi
+  if ! _cb_lifecycle_read_owner "$private" || [[ "$_CB_LC_OWNER_OPERATION" != "$operation" ]]; then
+    _cb_lifecycle_say "this process holds the host lock for another operation context (CB_LIFECYCLE_OPERATION); nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_LOCKED"
+  fi
+  _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "$id" $(( _CB_LIFECYCLE_LOCK_DEPTH + 1 ))
 }
 
 # Take the host lifecycle lock for the command named by label $1 (for
 # example "cb update"; never its arguments). Joins the lock instead when this
-# shell already holds it or a parent handed it down. On success the
+# shell already holds it (one more nesting level, released by its own
+# cb_lifecycle_lock_release) or a parent handed it down. On success the
 # descriptor is exported for nested calls in CB_LIFECYCLE_LOCK_FD.
 # Returns 0, 2 (usage), 6 (permission or an unsafe tree), 7 (the state root
 # cannot be prepared) or 10 (another operation holds the lock), always before
 # the caller has changed anything.
 cb_lifecycle_lock_acquire() {
   local label="${1:-}" root private lock id fd rc=0 since
+  _cb_lifecycle_forget_exported_state
   if ! _cb_lifecycle_valid_label "$label"; then
     _cb_lifecycle_say "internal error: a lock label is a plain command name"
     return "$CB_LIFECYCLE_EXIT_USAGE"
@@ -380,8 +440,10 @@ cb_lifecycle_lock_acquire() {
   lock="$private/lock"
   id="$_CB_LC_LOCK_ID"
 
-  if [[ -n "${_CB_LIFECYCLE_LOCK_FD:-}" ]] && _cb_lifecycle_fd_holds "$_CB_LIFECYCLE_LOCK_FD" "$lock" "$id"; then
-    return 0
+  if _cb_lifecycle_held_here; then
+    _cb_lifecycle_reenter "$private" "$lock" "$id" || rc=$?
+    [[ "$rc" -eq 1 ]] || return "$rc"
+    rc=0
   fi
   if [[ -n "${CB_LIFECYCLE_LOCK_FD:-}" ]]; then
     if _cb_lifecycle_inherit "$private" "$lock" "$id"; then
@@ -415,8 +477,7 @@ cb_lifecycle_lock_acquire() {
     _cb_lifecycle_say "cannot record the lock owner in $private"
     return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
   fi
-  _CB_LIFECYCLE_LOCK_FD="$fd"
-  _CB_LIFECYCLE_LOCK_ID="$id"
+  _cb_lifecycle_set_held "$fd" "$id" 1
   export CB_LIFECYCLE_LOCK_FD="$fd" CB_LIFECYCLE_OPERATION=""
 }
 
@@ -432,7 +493,8 @@ cb_lifecycle_lock_bind_operation() {
   root="$(cb_lifecycle_root)" || return $?
   private="$root/private"
   lock="$private/lock"
-  if ! { [[ -n "${_CB_LIFECYCLE_LOCK_FD:-}" ]] && _cb_lifecycle_lstat "$lock" \
+  _cb_lifecycle_forget_exported_state
+  if ! { _cb_lifecycle_held_here && _cb_lifecycle_lstat "$lock" \
       && _cb_lifecycle_fd_holds "$_CB_LIFECYCLE_LOCK_FD" "$lock" "$_CB_LC_ID"; }; then
     _cb_lifecycle_say "internal error: binding an operation needs the held lock"
     return "$CB_LIFECYCLE_EXIT_USAGE"
@@ -453,15 +515,25 @@ cb_lifecycle_lock_bind_operation() {
   export CB_LIFECYCLE_OPERATION="$operation"
 }
 
-# Close this process's copy of the lock descriptor. The lock file stays (one
-# stable inode), and the lock is free once no other process still holds a
-# copy: a child that inherited the descriptor keeps it held until it exits.
+# Release one nesting level. Only the release matching this process's
+# outermost acquire closes its copy of the lock descriptor; an inner one
+# (cb restore's in-process backup, say) leaves the lock and the handoff
+# variables exactly as they were. The lock file stays (one stable inode), and
+# the lock is free once no other process still holds a copy: a child that
+# inherited the descriptor keeps it held until it exits.
 cb_lifecycle_lock_release() {
-  local fd="${_CB_LIFECYCLE_LOCK_FD:-}" id="${_CB_LIFECYCLE_LOCK_ID:-}"
+  local fd id
+  _cb_lifecycle_forget_exported_state
+  if _cb_lifecycle_held_here && (( _CB_LIFECYCLE_LOCK_DEPTH > 1 )); then
+    _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "${_CB_LIFECYCLE_LOCK_ID:-}" $(( _CB_LIFECYCLE_LOCK_DEPTH - 1 ))
+    return 0
+  fi
+  # The outermost level here, or a subshell's inherited copy, which is its own.
+  fd="${_CB_LIFECYCLE_LOCK_FD:-}" id="${_CB_LIFECYCLE_LOCK_ID:-}"
   if [[ "$fd" =~ ^[1-9][0-9]{0,4}$ ]] && (( fd >= 3 )) && [[ -n "$id" && "$(_cb_lifecycle_fd_id "$fd")" == "$id" ]]; then
     exec {fd}<&-
   fi
-  unset _CB_LIFECYCLE_LOCK_FD _CB_LIFECYCLE_LOCK_ID CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
+  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
 }
 
 # In a subshell that is about to exec something that must not hold the lock:
@@ -473,7 +545,7 @@ _cb_lifecycle_drop_lock() {
       exec {fd}<&-
     fi
   done
-  unset _CB_LIFECYCLE_LOCK_FD _CB_LIFECYCLE_LOCK_ID CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
+  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
 }
 
 # Run a command in the foreground without the lock, so that nothing it leaves
