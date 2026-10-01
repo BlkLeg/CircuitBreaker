@@ -583,8 +583,9 @@ cb_bundle_matches_unsigned_pin() {
 CB_CT_RELEASE_DIR="/tmp/cb-release"
 
 # Download the release files into $1 (a host directory), keeping their names.
-# $2 release JSON, $3 tarball name. SHA256SUMS.sig is optional: releases
-# before 0.4.7 do not publish one, and install.sh decides what that means.
+# $2 release JSON, $3 tarball name. SHA256SUMS.sig is optional here: releases
+# before 0.4.7 do not publish one, and verify_release_files decides what that
+# means.
 download_release_files() {
   local dest="$1" release_json="$2" tarball_name="$3" name url
   for name in "$tarball_name" SHA256SUMS SHA256SUMS.sig; do
@@ -598,6 +599,86 @@ download_release_files() {
     curl -fsSL -o "${dest}/${name}" "$url" \
       || { msg_err "Failed to download ${name}"; return 1; }
   done
+}
+
+# Report a refused bundle: $1 what failed, $2 what to do about it. Logs both
+# and shows $1 in a dialog. Always returns 1.
+release_verify_fail() {
+  msg_err "$1"
+  if [[ -n "${2:-}" ]]; then
+    msg_warn "$2"
+  fi
+  die "$1"
+  return 1
+}
+
+# Verify the release files in host directory $1 before any of them reaches a
+# container. $2 tarball name, $3 release version.
+#
+# The container runs the install.sh shipped *inside* the tarball, so leaving
+# verification to it would let a tampered tarball vouch for itself. This
+# checks SHA256SUMS.sig against the keys embedded above, then the tarball's
+# own line in SHA256SUMS. An unsigned release is accepted only when the
+# tarball is byte-for-byte a pinned v0.4.6 bundle. No network access.
+# 0: verified. 1: refused (the operator has been told why).
+verify_release_files() {
+  local dir="$1" tarball_name="$2" version="$3"
+  local tarball="${dir}/${tarball_name}" sums="${dir}/SHA256SUMS" sig="${dir}/SHA256SUMS.sig"
+  local refetch="Check https://github.com/${CB_GITHUB_REPO}/releases/tag/v${version} and run the helper again"
+  local ssl_version key_id tried rc
+
+  msg_info "Verifying the release bundle on this host..."
+  if [[ ! -f "$sums" ]]; then
+    release_verify_fail "No SHA256SUMS for ${tarball_name}; refusing an unverifiable bundle" "$refetch"
+    return 1
+  fi
+
+  ssl_version="$(openssl version 2>/dev/null || true)"
+  if [[ ! "$ssl_version" =~ ^OpenSSL\ ([0-9]+)\. ]] || (( BASH_REMATCH[1] < 3 )); then
+    release_verify_fail "OpenSSL 3 is required to verify the release bundle (found: ${ssl_version:-no openssl})" \
+      "Proxmox VE 8 and 9 ship OpenSSL 3; upgrade this host (apt-get install openssl) and run the helper again"
+    return 1
+  fi
+
+  if [[ -f "$sig" ]]; then
+    tried="$(cb_release_keys | cut -d' ' -f1 | paste -sd, -)"
+    if key_id="$(cb_verify_sums_signature "$sums" "$sig")"; then
+      msg_ok "Signature verified (key ${key_id})"
+    else
+      rc=$?
+      if [[ -z "$tried" ]]; then
+        release_verify_fail "This helper trusts no release keys; refusing to install" \
+          "Run the cb-proxmox-deploy.sh from main, which embeds the trusted key list"
+        return 1
+      fi
+      if (( rc == 2 )); then
+        release_verify_fail "SHA256SUMS.sig is unreadable (Keys tried: ${tried})" "$refetch"
+        return 1
+      fi
+      release_verify_fail "SHA256SUMS signature does not verify with any trusted key (Keys tried: ${tried}) — the release files may have been tampered with" \
+        "$refetch"
+      return 1
+    fi
+  elif cb_bundle_matches_unsigned_pin "$tarball"; then
+    msg_warn "Release v${version} predates bundle signing (v${CB_FIRST_SIGNED_RELEASE}); this is the genuine v0.4.6 bundle, checking its SHA256 only"
+  else
+    release_verify_fail "Release v${version} publishes no SHA256SUMS.sig: releases from v${CB_FIRST_SIGNED_RELEASE} on are signed; refusing an unsigned bundle" \
+      "$refetch"
+    return 1
+  fi
+
+  if cb_verify_sums_entry "$sums" "$tarball"; then
+    msg_ok "SHA256 checksum verified (${tarball_name})"
+  else
+    rc=$?
+    if (( rc == 3 )); then
+      release_verify_fail "${tarball_name} is not listed in SHA256SUMS" \
+        "The tarball and SHA256SUMS must come from the same release. ${refetch}"
+      return 1
+    fi
+    release_verify_fail "SHA256 mismatch — ${tarball_name} may be corrupted or tampered with" "$refetch"
+    return 1
+  fi
 }
 
 # Push every file in $2 (host) into CB_CT_RELEASE_DIR in container $1.
@@ -1371,6 +1452,14 @@ func_do_install() {
     return 1
   fi
   echo "  ✔️  Bundle downloaded: v${cb_version} (${host_arch})"
+
+  # Verify here, on the host: the container runs the install.sh from inside
+  # this tarball, so a tampered tarball must never reach it.
+  if ! verify_release_files "$host_release_dir" "$tarball_name" "$cb_version"; then
+    rm -rf -- "$host_release_dir"
+    msg_err "Release bundle refused; nothing was copied into container $CTID"
+    return 1
+  fi
 
   # ── Push bundle into container ────────────────────────────────────────────
   msg_info "Pushing bundle into container..."
