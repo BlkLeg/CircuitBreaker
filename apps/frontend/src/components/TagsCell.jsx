@@ -19,7 +19,7 @@ const chipBase =
 
 /* Match EntityTable editable input for contrast and theme */
 const tagInputClass =
-  'tw-min-w-[6rem] tw-w-24 tw-bg-cb-bg tw-border tw-border-cb-border tw-text-cb-text tw-rounded tw-px-2 tw-py-1 tw-text-sm focus:tw-outline-none focus:tw-ring-1 focus:tw-ring-cb-primary placeholder:tw-text-cb-text-muted';
+  'tw-min-w-[6rem] tw-w-24 tw-bg-cb-bg tw-border tw-border-cb-border tw-text-cb-text tw-rounded tw-px-2 tw-py-1 tw-text-sm focus:tw-outline-none focus:tw-ring-1 focus:tw-ring-cb-primary placeholder:tw-text-cb-muted';
 
 function TagsCell({
   tags = [],
@@ -75,7 +75,7 @@ function TagsCell({
 
   if (disabled) {
     return (
-      <span className="tw-text-cb-text-muted tw-text-sm">
+      <span className="tw-text-cb-muted tw-text-sm">
         {(tags || []).length ? (tags || []).join(', ') : '—'}
       </span>
     );

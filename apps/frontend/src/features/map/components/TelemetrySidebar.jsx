@@ -117,7 +117,7 @@ const NODE_TYPE_LABELS = new Map([
   ['docker_container', 'Container'],
 ]);
 
-export default function TelemetrySidebar({ node, position, onClose, onBoundsChange }) {
+export default function TelemetrySidebar({ node, position, onClose, onDismiss, onBoundsChange }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [discoveryData, setDiscoveryData] = useState(null);
@@ -273,7 +273,11 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
     <div
       ref={sidebarRef}
       style={{
-        position: 'absolute',
+        // Fixed, because every coordinate here is viewport-relative: the
+        // position comes from the pointer's clientX/clientY and is clamped to
+        // window.innerWidth/innerHeight. Absolute measured those numbers from
+        // the map container instead, so the card opened ~260px below the pointer.
+        position: 'fixed',
         left: adjustedPos.x,
         top: adjustedPos.y,
         zIndex: 9999,
@@ -407,7 +411,9 @@ export default function TelemetrySidebar({ node, position, onClose, onBoundsChan
           )}
         </div>
         <button
-          onClick={onClose}
+          type="button"
+          aria-label="Close telemetry"
+          onClick={onDismiss ?? onClose}
           style={{
             background: 'none',
             border: 'none',
@@ -978,5 +984,7 @@ TelemetrySidebar.propTypes = {
   node: PropTypes.object,
   position: PropTypes.shape({ x: PropTypes.number, y: PropTypes.number }),
   onClose: PropTypes.func.isRequired,
+  /** Called with the click event when the close button is used; falls back to onClose. */
+  onDismiss: PropTypes.func,
   onBoundsChange: PropTypes.func,
 };

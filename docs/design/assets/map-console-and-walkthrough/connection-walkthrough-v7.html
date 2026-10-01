@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1912, height=983">
+  <meta name="view-transition" content="same-origin">
+  <title>Circuit Breaker - Connection Walkthrough</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+  
+  <style>
+    :root {
+      --color-bg: #282828;
+      --color-surface: #3c3836;
+      --color-surface-alt: #32302f;
+      --color-border: #504945;
+      --color-primary: #fe8019;
+      --color-danger: #fb4934;
+      --color-text: #ebdbb2;
+      --color-text-muted: #a89984;
+      --color-online: #b8bb26;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --radius: 6px;
+    }
+
+    html, body { background-color: var(--color-bg); color: var(--color-text); font-family: ui-sans-serif, system-ui, sans-serif; height: 100vh; overflow: hidden; margin: 0; }
+    .mono { font-family: var(--font-mono); }
+    .tech-grid { background-image: radial-gradient(var(--color-border) 1px, transparent 1px); background-size: 24px 24px; }
+    .equipment-tile { background: var(--color-surface-alt); border: 1px solid var(--color-border); border-radius: 4px; transition: border-color 0.15s ease; }
+    .equipment-tile:hover { border-color: var(--color-text-muted); }
+    .equipment-tile.selected { border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(254, 128, 25, 0.2); }
+    .ortho-link { stroke: var(--color-border); stroke-width: 1.5; fill: none; transition: stroke 0.3s; }
+    .ortho-link.pending { stroke: var(--color-primary); stroke-dasharray: 4 4; stroke-width: 2; }
+    .step-node { width: 28px; height: 28px; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; border: 2px solid var(--color-border); background: var(--color-surface); color: var(--color-text-muted); }
+    .step-node.active { border-color: var(--color-primary); color: var(--color-primary); background: rgba(254, 128, 25, 0.1); }
+    .step-node.completed { background: var(--color-primary); border-color: var(--color-primary); color: #282828; }
+    .scroll-hide::-webkit-scrollbar { display: none; } 
+    .scroll-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    select { appearance: none; background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a89984' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e"); background-repeat: no-repeat; background-position: right 0.5rem center; background-size: 1em; padding-right: 2.5rem; }
+  </style>
+<style>.ortho-link{vector-effect:non-scaling-stroke}button:focus-visible,[role=button]:focus-visible{outline:2px solid #fe8019;outline-offset:3px}#graph-svg{overflow:visible}#col-networks,#col-hardware,#col-compute,#col-services,#col-storage{padding-top:70px;padding-bottom:70px}</style><style>@media(prefers-reduced-motion:reduce){#preview-particle{display:none}}#connection-options details{border-bottom:1px solid #504945;padding-bottom:10px}button:disabled,input:disabled{cursor:default;opacity:.5}</style></head>
+<body>
+  <div class="flex flex-col h-screen w-full relative overflow-hidden">
+    
+    <!-- Header -->
+    <sd-component componentId="b051b7a2-a3f8-4f69-9e14-942af19bc47d" name="MapAppHeader"></sd-component>
+
+    <!-- Main Workspace -->
+    <main class="flex-1 flex flex-col min-h-0 bg-[#282828]">
+      
+      <!-- Walkthrough Bar -->
+      <div class="flex items-center justify-between px-6 py-3 border-b border-[#504945] bg-[#32302f] z-10">
+        <div class="flex items-center gap-3">
+          <a href="https://p.superdesign.dev/draft/d065afe9-56b1-4c40-b88e-ecb6dd755281" id="nav-back-to-map" class="text-xs text-[#a89984] hover:text-[#ebdbb2] flex items-center gap-1">
+            <iconify-icon icon="lucide:chevron-left"></iconify-icon> Main map
+          </a>
+          <span class="text-[#504945]">/</span>
+          <span class="text-sm font-bold text-[#fe8019] tracking-tight">Connection Walkthrough</span>
+        </div>
+
+        <div class="flex items-center gap-8">
+          <div class="flex items-center gap-2">
+            <div class="step-node completed" id="step-1-icon"><iconify-icon icon="lucide:check"></iconify-icon></div>
+            <span class="text-xs font-bold text-[#ebdbb2]" id="step-1-label">Choose nodes</span>
+          </div>
+          <div class="w-12 h-px bg-[#504945]"></div>
+          <div class="flex items-center gap-2">
+            <div class="step-node active" id="step-2-icon">2</div>
+            <span class="text-xs font-bold text-[#fe8019]" id="step-2-label">Define connections</span>
+          </div>
+          <div class="w-12 h-px bg-[#504945]"></div>
+          <div class="flex items-center gap-2">
+            <div class="step-node" id="step-3-icon">3</div>
+            <span class="text-xs font-bold text-[#a89984]" id="step-3-label">Review & present</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="btn-clear-draft" class="px-3 py-1.5 text-xs bg-[#fb4934]/10 border border-[#fb4934]/30 text-[#fb4934] rounded-md hover:bg-[#fb4934]/20">Clear Draft</button>
+        </div>
+      </div>
+
+      <div class="flex-1 flex min-h-0">
+        
+        <!-- Left Panel: Inventory -->
+        <aside class="w-72 border-r border-[#504945] flex flex-col bg-[#282828]">
+          <div class="p-4 border-b border-[#504945]">
+            <div class="relative">
+              <iconify-icon icon="lucide:search" class="absolute left-3 top-1/2 -translate-y-1/2 text-[#a89984]"></iconify-icon>
+              <input type="text" placeholder="Search inventory..." class="w-full bg-[#3c3836] border border-[#504945] rounded px-9 py-1.5 text-xs outline-none focus:border-[#fe8019]">
+            </div>
+            <div class="flex flex-wrap gap-1 mt-3">
+              <button class="px-2 py-0.5 text-[10px] bg-[#3c3836] rounded border border-[#504945] text-[#ebdbb2]">All</button>
+              <button class="px-2 py-0.5 text-[10px] bg-[#282828] rounded border border-[#504945] text-[#a89984]">HW</button>
+              <button class="px-2 py-0.5 text-[10px] bg-[#282828] rounded border border-[#504945] text-[#a89984]">Net</button>
+              <button class="px-2 py-0.5 text-[10px] bg-[#282828] rounded border border-[#504945] text-[#a89984]">Svc</button>
+            </div>
+          </div>
+          <div class="flex-1 overflow-y-auto p-2 space-y-2 scroll-hide" id="inventory-list">
+            <!-- Entities will be populated via script -->
+            <div class="p-2 bg-[#3c3836]/40 border border-[#504945] rounded hover:bg-[#3c3836] cursor-pointer">
+               <div class="flex items-center gap-2">
+                 <iconify-icon icon="lucide:server" class="text-[#00f0ff]"></iconify-icon>
+                 <span class="text-xs font-bold">pve3</span>
+                 <span class="ml-auto text-[10px] text-[#a89984] font-mono">HW-176</span>
+               </div>
+            </div>
+          </div>
+        </aside>
+
+        <!-- Center Panel: Workflow Graph -->
+        <section class="flex-1 relative tech-grid bg-[#202020] overflow-hidden">
+          <div class="absolute top-10 left-4 z-30 text-[10px] bg-[#282828] border border-[#504945] rounded px-3 py-2"><span style="color:#83a598">━ Existing</span><span class="ml-4 text-[#fe8019]">┄ Pending</span><span class="ml-4 text-[#a89984]">Illustrative draft · Click source / Shift-click target</span></div><!-- Column Labels -->
+          <div class="absolute top-0 w-full flex border-b border-[#504945] bg-[#282828]/50 z-20">
+            <div class="flex-1 py-1.5 text-center text-[10px] font-bold text-[#a89984] border-r border-[#504945]">NETWORKS</div>
+            <div class="flex-1 py-1.5 text-center text-[10px] font-bold text-[#a89984] border-r border-[#504945]">HARDWARE</div>
+            <div class="flex-1 py-1.5 text-center text-[10px] font-bold text-[#a89984] border-r border-[#504945]">COMPUTE</div>
+            <div class="flex-1 py-1.5 text-center text-[10px] font-bold text-[#a89984] border-r border-[#504945]">SERVICES</div>
+            <div class="flex-1 py-1.5 text-center text-[10px] font-bold text-[#a89984]">STORAGE</div>
+          </div>
+
+          <!-- Graph Canvas -->
+          <div class="absolute inset-0 pt-10 flex">
+            <svg class="w-full h-full absolute inset-0 pointer-events-none" id="graph-svg">
+              <!-- Lines populated by script -->
+            </svg>
+            <div class="flex-1 flex flex-col items-center justify-around gap-4 p-4 border-r border-[#504945]/30" id="col-networks"></div>
+            <div class="flex-1 flex flex-col items-center justify-around gap-4 p-4 border-r border-[#504945]/30" id="col-hardware"></div>
+            <div class="flex-1 flex flex-col items-center justify-around gap-4 p-4 border-r border-[#504945]/30" id="col-compute"></div>
+            <div class="flex-1 flex flex-col items-center justify-around gap-4 p-4 border-r border-[#504945]/30" id="col-services"></div>
+            <div class="flex-1 flex flex-col items-center justify-around gap-4 p-4" id="col-storage"></div>
+          </div>
+
+          <div class="absolute bottom-4 right-4 flex gap-2">
+            <button class="p-2 bg-[#32302f] border border-[#504945] rounded hover:border-[#fe8019]"><iconify-icon icon="lucide:maximize-2"></iconify-icon></button>
+            <button class="p-2 bg-[#32302f] border border-[#504945] rounded hover:border-[#fe8019]"><iconify-icon icon="lucide:grid-3x3"></iconify-icon></button>
+          </div>
+        </section>
+
+        <!-- Right Panel: Editor -->
+        <aside class="w-80 border-l border-[#504945] flex flex-col bg-[#282828]">
+           <div class="p-4 border-b border-[#504945] bg-[#32302f]">
+              <h3 class="text-xs font-bold uppercase tracking-wider text-[#ebdbb2]">Connection Editor</h3>
+           </div>
+           
+           <div class="flex-1 p-4 space-y-6 overflow-y-auto scroll-hide">
+              <!-- Endpoint Pair -->
+              <div class="space-y-4">
+                <div>
+                  <label class="text-[10px] font-bold text-[#a89984] uppercase">Source Entity</label>
+                  <select id="select-source" class="w-full mt-1 bg-[#3c3836] border border-[#504945] text-xs text-[#ebdbb2] rounded px-2 py-2 outline-none focus:border-[#fe8019]"></select>
+                </div>
+                <div>
+                  <label class="text-[10px] font-bold text-[#a89984] uppercase">Target Entity</label>
+                  <select id="select-target" class="w-full mt-1 bg-[#3c3836] border border-[#504945] text-xs text-[#ebdbb2] rounded px-2 py-2 outline-none focus:border-[#fe8019]"></select>
+                </div>
+              </div>
+
+              <!-- Relationship & Options -->
+              <div class="space-y-4 pt-4 border-t border-[#504945]">
+                <div>
+                  <label class="text-[10px] font-bold text-[#a89984] uppercase">Relationship</label>
+                  <div id="inferred-relation" class="mt-1 px-3 py-2 bg-[#32302f] border border-[#504945] rounded text-xs font-mono text-[#fe8019]">connects_to</div>
+                </div>
+                <div>
+                  <label class="text-[10px] font-bold text-[#a89984] uppercase">Connection Type</label>
+                  <select id="select-type" class="w-full mt-1 bg-[#3c3836] border border-[#504945] text-xs text-[#ebdbb2] rounded px-2 py-2 outline-none focus:border-[#fe8019]">
+                    <option value="ethernet">Ethernet (10G)</option>
+                    <option value="fiber">Fiber</option>
+                    <option value="tunnel">Tunnel (WG)</option>
+                  </select>
+                </div>
+                <div id="ownership-warn" class="hidden bg-[#fb4934]/10 border border-[#fb4934]/30 p-3 rounded">
+                  <div class="flex items-center gap-2 mb-1">
+                    <iconify-icon icon="lucide:alert-triangle" class="text-[#fb4934]"></iconify-icon>
+                    <span class="text-[10px] font-bold text-[#fb4934] uppercase">Ownership Conflict</span>
+                  </div>
+                  <p class="text-[9px] text-[#a89984] leading-tight">Entity already has a primary host. Reassigning will break previous link.</p>
+                  <label class="flex items-center gap-2 mt-2 cursor-pointer">
+                    <input type="checkbox" id="check-reassign" class="accent-[#fe8019]">
+                    <span class="text-[10px] font-bold text-[#ebdbb2]">Acknowledge Transfer</span>
+                  </label>
+                </div>
+                <button id="btn-add-staged" class="w-full bg-[#fe8019] text-[#282828] font-bold py-2.5 rounded text-xs hover:bg-[#d86d15] active:translate-y-0.5 transition-all shadow-lg">Add to Review</button>
+              </div>
+
+              <!-- Staged Queue -->
+              <div class="pt-4 border-t border-[#504945]">
+                <h4 class="text-[10px] font-bold text-[#a89984] uppercase tracking-wider mb-2">Review Queue</h4>
+                <div id="queue-list" class="space-y-2"></div>
+              </div>
+           </div>
+        </aside>
+      </div>
+
+      <!-- Review Bar -->
+      <div class="h-20 border-t border-[#504945] bg-[#32302f] px-6 flex items-center justify-between shadow-[0_-4px_20px_rgba(0,0,0,0.3)] z-30">
+        <div class="flex items-center gap-6">
+          <div class="flex items-center gap-2">
+            <div class="text-3xl font-bold text-[#fe8019] mono" id="count-new">01</div>
+            <div class="text-[10px] text-[#a89984] uppercase leading-tight font-bold">New links<br>queued</div>
+          </div>
+          <div class="h-10 w-px bg-[#504945]"></div>
+          <div class="flex items-center gap-2">
+            <div class="text-3xl font-bold text-[#ebdbb2] mono" id="count-ownership">00</div>
+            <div class="text-[10px] text-[#a89984] uppercase leading-tight font-bold">Ownership<br>changes</div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-4">
+          <button id="btn-preview-map" class="px-6 py-2 border border-[#504945] text-[#ebdbb2] font-bold rounded hover:bg-[#3c3836]">Native Map Preview</button>
+          <a href="#review" id="cta-present-layout" class="px-8 py-2 bg-[#fe8019] text-[#282828] font-bold rounded shadow-[0_0_15px_rgba(254,128,25,0.3)] hover:bg-[#d86d15] hover:shadow-[0_0_25px_rgba(254,128,25,0.4)] transition-all flex items-center gap-2">
+            Present Layout <iconify-icon icon="lucide:external-link"></iconify-icon>
+          </a>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- Preview Modal -->
+    <div id="preview-modal" class="hidden fixed inset-0 bg-[#282828]/95 z-[100] flex flex-col items-center justify-center p-12">
+      <div class="relative max-w-6xl w-full border border-[#504945] rounded-lg overflow-hidden shadow-2xl">
+        <img src="https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/a44eac63-f5b5-4185-b1c9-18d768ecbc40/reference-assets/current-map-reference-1/current-map-reference-1.png" alt="Native Preview" class="w-full">
+        <div class="absolute top-4 right-4">
+          <button id="btn-close-preview" class="p-2 bg-[#282828]/80 text-[#ebdbb2] rounded-full hover:bg-[#fb4934] transition-colors"><iconify-icon icon="lucide:x"></iconify-icon></button>
+        </div>
+      </div>
+      <div class="mt-6 text-[#a89984] text-sm font-bold uppercase tracking-widest">Simulated Native Map Preview</div>
+    </div>
+
+  </div>
+
+<script>"use strict";
+(() => {
+    const $ = (id) => document.getElementById(id);
+    const entities = [
+        ['NET-10', 'LAN_Main', 'network', 'network', '#83a598', 'networks'],
+        ['NET-11', 'DMZ_VLAN', 'network', 'network', '#83a598', 'networks'],
+        ['HW-176', 'pve3', 'hardware', 'server', '#00f0ff', 'hardware'],
+        ['HW-177', 'pve4', 'hardware', 'server', '#00f0ff', 'hardware'],
+        ['CU-50', 'LXC-Prod-1', 'compute', 'cpu', '#fe8019', 'compute'],
+        ['CU-51', 'VM-Docker', 'compute', 'cpu', '#fe8019', 'compute'],
+        ['SVC-101', 'Jellyfin', 'service', 'box', '#fe8019', 'services'],
+        ['SVC-102', 'Nextcloud', 'service', 'box', '#fe8019', 'services'],
+        ['SVC-103', 'Traefik', 'service', 'box', '#fe8019', 'services'],
+        ['ST-001', 'NAS-Root', 'storage', 'database', '#b8bb26', 'storage'],
+        ['ST-002', 'HDD2-NFS', 'storage', 'database', '#b8bb26', 'storage'],
+        ['ST-003', 'Local-NVMe', 'storage', 'database', '#b8bb26', 'storage'],
+    ].map(([id, name, type, icon, color, col]) => ({ id, name, type, icon: 'lucide:' + icon, color, col }));
+    const name = (id) => entities.find(e => e.id === id)?.name ?? id;
+    const existing = [
+        { from: 'HW-176', to: 'NET-10', relation: 'on_network', type: 'ethernet' },
+        { from: 'HW-177', to: 'NET-11', relation: 'on_network', type: 'ethernet' },
+        { from: 'HW-176', to: 'CU-50', relation: 'hosts', type: null },
+        { from: 'HW-177', to: 'CU-51', relation: 'hosts', type: null },
+        { from: 'CU-51', to: 'SVC-101', relation: 'runs', type: null },
+        { from: 'CU-50', to: 'SVC-102', relation: 'runs', type: null },
+        { from: 'CU-50', to: 'SVC-103', relation: 'runs', type: null },
+        { from: 'SVC-101', to: 'ST-001', relation: 'uses', type: 'ethernet' },
+        { from: 'SVC-102', to: 'ST-002', relation: 'uses', type: 'ethernet' },
+        { from: 'SVC-103', to: 'ST-003', relation: 'uses', type: 'ethernet' },
+    ];
+    const owners = { 'ST-002': 'HW-177', 'CU-50': 'HW-176', 'CU-51': 'HW-177', 'SVC-101': 'CU-51', 'SVC-102': 'CU-50', 'SVC-103': 'CU-50' };
+    let queue = [{ from: 'HW-176', to: 'HW-177', relation: 'connects_to', type: 'ethernet' }];
+    let step = 2;
+    let filter = 'All';
+    let editing = null;
+    const uplinks = {};
+    const source = $('select-source');
+    const target = $('select-target');
+    const typeSelect = $('select-type');
+    const ack = $('check-reassign');
+    const add = $('btn-add-staged');
+    const status = document.createElement('p');
+    status.id = 'pair-status';
+    status.setAttribute('role', 'status');
+    status.className = 'text-xs text-[#a89984]';
+    add.before(status);
+    typeSelect.innerHTML = ['ethernet', 'wireless', 'tunnel', 'wg', 'vpn', 'ssh', 'fiber', 'bgp', 'vlan', 'management', 'backup', 'heartbeat'].map(t => `<option value="${t}">${t === 'wg' ? 'WireGuard' : t[0].toUpperCase() + t.slice(1)}</option>`).join('');
+    const hint = document.createElement('p');
+    hint.className = 'text-[10px] text-[#a89984] mt-1';
+    typeSelect.after(hint);
+    const options = document.createElement('div');
+    options.id = 'connection-options';
+    options.className = 'space-y-3';
+    options.innerHTML = `<details open><summary class="text-[10px] font-bold uppercase text-[#a89984] cursor-pointer">Bandwidth & uplinks</summary><div class="mt-3 grid grid-cols-2 gap-3 text-xs"><label>Source uplink<input id="source-speed" aria-label="Source uplink Mbps" type="number" min="1" max="100000" value="1000" class="mt-1 w-full p-2 bg-[#3c3836] border border-[#504945] rounded"><span class="text-[9px] text-[#a89984]">Mbps</span></label><label>Target uplink<input id="target-speed" aria-label="Target uplink Mbps" type="number" min="1" max="100000" value="1000" class="mt-1 w-full p-2 bg-[#3c3836] border border-[#504945] rounded"><span class="text-[9px] text-[#a89984]">Mbps</span></label></div><div class="flex gap-1 mt-2" id="speed-presets"><button data-speed="100" class="border border-[#504945] px-2 py-1 rounded text-[10px]">100M</button><button data-speed="1000" class="border border-[#504945] px-2 py-1 rounded text-[10px]">1G</button><button data-speed="2500" class="border border-[#504945] px-2 py-1 rounded text-[10px]">2.5G</button><button data-speed="10000" class="border border-[#504945] px-2 py-1 rounded text-[10px]">10G</button></div><div class="mt-3 flex justify-between text-xs"><span>Effective link capacity</span><b id="effective-speed" class="mono text-[#fe8019]">1 Gbps</b></div><p class="mt-1 text-[10px] text-[#a89984]">Presets set both uplinks. An endpoint change affects its other connections. Capacity is configured, not measured traffic.</p></details><details><summary class="text-[10px] font-bold uppercase text-[#a89984] cursor-pointer">Endpoint anchors & routing</summary><div class="mt-3 grid grid-cols-2 gap-3 text-xs"><label>Source side<select id="source-side" aria-label="Source anchor side" class="mt-1 w-full p-2 bg-[#3c3836] border border-[#504945] rounded">${['auto', 'top', 'right', 'bottom', 'left'].map(s => `<option>${s}</option>`).join('')}</select></label><label>Target side<select id="target-side" aria-label="Target anchor side" class="mt-1 w-full p-2 bg-[#3c3836] border border-[#504945] rounded">${['auto', 'top', 'right', 'bottom', 'left'].map(s => `<option>${s}</option>`).join('')}</select></label></div><button id="reset-bend" class="mt-3 text-xs border border-[#504945] px-3 py-1 rounded">Reset bend point</button><p id="bend-status" class="mt-1 text-[10px] text-[#a89984]">Automatic routing · no custom bend</p></details><div class="border border-[#504945] rounded p-3"><div class="flex justify-between text-[10px] uppercase text-[#a89984]"><span>Native link preview</span><span id="profile-name">Ethernet</span></div><svg viewBox="0 0 260 40" class="w-full h-10"><path id="link-preview" d="M8 20H252" stroke="#32b89e" stroke-width="2"/><circle id="preview-particle" r="3" fill="#32b89e"><animateMotion id="preview-motion" dur="6s" repeatCount="indefinite" path="M8 20H252"/></circle></svg><p id="profile-description" class="text-[10px] text-[#a89984]">Type controls color, dashes and particles; capacity sets flow speed.</p></div>`;
+    $('ownership-warn').before(options);
+    const speedInput = (side) => $(side + '-speed');
+    const sideInput = (side) => $(side + '-side');
+    const capacity = () => { const val = Math.min(Number(speedInput('source').value), Number(speedInput('target').value)); return typeSelect.value === 'wireless' ? Math.min(val, 300) : ['tunnel', 'vpn'].includes(typeSelect.value) ? Math.min(val, 100) : val; };
+    function previewOptions() {
+        const link = infer();
+        const applicable = !!link?.type;
+        const bw = capacity();
+        $('effective-speed').textContent = !applicable ? 'Not applicable' : !Number.isFinite(bw) || bw <= 0 ? 'Enter positive speeds' : bw >= 1000 ? `${bw / 1000} Gbps` : `${bw} Mbps`;
+        [speedInput('source'), speedInput('target')].forEach(input => input.disabled = !applicable);
+        $('speed-presets').querySelectorAll('button').forEach(b => b.disabled = !applicable);
+        const profiles = { ethernet: ['#32b89e', '', 2], wireless: ['#7c5cbf', '8 4', 1.5], tunnel: ['#e68161', '', 1.8], wg: ['#c01521', '12 6', 1.6], vpn: ['#2074c2', '4 2', 2.2], ssh: ['#32b89e', '2 4', 1.9], fiber: ['#3b82f6', '', 2.5], bgp: ['#8b5cf6', '6 3', 1.4], vlan: ['#f59e0b', '10 3 2 3', 1.7], management: ['#6b7280', '3 3', 1.2], backup: ['#10b981', '15 5', .8], heartbeat: ['#22c55e', '2 4', 3] };
+        const [color, dash, base] = profiles[typeSelect.value] ?? profiles.ethernet;
+        $('link-preview').setAttribute('stroke', applicable ? color : '#504945');
+        $('link-preview').setAttribute('stroke-dasharray', applicable ? dash : '');
+        $('preview-particle').setAttribute('fill', color);
+        $('preview-particle').style.display = applicable ? '' : 'none';
+        $('preview-motion').setAttribute('dur', `${Math.max(.3, Math.min(20, 12 / (base * (bw / 1000))))}s`);
+        $('profile-name').textContent = applicable ? typeSelect.selectedOptions[0].text : 'Relationship';
+    }
+    ['source', 'target'].forEach(s => { speedInput(s).oninput = () => { previewOptions(); updatePair(); }; sideInput(s).onchange = previewOptions; });
+    $('speed-presets').querySelectorAll('button').forEach(b => b.onclick = () => { speedInput('source').value = b.dataset.speed; speedInput('target').value = b.dataset.speed; previewOptions(); updatePair(); });
+    $('reset-bend').onclick = () => { $('bend-status').textContent = 'Bend reset · automatic routing'; };
+    const inventory = $('inventory-list');
+    inventory.innerHTML = '';
+    entities.forEach(e => {
+        [source, target].forEach(s => s.add(new Option(e.name + ' (' + e.id + ')', e.id)));
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.dataset.entity = e.id;
+        item.dataset.type = e.type;
+        item.className = 'w-full p-2 text-left bg-[#3c3836]/40 border border-[#504945] rounded hover:bg-[#3c3836]';
+        item.innerHTML = `<span class="flex items-center gap-2"><iconify-icon icon="${e.icon}" style="color:${e.color}"></iconify-icon><b class="text-xs">${e.name}</b><span class="ml-auto text-[10px] text-[#a89984] mono">${e.id}</span></span>`;
+        item.onclick = event => selectEntity(e.id, event.shiftKey);
+        inventory.append(item);
+        const tile = document.createElement('button');
+        tile.id = 'tile-' + e.id;
+        tile.type = 'button';
+        tile.className = 'equipment-tile w-36 p-3 relative z-20 text-left';
+        tile.innerHTML = `<span class="flex justify-between mb-2"><iconify-icon icon="${e.icon}" style="color:${e.color}" class="text-xl"></iconify-icon><span class="text-[7px] mono text-[#a89984]">${e.id}</span></span><b class="block text-[11px]">${e.name}</b><span class="text-[9px] text-[#a89984] uppercase">${e.type}</span><span class="absolute -left-1 top-1/2 w-2 h-2 bg-[#83a598] rounded-full"></span><span class="absolute -right-1 top-1/2 w-2 h-2 bg-[#83a598] rounded-full"></span>`;
+        tile.onclick = event => selectEntity(e.id, event.shiftKey);
+        $('col-' + e.col).append(tile);
+    });
+    source.value = 'HW-176';
+    target.value = 'NET-11';
+    function selectEntity(id, shift) { editing = null; (shift ? target : source).value = id; ack.checked = false; ['source', 'target'].forEach(side => speedInput(side).value = String(uplinks[side === 'source' ? source.value : target.value] ?? 1000)); updatePair(); }
+    function infer() {
+        let a = entities.find(e => e.id === source.value);
+        let b = entities.find(e => e.id === target.value);
+        if (a.id === b.id)
+            return null;
+        const mappings = {
+            'hardware/hardware': ['connects_to', true, false], 'hardware/compute': ['hosts', false, false],
+            'compute/hardware': ['hosts', false, true], 'hardware/service': ['hosts', false, false],
+            'service/hardware': ['hosts', false, true], 'hardware/storage': ['has_storage', false, false],
+            'storage/hardware': ['has_storage', false, true], 'compute/service': ['runs', false, false],
+            'service/compute': ['runs', false, true], 'service/storage': ['uses', true, false],
+            'storage/service': ['uses', true, true], 'hardware/network': ['on_network', true, false],
+            'network/hardware': ['on_network', true, true], 'compute/network': ['connects_to', true, false],
+            'network/compute': ['connects_to', true, true], 'network/network': ['peers_with', true, false],
+        };
+        const mapping = mappings[a.type + '/' + b.type];
+        if (!mapping)
+            return null;
+        const [relation, typed, reverse] = mapping;
+        if (reverse)
+            [a, b] = [b, a];
+        const previous = ['hosts', 'runs', 'has_storage'].includes(relation) && owners[b.id] && owners[b.id] !== a.id ? owners[b.id] : undefined;
+        return { from: a.id, to: b.id, relation, type: typed ? typeSelect.value : null, previous, sourceSide: sideInput(reverse ? 'target' : 'source').value, targetSide: sideInput(reverse ? 'source' : 'target').value };
+    }
+    function duplicate(link) { return [...existing, ...queue.filter((_, i) => i !== editing)].some(l => l.from === link.from && l.to === link.to && l.relation === link.relation) || (['hosts', 'runs', 'has_storage'].includes(link.relation) && owners[link.to] === link.from); }
+    function updatePair() {
+        const link = infer();
+        $('inferred-relation').textContent = link?.relation ?? 'Unsupported pair';
+        typeSelect.disabled = !link || link.type === null;
+        hint.textContent = typeSelect.disabled ? 'Connection type does not apply to this relationship.' : 'Connection type describes this link; no capacity change.';
+        $('ownership-warn').classList.toggle('hidden', !link?.previous);
+        $('ownership-warn').querySelector('p').textContent = link?.previous ? `${name(link.to)} belongs to ${name(link.previous)}. This assigns it to ${name(link.from)}.` : '';
+        const dup = link && duplicate(link);
+        status.textContent = !link ? 'Choose a supported pair of different entities.' : dup ? 'This relationship already exists or is queued.' : link.previous && !ack.checked ? 'Acknowledge the ownership change to continue.' : 'Ready to add to review.';
+        const speedsValid = !link?.type || [speedInput('source'), speedInput('target')].every(i => Number.isFinite(Number(i.value)) && Number(i.value) > 0 && Number(i.value) <= 100000);
+        if (!speedsValid)
+            status.textContent = 'Enter uplink speeds between 1 and 100,000 Mbps.';
+        add.disabled = !link || !!dup || !!link.previous && !ack.checked || !speedsValid;
+        add.style.opacity = add.disabled ? '.45' : '1';
+        add.textContent = editing === null ? 'Add to Review' : 'Update queued connection';
+        previewOptions();
+        entities.forEach(e => $('tile-' + e.id).classList.toggle('selected', [source.value, target.value].includes(e.id)));
+    }
+    [source, target].forEach(s => s.onchange = () => { editing = null; ack.checked = false; ['source', 'target'].forEach(side => speedInput(side).value = String(uplinks[side === 'source' ? source.value : target.value] ?? 1000)); updatePair(); });
+    typeSelect.onchange = updatePair;
+    ack.onchange = updatePair;
+    add.onclick = () => { const link = infer(); if (!link || add.disabled)
+        return; if (link.type) {
+        uplinks[source.value] = Number(speedInput('source').value);
+        uplinks[target.value] = Number(speedInput('target').value);
+    } if (editing === null)
+        queue.push(link);
+    else
+        queue[editing] = link; editing = null; ack.checked = false; renderQueue(); updatePair(); };
+    function remove(index) { editing = null; queue.splice(index, 1); renderQueue(); updatePair(); if (step === 3)
+        renderReview(); }
+    function renderQueue() {
+        $('queue-list').innerHTML = '';
+        queue.forEach((l, i) => {
+            const row = document.createElement('div');
+            row.className = 'p-2 bg-[#32302f] border border-[#504945] rounded text-xs';
+            row.innerHTML = `<div class="flex justify-between"><b>${name(l.from)} → ${name(l.to)}</b><button aria-label="Remove queued ${name(l.from)} to ${name(l.to)}">×</button></div><div class="text-[10px] mono text-[#fe8019] mt-1">${l.relation} · ${l.type ?? 'Ownership assignment'}</div><button class="text-[10px] underline mt-1" data-edit>Edit connection</button>`;
+            row.querySelector('button').onclick = () => remove(i);
+            row.querySelector('[data-edit]').onclick = () => { editing = i; source.value = l.from; target.value = l.to; typeSelect.value = l.type ?? 'ethernet'; ack.checked = !!l.previous; ['source', 'target'].forEach(side => { speedInput(side).value = String(uplinks[side === 'source' ? l.from : l.to] ?? 1000); sideInput(side).value = (side === 'source' ? l.sourceSide : l.targetSide) ?? 'auto'; }); updatePair(); };
+            $('queue-list').append(row);
+        });
+        $('count-new').textContent = String(queue.filter(l => !l.previous).length).padStart(2, '0');
+        $('count-ownership').textContent = String(queue.filter(l => l.previous).length).padStart(2, '0');
+        requestAnimationFrame(renderGraph);
+    }
+    function renderGraph() {
+        const svg = $('graph-svg');
+        svg.innerHTML = '';
+        const area = svg.getBoundingClientRect();
+        const sx = svg.clientWidth / area.width, sy = svg.clientHeight / area.height;
+        [...existing, ...queue].forEach((l, i) => {
+            const a = $('tile-' + l.from).getBoundingClientRect(), b = $('tile-' + l.to).getBoundingClientRect();
+            let x1 = (a.right - area.left) * sx, y1 = (a.top + a.height / 2 - area.top) * sy, x2 = (b.left - area.left) * sx, y2 = (b.top + b.height / 2 - area.top) * sy;
+            const same = Math.abs(a.left - b.left) < 10;
+            if (b.left < a.left && !same) {
+                x1 = (a.left - area.left) * sx;
+                x2 = (b.right - area.left) * sx;
+            }
+            const anchor = (r, side) => {
+                if (!side || side === 'auto')
+                    return null;
+                const x = (side === 'left' ? r.left : side === 'right' ? r.right : r.left + r.width / 2) - area.left;
+                const y = (side === 'top' ? r.top : side === 'bottom' ? r.bottom : r.top + r.height / 2) - area.top;
+                return [x * sx, y * sy];
+            };
+            const sp = anchor(a, l.sourceSide), tp = anchor(b, l.targetSide);
+            if (sp)
+                [x1, y1] = sp;
+            if (tp)
+                [x2, y2] = tp;
+            const mid = same ? x1 + 24 : x1 + (x2 - x1) / 2;
+            if (same && !tp)
+                x2 = (b.right - area.left) * sx;
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', `M${x1} ${y1} H${mid} V${y2} H${x2}`);
+            path.setAttribute('class', 'ortho-link' + (i >= existing.length ? ' pending' : ''));
+            if (i < existing.length) {
+                path.setAttribute('style', 'stroke:#83a598;opacity:.6');
+            }
+            svg.append(path);
+        });
+    }
+    const review = document.createElement('section');
+    review.id = 'review-panel';
+    review.className = 'hidden';
+    review.style.cssText = 'position:absolute;inset:114px 0 80px 288px;z-index:40;background:#282828;padding:28px;overflow:auto';
+    document.querySelector('main').append(review);
+    function renderReview() {
+        review.innerHTML = `<div class="flex justify-between items-start mb-6"><div><p class="text-[10px] mono text-[#a89984]">MAIN MAP · REVIEW BEFORE PRESENTING</p><h2 class="text-xl font-bold mt-2">Review relationships and layout</h2><p class="text-xs text-[#a89984] mt-2">${queue.length} queued changes · 12 nodes in the structured preview · unrelated nodes and annotations preserved</p></div><button id="review-back" class="border border-[#504945] rounded px-4 py-2 text-xs">Back to connections</button></div><table class="w-full text-left text-sm"><thead class="text-[10px] uppercase text-[#a89984]"><tr><th class="p-3">Source</th><th>Target</th><th>Relationship</th><th>Connection type / anchors</th><th>Change</th><th></th></tr></thead><tbody id="review-rows"></tbody></table><section class="mt-6 p-4 border border-[#504945] rounded"><b class="text-xs">Endpoint uplink changes</b><div id="uplink-review" class="mt-2 text-xs text-[#a89984]"></div><p class="text-[10px] text-[#a89984] mt-2">These changes also affect other connections on each endpoint.</p></section><div class="mt-8 border border-[#504945] rounded p-5 flex justify-between items-center"><div><b>Native map presentation</b><p class="text-xs text-[#a89984] mt-1">Original node shapes and branded artwork. Structured tiles stay in this walkthrough.</p><p class="text-[10px] mono text-[#83a598] mt-2">ILLUSTRATIVE PROTOTYPE · Layout and relationships are not saved</p></div><button id="review-preview" class="border border-[#504945] rounded px-4 py-2 text-xs">Preview native map</button></div>`;
+        $('uplink-review').textContent = Object.entries(uplinks).filter(([, v]) => v !== 1000).map(([id, v]) => `${name(id)}: 1,000 → ${v.toLocaleString()} Mbps`).join(' · ') || 'No endpoint speed changes.';
+        queue.forEach((l, i) => { const row = document.createElement('tr'); row.className = 'border-t border-[#504945]'; row.innerHTML = `<td class="p-3 font-bold">${name(l.from)}</td><td>${name(l.to)}</td><td class="mono text-xs">${l.relation}</td><td>${l.type ?? 'Not applicable'}<div class="text-[10px] text-[#a89984]">${l.sourceSide ?? 'auto'} → ${l.targetSide ?? 'auto'}</div></td><td class="text-xs ${l.previous ? 'text-[#fe8019]' : ''}">${l.previous ? 'Reassign from ' + name(l.previous) : 'New relationship'}</td><td><button aria-label="Remove review row">Remove</button></td>`; row.querySelector('button').onclick = () => remove(i); $('review-rows').append(row); });
+        if (!queue.length)
+            $('review-rows').innerHTML = '<tr><td colspan="6" class="p-6 text-[#a89984]">No queued changes. Return to connections to add one.</td></tr>';
+        $('review-back').onclick = () => setStep(2);
+        $('review-preview').onclick = () => preview(false);
+    }
+    function setStep(value) {
+        step = value;
+        review.classList.toggle('hidden', step !== 3);
+        if (step === 3)
+            renderReview();
+        for (let i = 1; i <= 3; i++) {
+            $('step-' + i + '-icon').className = 'step-node' + (i === step ? ' active' : i < step ? ' completed' : '');
+            $('step-' + i + '-label').style.color = i === step ? '#fe8019' : '#a89984';
+        }
+        $('cta-present-layout').textContent = step === 3 ? 'Present Layout' : 'Review & present';
+        if (step === 1) {
+            const search = document.querySelector('input[placeholder="Search inventory..."]');
+            search.focus();
+            status.textContent = 'Choose a source in the inventory. Shift-click a node to choose its target.';
+        }
+    }
+    for (let i = 1; i <= 3; i++) {
+        const el = $('step-' + i + '-label').parentElement;
+        el.setAttribute('role', 'button');
+        el.tabIndex = 0;
+        el.style.cursor = 'pointer';
+        el.onclick = () => setStep(i);
+        el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ')
+            setStep(i); };
+    }
+    $('cta-present-layout').onclick = e => { e.preventDefault(); if (step !== 3)
+        setStep(3);
+    else if (queue.length)
+        preview(true); };
+    $('btn-preview-map').onclick = () => preview(false);
+    const previewText = $('preview-modal').lastElementChild;
+    function preview(present) { previewText.textContent = present ? 'Presentation preview · Original map identity · Demo only, no changes saved' : 'Native map reference · Original shapes and branded artwork · Illustrative preview'; $('preview-modal').classList.remove('hidden'); }
+    $('btn-close-preview').onclick = () => $('preview-modal').classList.add('hidden');
+    document.addEventListener('keydown', e => { if (e.key === 'Escape')
+        $('preview-modal').classList.add('hidden'); });
+    $('btn-clear-draft').onclick = () => { if (queue.length && !confirm('Discard queued connections? Existing map relationships will remain.'))
+        return; queue = []; editing = null; Object.keys(uplinks).forEach(id => delete uplinks[id]); renderQueue(); updatePair(); if (step === 3)
+        renderReview(); };
+    $('nav-back-to-map').onclick = e => { if (queue.length && !confirm('Leave the walkthrough and discard queued changes?'))
+        e.preventDefault(); };
+    const search = document.querySelector('input[placeholder="Search inventory..."]');
+    function filterInventory() { Array.from(inventory.children).forEach(el => { const item = el; item.hidden = !(item.textContent ?? '').toLowerCase().includes(search.value.toLowerCase()) || (filter !== 'All' && item.dataset.type !== filter); }); }
+    search.oninput = filterInventory;
+    const filterNames = { All: 'All', HW: 'hardware', Net: 'network', Svc: 'service' };
+    search.parentElement.nextElementSibling.querySelectorAll('button').forEach(button => button.onclick = () => { filter = filterNames[button.textContent.trim()]; filterInventory(); });
+    window.addEventListener('resize', renderGraph);
+    new ResizeObserver(() => requestAnimationFrame(renderGraph)).observe($('graph-svg'));
+    renderQueue();
+    updatePair();
+    setStep(2);
+})();
+</script>
+</body>
+</html>

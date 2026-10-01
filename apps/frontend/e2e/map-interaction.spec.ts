@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { expectNoErrorBoundary, stubApi, waitForRouteSettled } from './fixtures/api';
 
 /**
@@ -30,6 +30,31 @@ const GRAPH = {
 
 const POPULATED = { hardware: HARDWARE, graph: GRAPH, 'graph/topology': GRAPH };
 
+const PROXMOX_HYPERVISORS = Array.from({ length: 8 }, (_, index) => ({
+  id: `hardware-${index + 1}`,
+  type: 'hardware',
+  label: `pve-${index + 1}`,
+  role: 'hypervisor',
+  data: { entity_id: index + 1 },
+}));
+
+const PROXMOX_GUESTS = Array.from({ length: 16 }, (_, index) => ({
+  id: `compute-${index + 1}`,
+  type: 'compute',
+  label: `guest-${index + 1}`,
+  data: { entity_id: index + 1 },
+}));
+
+const WIDE_PROXMOX_GRAPH = {
+  nodes: [...PROXMOX_HYPERVISORS, ...PROXMOX_GUESTS],
+  edges: PROXMOX_GUESTS.map((guest, index) => ({
+    id: `proxmox-edge-${index + 1}`,
+    source: PROXMOX_HYPERVISORS[index % PROXMOX_HYPERVISORS.length].id,
+    target: guest.id,
+    type: 'smart',
+  })),
+};
+
 test.describe('topology map', () => {
   test('renders a populated graph and mounts its lazy canvas', async ({ page }) => {
     await stubApi(page, POPULATED);
@@ -40,6 +65,44 @@ test.describe('topology map', () => {
     // `SigmaMap` is behind `lazyRoute`, so this also covers the chunk resolving
     // against a real build — the failure class this suite was built for.
     await expect(page.locator('.map-page')).toBeVisible();
+  });
+
+  test('fits a wide Proxmox cluster and still pans horizontally', async ({ page }) => {
+    await stubApi(page, {
+      graph: WIDE_PROXMOX_GRAPH,
+      'graph/topology': WIDE_PROXMOX_GRAPH,
+    });
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    const canvas = page.locator('.react-flow');
+    const nodes = page.locator('.react-flow__node');
+    await expect(canvas).toBeVisible();
+    await expect(nodes).toHaveCount(WIDE_PROXMOX_GRAPH.nodes.length);
+
+    const canvasBox = await canvas.boundingBox();
+    expect(canvasBox).not.toBeNull();
+    const nodeBoxes = await nodes.evaluateAll((elements) =>
+      elements.map((element) => {
+        const box = element.getBoundingClientRect();
+        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+      })
+    );
+    for (const box of nodeBoxes) {
+      expect(box.left).toBeGreaterThanOrEqual(canvasBox!.x - 1);
+      expect(box.right).toBeLessThanOrEqual(canvasBox!.x + canvasBox!.width + 1);
+      expect(box.top).toBeGreaterThanOrEqual(canvasBox!.y - 1);
+      expect(box.bottom).toBeLessThanOrEqual(canvasBox!.y + canvasBox!.height + 1);
+    }
+
+    const viewport = page.locator('.react-flow__viewport');
+    const transformBeforePan = await viewport.getAttribute('style');
+    await page.mouse.move(
+      canvasBox!.x + canvasBox!.width / 2,
+      canvasBox!.y + canvasBox!.height / 2
+    );
+    await page.mouse.wheel(300, 0);
+    await expect.poll(() => viewport.getAttribute('style')).not.toBe(transformBeforePan);
   });
 
   test('has no serious or critical WCAG violations with nodes on the canvas', async ({ page }) => {
@@ -129,5 +192,345 @@ test.describe('topology map', () => {
 
     // A renderer draws; it does not fetch.
     expect(topologyCalls.length).toBe(beforeToggle);
+  });
+});
+
+test.describe('topology map hover telemetry card', () => {
+  // Hover is a mouse interaction; touch devices never fire it. SKIP-050.
+  test.skip(({ hasTouch }) => hasTouch, 'Hover needs a mouse');
+
+  const CHILDREN = Array.from({ length: 6 }, (_, index) => ({
+    id: `hardware-${index + 2}`,
+    type: 'hardware',
+    label: `child-${index + 2}`,
+    data: { entity_id: index + 2 },
+  }));
+  const FAN_OUT = {
+    nodes: [
+      { id: 'hardware-1', type: 'hardware', label: 'root', data: { entity_id: 1 } },
+      ...CHILDREN,
+    ],
+    edges: CHILDREN.map((child, index) => ({
+      id: `fan-${index}`,
+      source: 'hardware-1',
+      target: child.id,
+      type: 'smart',
+    })),
+  };
+
+  test('opens beside the pointer', async ({ page }) => {
+    await stubApi(page, { graph: FAN_OUT, 'graph/topology': FAN_OUT });
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    const node = page.locator('.react-flow__node', { hasText: 'root' });
+    await node.hover();
+    const nodeBox = (await node.boundingBox())!;
+    const pointerX = nodeBox.x + nodeBox.width / 2;
+    const pointerY = nodeBox.y + nodeBox.height / 2;
+
+    const close = page.getByRole('button', { name: 'Close telemetry' });
+    await expect(close).toBeVisible();
+    const card = close.locator('xpath=ancestor::div[contains(@style, "z-index: 9999")][1]');
+    const cardBox = (await card.boundingBox())!;
+
+    // Requested at pointer + (20, -30). Absolute positioning measured that
+    // from the map container, which dropped the card ~260px lower.
+    expect(Math.abs(cardBox.x - (pointerX + 20))).toBeLessThan(2);
+    expect(Math.abs(cardBox.y - (pointerY - 30))).toBeLessThan(2);
+  });
+
+  test('stays closed when its close button sits on top of another node', async ({ page }) => {
+    await stubApi(page, { graph: FAN_OUT, 'graph/topology': FAN_OUT });
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+    await expect(page.locator('.react-flow__node')).toHaveCount(FAN_OUT.nodes.length);
+
+    // The card opens just right of the pointer, so on a row of nodes its close
+    // button can land on a neighbour. Closing it uncovers that node, and the
+    // browser's synthetic mouseenter on it used to re-arm the 400 ms timer.
+    // Whether the button lands on a node depends on spacing and zoom, so find
+    // a hover target (zooming in if needed) where it does.
+    const close = page.getByRole('button', { name: 'Close telemetry' });
+    // Topmost node at a point, or (throughCard) the first node in the stack
+    // beneath whatever covers it.
+    const nodeAt = (px: number, py: number, throughCard = false) =>
+      page.evaluate(
+        ([ex, ey, through]) => {
+          const stack = through
+            ? document.elementsFromPoint(ex, ey)
+            : [document.elementFromPoint(ex, ey)];
+          return (
+            stack
+              .map((el) => el?.closest('.react-flow__node'))
+              .find(Boolean)
+              ?.getAttribute('data-id') ?? null
+          );
+        },
+        [px, py, throughCard] as const
+      );
+    let x = 0;
+    let y = 0;
+    let covered: string | null = null;
+    for (let zoomStep = 0; zoomStep < 4 && !covered; zoomStep += 1) {
+      for (const child of CHILDREN) {
+        const target = page.locator(`.react-flow__node[data-id="${child.id}"]`);
+        if (await close.isVisible()) {
+          // The open card can cover the next node; leaving the card closes it.
+          await close.hover();
+          await page.mouse.move(5, 5);
+          await expect(close).toBeHidden();
+        }
+        // Skip nodes that are off screen or under an overlay such as the legend.
+        const targetBox = await target.boundingBox();
+        if (!targetBox) continue;
+        const cx = targetBox.x + targetBox.width / 2;
+        const cy = targetBox.y + targetBox.height / 2;
+        if ((await nodeAt(cx, cy)) !== child.id) continue;
+        await page.mouse.move(cx, cy);
+        await expect(close.locator('xpath=../..')).toContainText(child.label);
+        const box = (await close.boundingBox())!;
+        x = box.x + box.width / 2;
+        y = box.y + box.height / 2;
+        const under = await nodeAt(x, y, true);
+        if (under && under !== child.id) {
+          covered = under;
+          break;
+        }
+      }
+      if (!covered) {
+        await page.mouse.move(5, 5);
+        await page.getByRole('button', { name: 'zoom in' }).click();
+      }
+    }
+    expect(covered, 'no hover target put the close button over another node').not.toBeNull();
+
+    await page.mouse.move(x, y, { steps: 10 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(close).toBeHidden();
+
+    // Jiggle in place, past the hover delay: the uncovered node must not reopen it.
+    await page.mouse.move(x + 2, y + 1);
+    await page.waitForTimeout(1000);
+    await expect(close).toBeHidden();
+
+    // Hover still works once the pointer genuinely leaves and comes back.
+    await page.mouse.move(5, 5, { steps: 5 });
+    await page.locator(`.react-flow__node[data-id="${covered}"]`).hover();
+    await expect(close).toBeVisible();
+  });
+});
+
+test.describe('topology map node panels', () => {
+  test('the node details panel closes on the first click of its close button', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    await page.locator('.react-flow__node', { hasText: 'edge-router' }).click();
+    const close = page.getByRole('button', { name: 'Close details' });
+    await expect(close).toBeVisible();
+    // Let the panel's open animation settle so the button is where it stays.
+    await page.waitForTimeout(400);
+
+    // A real click wobbles a pixel or two between press and release. The
+    // header is a drag handle, and that wobble used to jump the panel away
+    // from the pointer so the release missed the button and no click fired.
+    const box = (await close.boundingBox())!;
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 1, y + 1);
+    await page.mouse.move(x + 2, y + 1);
+    await page.mouse.up();
+
+    await expect(close).toBeHidden();
+  });
+
+  test('dragging the node details panel moves it with the pointer', async ({ page, isMobile }) => {
+    // The 340px panel nearly fills a phone viewport, leaving no room to drag it
+    // 60px. SKIP-051.
+    test.skip(isMobile, 'No room to drag the panel on a phone');
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    await page.locator('.react-flow__node', { hasText: 'edge-router' }).click();
+    const close = page.getByRole('button', { name: 'Close details' });
+    await expect(close).toBeVisible();
+    await page.waitForTimeout(400);
+
+    // The header is the drag handle; grab it away from the close button.
+    const header = (await close.locator('..').boundingBox())!;
+    const x = header.x + 40;
+    const y = header.y + header.height / 2;
+    const before = (await close.boundingBox())!;
+    // Sideways only: the panel is taller than the room below it, so a
+    // downward drag is (correctly) clamped at the map's bottom edge.
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - 30, y, { steps: 5 });
+    await page.mouse.move(x - 60, y, { steps: 5 });
+    await page.mouse.up();
+
+    const after = (await close.boundingBox())!;
+    expect(Math.round(after.x - before.x)).toBe(-60);
+    // Dragging in viewport coordinates used to drop the panel by the map
+    // container's offset from the top of the page.
+    expect(Math.round(after.y - before.y)).toBe(0);
+  });
+
+  // The node the menu opens on, plus several others so that at least one stays
+  // clear of the menu and of the bottom dock whatever the viewport's layout.
+  const MENU_GRAPH = {
+    nodes: [
+      { id: 'hardware-1', type: 'hardware', label: 'edge-router', data: { entity_id: 1 } },
+      ...Array.from({ length: 5 }, (_, index) => ({
+        id: `hardware-${index + 2}`,
+        type: 'hardware',
+        label: `switch-${index + 2}`,
+        data: { entity_id: index + 2 },
+      })),
+    ],
+    edges: Array.from({ length: 5 }, (_, index) => ({
+      id: `menu-edge-${index}`,
+      source: 'hardware-1',
+      target: `hardware-${index + 2}`,
+      type: 'smart',
+    })),
+  };
+
+  // A point on one of `targets` where that element is topmost, so not under the
+  // open menu and, for the canvas, not under a node.
+  const uncoveredPoint = (targets: Locator) =>
+    targets.evaluateAll((elements) => {
+      for (const el of elements) {
+        const r = el.getBoundingClientRect();
+        const left = Math.max(r.left, 0);
+        const top = Math.max(r.top, 0);
+        const right = Math.min(r.right, window.innerWidth);
+        const bottom = Math.min(r.bottom, window.innerHeight);
+        for (let row = 1; row < 12; row += 1) {
+          for (let col = 1; col < 24; col += 1) {
+            const x = left + ((right - left) * col) / 24;
+            const y = top + ((bottom - top) * row) / 12;
+            const hit = document.elementFromPoint(x, y);
+            if (hit && (hit === el || el.contains(hit))) return { x, y };
+          }
+        }
+      }
+      return null;
+    });
+
+  for (const [where, targets, onPhones] of [
+    ['empty canvas', (page: Page) => page.locator('.react-flow__pane'), true],
+    [
+      'another node',
+      (page: Page) => page.locator('.react-flow__node:not([data-id="hardware-1"])'),
+      false,
+    ],
+    ['the page header', (page: Page) => page.getByText('Topology', { exact: true }), false],
+  ] as const) {
+    test(`a left click on ${where} closes the node context menu`, async ({ page, isMobile }) => {
+      // On a phone the menu covers nearly the whole screen, so only the
+      // empty-canvas case can reach an uncovered target there. SKIP-052.
+      test.skip(isMobile && !onPhones, 'The open menu covers this target on a phone');
+      await stubApi(page, { graph: MENU_GRAPH, 'graph/topology': MENU_GRAPH });
+      await page.goto('/map');
+      await waitForRouteSettled(page);
+
+      await page.locator('.react-flow__node[data-id="hardware-1"]').click({ button: 'right' });
+      const menu = page.locator('.context-menu');
+      await expect(menu).toBeVisible();
+
+      // React Flow's pan/zoom stops mousedown from propagating off the canvas
+      // and nodes, and MapCanvas's pane handler threw before closing anything.
+      const point = await uncoveredPoint(targets(page));
+      expect(point, `no part of ${where} is clear of the open menu`).not.toBeNull();
+      await page.mouse.click(point!.x, point!.y);
+      await expect(menu).toBeHidden();
+    });
+  }
+
+  test('the node context menu opens as a fixed popover at the pointer', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    await page.locator('.react-flow__node').first().click({ button: 'right' });
+
+    const menu = page.locator('.context-menu');
+    await expect(menu).toBeVisible();
+
+    // Its layout comes from Tailwind utilities (tw-fixed, tw-w-64). When
+    // Tailwind stopped scanning src/features/, those classes were never
+    // generated and the menu fell into page flow: full-width, or clipped
+    // out of sight inside the map container.
+    const layout = await menu.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        position: getComputedStyle(el).position,
+        left: r.left,
+        top: r.top,
+        right: r.right,
+        bottom: r.bottom,
+        width: r.width,
+      };
+    });
+    expect(layout.position).toBe('fixed');
+    expect(layout.width).toBe(256);
+    // Fully on screen. Which side of the pointer it opens on depends on the
+    // room available, so only containment is asserted.
+    const viewport = page.viewportSize()!;
+    expect(layout.left).toBeGreaterThanOrEqual(0);
+    expect(layout.top).toBeGreaterThanOrEqual(0);
+    expect(layout.right).toBeLessThanOrEqual(viewport.width);
+    expect(layout.bottom).toBeLessThanOrEqual(viewport.height);
+    await expect(menu.getByRole('button').first()).toBeVisible();
+  });
+});
+
+test.describe('topology map create-node dialog', () => {
+  test('opens centred in the viewport, above the app chrome', async ({ page }) => {
+    await stubApi(page, POPULATED);
+    await page.goto('/map');
+    await waitForRouteSettled(page);
+
+    const pane = page.locator('.react-flow__pane');
+    const paneBox = (await pane.boundingBox())!;
+    await pane.click({
+      button: 'right',
+      position: { x: paneBox.width - 40, y: paneBox.height / 2 },
+    });
+    const dialog = page.getByRole('dialog', { name: 'Create New Node' });
+    await expect(dialog).toBeVisible();
+    await page.waitForTimeout(400);
+
+    // Unstyled (Tailwind never compiled src/features/) it fell into page flow
+    // below the map and needed a scroll; rendered inside the map it sat under
+    // the top bar and the dock.
+    const box = (await dialog.boundingBox())!;
+    const viewport = page.viewportSize()!;
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+
+    const topmostIsDialog = (x: number, y: number) =>
+      page.evaluate(
+        ([px, py]) => !!document.elementFromPoint(px, py)?.closest('[role="dialog"]'),
+        [x, y]
+      );
+    const centreX = box.x + box.width / 2;
+    expect(await topmostIsDialog(centreX, box.y + 12), 'top bar covers the dialog header').toBe(
+      true
+    );
+    expect(
+      await topmostIsDialog(centreX, box.y + box.height - 6),
+      'dock covers the bottom of the dialog'
+    ).toBe(true);
   });
 });

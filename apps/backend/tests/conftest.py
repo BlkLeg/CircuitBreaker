@@ -763,3 +763,25 @@ def letsencrypt_certificate(db_session):
     db_session.add(cert)
     db_session.flush()
     return cert
+
+
+@pytest.fixture(autouse=True)
+def _no_host_install_identity(tmp_path, monkeypatch):
+    """Search a temporary directory instead of /etc for the system install identity.
+
+    On a host with Circuit Breaker installed, the real
+    /etc/circuitbreaker/install-identity.json sorts before any candidate a test
+    writes, so identity and diagnostics tests loaded the host's install ("native"
+    where a test expected "mono", "pass" where it expected a missing identity).
+    """
+    import app.core.install_identity as install_identity
+
+    system = tmp_path / "etc"
+    monkeypatch.setattr(
+        install_identity,
+        "_SYSTEM_IDENTITY_PATHS",
+        (
+            system / "circuitbreaker/install-identity.json",
+            system / "circuit-breaker/install-identity.json",
+        ),
+    )

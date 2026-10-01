@@ -61,6 +61,16 @@ class BackupError(RuntimeError):
     """Raised when snapshot creation fails."""
 
 
+# Native-install config files a snapshot carries when they exist, keyed by
+# their path inside the archive. Module-level so tests can point them at a
+# temporary directory: read from the real host, a machine with Circuit Breaker
+# installed made the snapshot tests copy its root-only .env.
+CONFIG_PATHS: dict[str, Path] = {
+    "config/nginx/circuitbreaker.conf": Path("/etc/nginx/conf.d/circuitbreaker.conf"),
+    "config/.env": Path("/etc/circuitbreaker/.env"),
+}
+
+
 def _pg_env_from_url(url: str) -> dict[str, str]:
     """Parse a postgresql:// URL into pg_dump environment variables."""
     parsed = urlparse(url)
@@ -236,12 +246,8 @@ def _build_snapshot_sync(
             uploads_count = 0
 
         # 4. Config files (native install only — skip gracefully if absent)
-        _CONFIG_PATHS: dict[str, Path] = {
-            "config/nginx/circuitbreaker.conf": Path("/etc/nginx/conf.d/circuitbreaker.conf"),
-            "config/.env": Path("/etc/circuitbreaker/.env"),
-        }
         config_files: dict[str, Path] = {
-            arc: src for arc, src in _CONFIG_PATHS.items() if src.exists()
+            arc: src for arc, src in CONFIG_PATHS.items() if src.exists()
         }
         for arc_name, src_path in config_files.items():
             dest_path = inner / arc_name

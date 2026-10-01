@@ -31,6 +31,7 @@ vi.mock('../context/SettingsContext', () => ({
 
 import {
   approveAgent,
+  rejectAgent,
   getAgent,
   getCapabilityDefaults,
   getInstallCommand,
@@ -119,37 +120,73 @@ describe('AddAgentPanel', () => {
     expect(screen.getByText(/box9 checked in/i)).toBeInTheDocument();
   });
 
-  it('approves with the server capability defaults, never a local preset', async () => {
+  // Step 3 no longer approves inline. It opens the same dialog Review on a
+  // pending row opens, so onboarding gets the identity check, the hardware link
+  // and the capability choices rather than a thinner second approve path.
+  it('approves through the shared dialog with the server capability defaults', async () => {
     const onApproved = vi.fn();
     render(<AddAgentPanel isStandalone pendingAgents={PENDING} onApproved={onApproved} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Review & approve' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve agent' }));
 
     await waitFor(() =>
-      expect(approveAgent).toHaveBeenCalledWith(9, { capabilities: SERVER_DEFAULTS })
+      expect(approveAgent).toHaveBeenCalledWith(9, {
+        hardware_id: null,
+        host_link_action: 'unlinked',
+        capabilities: SERVER_DEFAULTS,
+      })
     );
     expect(onApproved).toHaveBeenCalled();
   });
 
-  it('hands off to the full review flow rather than approving on a guess', async () => {
-    // Without the AgentRead there is no duplicate_machine_id to show, and
-    // without the server defaults there is no grant to send — so the inline
-    // path must step aside instead of improvising either one.
-    getCapabilityDefaults.mockRejectedValueOnce(new Error('boom'));
+  it('hands the agent to the page-level review dialog when the page provides one', async () => {
     const onReview = vi.fn();
     render(<AddAgentPanel isStandalone pendingAgents={PENDING} onReview={onReview} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Review' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Review & approve' }));
 
     expect(onReview).toHaveBeenCalledWith(9);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(approveAgent).not.toHaveBeenCalled();
   });
 
-  it('shows the fingerprint comparison it shares with the approval modal', async () => {
+  it('flags a duplicate machine on the card, before the dialog is opened', async () => {
+    getAgent.mockResolvedValue({
+      data: {
+        id: 9,
+        hostname: 'box9',
+        os: 'linux',
+        arch: 'amd64',
+        fingerprint: 'c'.repeat(32),
+        duplicate_machine_id: true,
+      },
+    });
     render(<AddAgentPanel isStandalone pendingAgents={PENDING} />);
+
+    expect(await screen.findByText(/same machine ID as an enrolled agent/i)).toBeInTheDocument();
+  });
+
+  it('shows the full fingerprint comparison it shares with Review in the dialog', async () => {
+    render(<AddAgentPanel isStandalone pendingAgents={PENDING} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review & approve' }));
 
     expect(await screen.findByText('c'.repeat(32))).toBeInTheDocument();
     expect(screen.getByText(/Compare this fingerprint/i)).toBeInTheDocument();
+  });
+
+  it('rejects from the dialog and resolves the step', async () => {
+    rejectAgent.mockResolvedValue({ data: {} });
+    const onApproved = vi.fn();
+    render(<AddAgentPanel isStandalone pendingAgents={PENDING} onApproved={onApproved} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Review & approve' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reject' }));
+
+    await waitFor(() => expect(rejectAgent).toHaveBeenCalledWith(9));
+    expect(onApproved).toHaveBeenCalled();
+    expect(approveAgent).not.toHaveBeenCalled();
   });
 
   it('puts the failure inline in the panel the operator just opened, not only in a toast', async () => {

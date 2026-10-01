@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import pty
+import re
 import select
 import subprocess
 import sys
@@ -399,6 +400,167 @@ def test_human_output_survives_collection_failure():
     data["mode"] = "native"
     assert "runtime failed" in resources.render(data)
     assert "n/a" in resources.render(data)
+
+
+def _sample_report(*, rx_measured=True, limits=None, pressure=None):
+    rows = []
+    for name, cores, memory in (
+        ("circuitbreaker-api.service", 0.4, 600 << 20),
+        ("circuitbreaker-postgres.service", 0.1, 800 << 20),
+    ):
+        row = resources.observation(name, "active", "cgroup")
+        row["boundary"] = f"/system.slice/{name}"
+        for key, value in (
+            ("memory_bytes", memory),
+            ("cache_bytes", 0),
+            ("swap_bytes", 0),
+            ("cpu_cores", cores),
+            ("read_bytes_per_second", 1024),
+            ("write_bytes_per_second", 2048),
+            ("rx_bytes_per_second", 4096 if rx_measured or "api" in name else None),
+            ("tx_bytes_per_second", 4096),
+        ):
+            row["metrics"][key] = resources.metric(
+                value, "bytes", "cgroup", "IP accounting disabled"
+            )
+        row["metrics"]["throttled_period_percent"] = resources.metric(
+            None, "percent", "cgroup"
+        )
+        row["counters"]["oom_kills"] = resources.metric(0, "events", "cgroup")
+        row["limits"] = (limits or {}).get(name, [])
+        row["pressure"] = (pressure or {}).get(name, {})
+        rows.append(row)
+    host = {"name": "box", "scope": "systemd", "cpus": 4, "memory_bytes": 8 << 30}
+    data = resources.report(rows, host, ["docker-proxy not running"], 2)
+    data["mode"] = "native"
+    return data
+
+
+def test_human_output_names_a_partial_total_once_after_its_units():
+    text = resources.render(_sample_report(rx_measured=False))
+    network = next(
+        line for line in text.splitlines() if line.strip().startswith("Network")
+    )
+    # It used to read "4.0 KiB (observed subtotal)/s": the note split the unit.
+    assert "(observed subtotal)" not in text
+    assert network.rstrip().endswith("(1 of 2 measured)")
+    assert "4.0 KiB/s" in network
+    assert "api" in text and "circuitbreaker-api.service" not in text
+
+
+def test_human_output_is_grouped_into_sections():
+    text = resources.render(_sample_report(), width=100, fancy=False)
+    for heading in ("USAGE", "COMPONENTS  (sorted by CPU)", "NOTICES"):
+        assert heading in text.splitlines()
+    # Nothing is missing here, so there is nothing to list.
+    assert "NOT MEASURED" not in text
+    assert "  - docker-proxy not running" in text
+    assert all(line == line.rstrip() for line in text.splitlines())
+
+
+API = "circuitbreaker-api.service"
+POSTGRES = "circuitbreaker-postgres.service"
+
+
+def test_a_components_own_caps_are_its_limit_column():
+    own = {
+        "scope": f"/system.slice/{API}",
+        "shared_ancestor": False,
+        "memory.max": str(512 << 20),
+        "cpu.max": "50000 100000",
+        "cpuset.cpus.effective": "0-3",
+    }
+    text = resources.render(_sample_report(limits={API: [own]}), fancy=False)
+    api = next(line for line in text.splitlines() if line.strip().startswith("api "))
+    # A CPU set spanning every visible CPU constrains nothing, so it is not shown.
+    assert "512 MiB, 0.5 CPU" in api and "CPUs 0-3" not in api
+    postgres = next(
+        line for line in text.splitlines() if line.strip().startswith("postgres")
+    )
+    assert "  -  " in postgres
+    assert "SHARED LIMITS" not in text
+
+
+def test_only_real_shared_ceilings_get_their_own_section():
+    slice_cap = {
+        "scope": "/circuitbreaker.slice",
+        "shared_ancestor": True,
+        "memory.max": str(3 << 30),
+        "memory.current": str(800 << 20),
+    }
+    unconstrained = {
+        "scope": "/system.slice",
+        "shared_ancestor": True,
+        "memory.max": "max",
+        "cpuset.cpus.effective": "0-3",
+    }
+    text = resources.render(
+        _sample_report(limits={API: [slice_cap, unconstrained], POSTGRES: [slice_cap]}),
+        fancy=False,
+    )
+    section = text.split("SHARED LIMITS\n", 1)[1].split("\n\n", 1)[0].splitlines()
+    assert section == ["  circuitbreaker.slice  RAM 800.0 MiB of 3 GiB  (whole slice)"]
+
+
+def test_attention_ignores_background_noise():
+    faint = {"cpu": "some avg10=0.04 avg60=0.01 avg300=0.00 total=10"}
+    real = {"memory": "some avg10=4.50 avg60=1.00 avg300=0.20 total=99"}
+    text = resources.render(
+        _sample_report(pressure={API: faint, POSTGRES: real}), fancy=False
+    )
+    assert "ATTENTION" in text
+    assert "postgres  memory pressure: tasks stalled 4.5% of the last 10s" in text
+    assert "cpu pressure" not in text
+
+
+def test_not_measured_says_what_and_for_whom():
+    text = resources.render(_sample_report(rx_measured=False), fancy=False)
+    gaps = text.split("NOT MEASURED\n", 1)[1].splitlines()
+    assert gaps == ["  Network:  postgres  (IP accounting disabled)"]
+
+
+def test_capacity_bars_fall_back_to_ascii():
+    assert "█" not in resources.render(_sample_report(), fancy=False)
+    assert "[#" in resources.render(_sample_report(), fancy=False)
+    assert "█" in resources.render(_sample_report(), fancy=True)
+
+
+class _Stream:
+    def __init__(self, tty):
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+@pytest.mark.parametrize(
+    ("env", "tty", "expected"),
+    [
+        ({}, False, None),
+        ({"NO_COLOR": "1", "COLORTERM": "truecolor"}, True, None),
+        ({"TERM": "dumb"}, True, None),
+        ({"COLORTERM": "truecolor"}, True, "truecolor"),
+        ({"TERM": "xterm-256color"}, True, "256"),
+    ],
+)
+def test_colour_only_for_a_terminal_that_wants_it(monkeypatch, env, tty, expected):
+    for name in ("NO_COLOR", "COLORTERM", "TERM"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert resources.color_mode(_Stream(tty)) == expected
+
+
+def test_theme_colours_without_changing_the_text():
+    plain = resources.render(_sample_report(rx_measured=False), fancy=True)
+    assert "\033[" not in plain
+    for mode in ("truecolor", "256"):
+        themed = resources.colorize(plain, mode)
+        assert "\033[" in themed
+        assert re.sub(r"\033\[[\d;]*m", "", themed) == plain
+    # The app's primary colour (#fe8019) marks the section headings.
+    assert "\033[1;38;2;254;128;25mUSAGE" in resources.colorize(plain, "truecolor")
+    assert resources.colorize(plain, None) == plain
 
 
 def test_zero_docker_memory_limit_means_unlimited():

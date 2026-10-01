@@ -1,5 +1,7 @@
 # npm Distribution Specification
 
+> **Decision (2026-09-30):** [ADR 0006](../../docs/adr/0006-npm-installer-cli-for-1.0.md) puts npm in scope for 1.0 as an **installer CLI**, `@blkleg/circuitbreaker`, answering NPM-01 (name, commands, Linux-only platforms and lockstep versioning approved the same day). NPM-02, NPM-03 and NPM-05 to NPM-15 are open 1.0 work; NPM-04 (SDK) is out of scope under EXC-004, and NPM-12's two-maintainer clause under EXC-005.
+
 **Status:** Draft; product decision required
 
 ## Outcome

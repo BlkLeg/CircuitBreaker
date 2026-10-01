@@ -69,7 +69,7 @@ original commit dates, not the restore date. "Source version" is the value of
 `VERSION` at the commit that first added the file.
 
 `Matches RC UI` is **not verified** for every asset. Verifying it requires
-rendering the 0.4.5 UI and comparing it against a capture taken against
+rendering the 0.4.7 UI and comparing it against a capture taken against
 0.1.4–0.2.2, which was not done as part of this review. Treat every row as
 "unknown, presumed stale" until someone re-captures.
 
@@ -91,6 +91,41 @@ rendering the 0.4.5 UI and comparing it against a capture taken against
 | `new_mobile_layout.jpg` | 0.1.4 | 2026-03-03 | no — personal device names, RFC1918 addresses | not verified |
 | `radial-bundled.webp` | 0.2.2 | 2026-03-11 | no — maintainer name, city, real inventory names | not verified |
 | `speed-connection.webp` | 0.2.2 | 2026-03-11 | no — real inventory and personal device names | not verified |
+
+### 2026-09-30 captures
+
+Fifteen captures supplied by the owner on 2026-09-30 for the README rewrite,
+taken against the 0.4.6 `dev` UI (`map-overview.webp` on 2026-09-26, the rest on
+2026-09-30, per the date widget in each). Converted from PNG to WebP; anything
+wider than 1920 px was scaled to 1920 px wide. No content was altered.
+
+**Reviewed by:** Claude (agent), for shawnji · **Review date:** 2026-09-30 ·
+**Method:** each file opened at full resolution, header strip read for identity
+and location, body read for names and addresses.
+
+These carry items 1, 2, 4 and 6 of *What the review found* below: every web UI
+capture greets "Welcome, Shawnji" and shows `PHOENIX` in the weather widget, and
+the map and agent views show real inventory names and RFC1918 addresses. The
+owner chose to publish them; they do not move GOV-02 off "unmet" any more than
+the older captures do.
+
+| Asset | Source version | Captured | Anonymised | Matches RC UI |
+|---|---|---|---|---|
+| `map-overview.webp` | 0.4.6 | 2026-09-26 | no — maintainer name, city, real inventory names | yes (captured on it) |
+| `map-concentric-rings.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, real inventory names | yes |
+| `map-cortex-rings.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, real inventory names, RFC1918 addresses | yes |
+| `map-force-directed.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, real inventory names | yes |
+| `mobile-map.webp` | 0.4.6 | 2026-09-30 | no — real inventory names | yes |
+| `agents-fleet.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, agent hostnames | yes |
+| `agents-page.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, agent hostnames | yes |
+| `agent-overview.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, agent hostname, RFC1918 addresses | yes |
+| `agent-telemetry.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, agent hostname | yes |
+| `agent-discovery.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, agent hostname, RFC1918 subnets | yes |
+| `agent-events.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, agent hostname | yes |
+| `compute-units.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, real inventory names | yes |
+| `logs.webp` | 0.4.6 | 2026-09-30 | no — maintainer name, city, real inventory names | yes |
+| `cli-cb-resources.webp` | 0.4.6 | 2026-09-30 | no — terminal prompt shows the host name and local user | n/a — terminal, not the web UI |
+| `installer.webp` | 0.4.6 | 2026-09-30 | yes — installer artwork only | n/a — terminal, not the web UI |
 
 ## What the review found
 
@@ -140,11 +175,12 @@ right; the caption is wrong.
 These journeys have no current capture. Each blocks GOV-03 until added:
 
 - [ ] Install and OOBE (first-admin creation, setup token)
-- [ ] Agent enrollment and fleet view
+- [ ] Agent enrollment (the approval step). The fleet view and agent detail
+      tabs are captured: `agents-fleet.webp`, `agent-*.webp` (2026-09-30).
 - [ ] Discovery and import review
 - [ ] Agent-vantage monitor creation
 - [ ] Backup and restore
-- [ ] Mobile layout (current — the two existing mobile captures are 0.1.4/0.2.0)
+- [x] Mobile layout: `mobile-map.webp` (0.4.6, 2026-09-30)
 - [ ] Empty and error states
 - [ ] Accessibility states (focus, keyboard navigation)
 

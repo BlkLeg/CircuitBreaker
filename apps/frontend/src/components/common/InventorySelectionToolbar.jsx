@@ -21,7 +21,7 @@ export default function InventorySelectionToolbar({
             Select all {listTotal} matching
           </button>
         )}
-        <button type="button" className="text-btn tw-text-cb-text-muted" onClick={onClear}>
+        <button type="button" className="text-btn tw-text-cb-muted" onClick={onClear}>
           Clear
         </button>
       </div>

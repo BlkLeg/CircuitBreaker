@@ -58,6 +58,7 @@ def uploads_dir(tmp_path: Path) -> Path:
 
 
 @requires_pg_dump
+@pytest.mark.usefixtures("pg_dump_matches_server")
 @pytest.mark.asyncio
 async def test_build_snapshot_creates_tarball(
     setup_db: None, tmp_path: Path, uploads_dir: Path
@@ -82,6 +83,7 @@ async def test_build_snapshot_creates_tarball(
 
 
 @requires_pg_dump
+@pytest.mark.usefixtures("pg_dump_matches_server")
 @pytest.mark.asyncio
 async def test_build_snapshot_tarball_contents(
     setup_db: None, tmp_path: Path, uploads_dir: Path
@@ -109,6 +111,7 @@ async def test_build_snapshot_tarball_contents(
 
 
 @requires_pg_dump
+@pytest.mark.usefixtures("pg_dump_matches_server")
 @pytest.mark.asyncio
 async def test_build_snapshot_vault_key_stored(
     setup_db: None, tmp_path: Path, uploads_dir: Path
@@ -134,6 +137,7 @@ async def test_build_snapshot_vault_key_stored(
 
 
 @requires_pg_dump
+@pytest.mark.usefixtures("pg_dump_matches_server")
 @pytest.mark.asyncio
 async def test_build_snapshot_manifest_checksum(
     setup_db: None, tmp_path: Path, uploads_dir: Path

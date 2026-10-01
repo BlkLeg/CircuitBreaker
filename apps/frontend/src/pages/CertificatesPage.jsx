@@ -158,7 +158,7 @@ function CertificatesPage() {
               SERVED
             </span>
           ) : (
-            <span className="tw-text-cb-text-muted">—</span>
+            <span className="tw-text-cb-muted">—</span>
           ),
       },
     ],

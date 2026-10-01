@@ -536,6 +536,10 @@ export default function AgentsPage() {
             setApprovalAgentId(null);
             refreshFleet();
           }}
+          onRejected={() => {
+            setApprovalAgentId(null);
+            refreshFleet();
+          }}
           onClose={() => setApprovalAgentId(null)}
         />
       )}

@@ -4,11 +4,85 @@
 
 ---
 
-## Full UI
+## Current release (0.4.6)
 
-![Full UI — Night Mode](assets/screenshots/cb_night-full.webp)
+Captured against 0.4.6 in September 2026.
 
-*Full dashboard in night mode — topology map, sidebar, and HUD panel*
+### Topology map
+
+![Topology map](assets/screenshots/map-overview.webp)
+
+*The topology map: hardware, VMs, containers and services with live health and link speeds*
+
+![Cortex rings layout](assets/screenshots/map-cortex-rings.webp)
+
+*Cortex rings: a compact hierarchy with clusters at the centre and storage and services around them*
+
+![Concentric rings layout](assets/screenshots/map-concentric-rings.webp)
+
+*Concentric rings*
+
+![Force-directed layout](assets/screenshots/map-force-directed.webp)
+
+*Force-directed*
+
+![Topology map on a phone](assets/screenshots/mobile-map.webp)
+
+*The map on a phone*
+
+### Agents
+
+![Agent fleet](assets/screenshots/agents-fleet.webp)
+
+*The agent fleet: online state, version, capabilities and live CPU, memory and network*
+
+![Agents page](assets/screenshots/agents-page.webp)
+
+*The agents page, with the server key and the Add agent flow*
+
+![Agent overview](assets/screenshots/agent-overview.webp)
+
+*One agent's overview: identity, capabilities, discovery scope and recent events*
+
+![Agent telemetry](assets/screenshots/agent-telemetry.webp)
+
+*Host telemetry history from an agent*
+
+![Agent discovery](assets/screenshots/agent-discovery.webp)
+
+*Discovery from inside the agent's own network, with the scope it is allowed to scan*
+
+![Agent events](assets/screenshots/agent-events.webp)
+
+*The agent's connection and approval history*
+
+### Inventory, logs and the CLI
+
+![Compute units](assets/screenshots/compute-units.webp)
+
+*Compute units: VMs and containers with the hardware they run on*
+
+![Logs](assets/screenshots/logs.webp)
+
+*The event log*
+
+![cb resources](assets/screenshots/cli-cb-resources.webp)
+
+*`cb resources`: what the installation uses, per service, with its limits*
+
+![The installer](assets/screenshots/installer.webp)
+
+*The one-line installer*
+
+---
+
+## Earlier captures (0.2.x)
+
+These predate the current UI and are kept for reference.
+
+![Circuit Breaker artwork](assets/screenshots/cb_night-full.webp)
+
+*Project artwork*
 
 ---
 

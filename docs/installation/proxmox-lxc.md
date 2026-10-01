@@ -119,17 +119,22 @@ Since Privilege Separation is unchecked (step 3 above), the token inherits the *
 
 ## Upgrading
 
-SSH into the container and run:
+The simplest way is to run the helper again on the PVE host and choose **6) Update Circuit Breaker**.
+
+Or re-run the installer in upgrade mode inside the container yourself. Over SSH:
 
 ```bash
-cb update
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --upgrade
 ```
 
 Or from the PVE host:
 
 ```bash
-pct exec <CTID> -- cb update
+pct exec <CTID> -- bash -c "curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --upgrade --unattended"
 ```
+
+It backs up the database first and rolls back if the new release does not come up healthy.
+`cb update` does not upgrade a native install. See [Upgrading](upgrading.md) for the details.
 
 ---
 
@@ -151,6 +156,6 @@ pct exec <CTID> -- cb doctor
 
 **Token rejected / HTTP 401** — Verify the token ID format (`user@realm!tokenid`) and that privilege separation is disabled. Re-configure at **Discovery → Proxmox VE**.
 
-**`pct create` failed** — The most common cause is a CTID that is already taken or a storage pool that cannot hold the rootfs. The script prints the `pct` error and suggests `pvesm status` and `journalctl -u pvedaemon -n 20`. If Circuit Breaker is already running in a container, use **Update Circuit Breaker** from the menu, or `cb update` inside the container, instead of creating a new one.
+**`pct create` failed** — The most common cause is a CTID that is already taken or a storage pool that cannot hold the rootfs. The script prints the `pct` error and suggests `pvesm status` and `journalctl -u pvedaemon -n 20`. If Circuit Breaker is already running in a container, use **Update Circuit Breaker** from the menu, or re-run the installer with `--upgrade` inside the container (see [Upgrading](#upgrading)), instead of creating a new one.
 
 **Removing the container** — See [Uninstalling](uninstalling.md#proxmox-lxc).

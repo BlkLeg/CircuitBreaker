@@ -17,7 +17,7 @@ paths you already use.
 ## What to do
 
 Nothing special on first install or upgrade. Use the commands below (or
-`install.sh --upgrade` / `cb update`). Package hosts keep using their package
+`install.sh --upgrade`; see [Upgrading](upgrading.md). Package hosts keep using their package
 manager once signed repos exist; until then the tarball path below is the
 default.
 
@@ -90,8 +90,8 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.
 cb status       # Show service status
 cb doctor       # Run health checks
 cb logs         # Follow live logs
-cb backup       # Dump the database
-cb update       # Upgrade to latest release
+cb backup       # Full-state snapshot (database, uploads, config, vault key)
+cb resources    # Resource use per service, with limits
 cb version      # Show installed version
 cb uninstall    # Remove Circuit Breaker from this system
 ```

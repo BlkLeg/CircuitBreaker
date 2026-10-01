@@ -83,11 +83,20 @@ def layout(tmp_path: Path):
     )
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    # The fixture's own PostgreSQL client tools, by default reporting the database
+    # unreachable. preinstall.sh resolves pg_dump/pg_isready from PG_BIN_DIR, then
+    # PATH, then /usr/pgsql-*/bin: on a host where Circuit Breaker (or PGDG) is
+    # installed and something answers on 127.0.0.1:5432, the host's tools used to
+    # take a real pg_dump of that database and fail these tests. Tests that need
+    # a reachable database replace these stubs in the same directory.
+    _stub(bin_dir, "pg_isready", "exit 1")
+    _stub(bin_dir, "pg_dump", 'echo "fixture pg_dump: no stub for this test" >&2; exit 97')
     env = {
         "CB_ENV_FILE": str(env_file),
         # A user that does not exist, so the chown guard is exercised without
         # needing root or a real service account on the test host.
         "CB_SERVICE_USER": "cb-nonexistent-test-user",
+        "PG_BIN_DIR": str(bin_dir),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
     }
     return {"tmp": tmp_path, "data_dir": data_dir, "env_file": env_file, "bin": bin_dir, "env": env}
@@ -134,7 +143,7 @@ def test_preinstall_does_nothing_on_a_fresh_install(args, layout):
 @pytest.mark.parametrize("args", UPGRADE_ARGS_PREINSTALL, ids=lambda a: " ".join(a))
 def test_preinstall_detects_an_upgrade_for_dpkg_and_rpm(args, layout):
     """The detection itself, independent of whether a backup can be taken. The
-    database is unreachable here, so the run exits cleanly after announcing what
+    fixture database is unreachable, so the run exits cleanly after announcing what
     it is -- which is exactly the branch under test."""
     result = _run(PREINSTALL, args, layout["env"], layout["tmp"])
     assert result.returncode == 0, result.stderr

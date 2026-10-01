@@ -2498,3 +2498,399 @@
     grid-column: auto;
   }
 }
+
+/* ── Agent approval ───────────────────────────────────────────────────────────
+   The dialog (AgentApprovalModal, shared by the add-agent flow and Review on a
+   pending row) and step 3's pending card. Neither had any rules before, so they
+   rendered with browser defaults: white inputs and checkboxes, grey buttons and
+   no dialog panel. The dialog is portalled to <body>, outside the scoped
+   `:where(.agents-page …)` control floor above, so it styles its own controls. */
+
+.agent-approval-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(3px);
+}
+.agent-approval-modal__panel {
+  width: 100%;
+  max-width: 620px;
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  font-size: 0.875rem;
+  color-scheme: inherit;
+}
+.agent-approval-modal__panel:focus {
+  outline: none;
+}
+.agent-approval-modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+.agent-approval-modal__head h2 {
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.agent-approval-modal__subtitle {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+.agent-approval-modal__body {
+  display: grid;
+  gap: 18px;
+  padding: 18px 20px;
+  overflow-y: auto;
+}
+.agent-approval-modal__status {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+.agent-approval-modal__section {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.agent-approval-modal__label {
+  margin: 0 0 8px;
+  padding: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+/* Identity */
+.agent-approval-modal__facts {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 8px 14px;
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+.agent-approval-modal__facts dt {
+  color: var(--color-text-muted);
+}
+.agent-approval-modal__facts dd {
+  margin: 0;
+  min-width: 0;
+}
+.agent-approval-modal__fingerprint-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-approval-modal__fingerprint {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  color: var(--color-primary);
+  overflow-wrap: anywhere;
+}
+.agent-approval-modal__warning {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+.agent-approval-modal__duplicate-warning {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-danger) 55%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-text);
+  font-size: 0.8rem;
+}
+.agent-approval-modal__duplicate-warning::before {
+  content: '⚠ ';
+  color: var(--color-danger);
+  font-weight: 700;
+}
+
+/* Hardware link and capabilities: selectable rows */
+.agent-approval-modal__options {
+  display: grid;
+  gap: 6px;
+}
+.agent-approval-modal__option,
+.agent-approval-modal__capability {
+  display: grid;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+.agent-approval-modal__option > label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.agent-approval-modal__option[data-selected='true'] {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-bg));
+}
+.agent-approval-modal__option:hover,
+.agent-approval-modal__capability:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border));
+}
+.agent-approval-modal__capability {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  cursor: pointer;
+}
+.agent-approval-modal__capability-name {
+  display: block;
+  font-weight: 600;
+}
+.agent-approval-modal__capability-description {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+/* Native inputs, drawn in the theme instead of the browser's white defaults. */
+.agent-approval-modal input[type='radio'],
+.agent-approval-modal input[type='checkbox'] {
+  appearance: none;
+  flex-shrink: 0;
+  margin: 0;
+  cursor: pointer;
+}
+.agent-approval-modal input[type='radio'] {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid var(--color-text-muted);
+}
+.agent-approval-modal input[type='radio']:checked {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  box-shadow: inset 0 0 0 3px var(--color-bg);
+}
+.agent-approval-modal input[type='checkbox'] {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 999px;
+  background: var(--color-border);
+  transition: background 0.15s;
+}
+.agent-approval-modal input[type='checkbox']::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--color-text-muted);
+  transition: left 0.15s;
+}
+.agent-approval-modal input[type='checkbox']:checked {
+  background: var(--color-primary);
+}
+.agent-approval-modal input[type='checkbox']:checked::after {
+  left: 17px;
+  background: var(--color-text);
+}
+.agent-approval-modal input:focus-visible,
+.agent-approval-modal button:focus-visible,
+.agent-approval-modal select:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.agent-approval-modal__field {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+/* Buttons */
+.agent-approval-modal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg) 60%, var(--color-surface));
+}
+.agent-approval-modal__spacer {
+  flex: 1;
+}
+.agent-approval-modal__button,
+.agent-approval-modal__close,
+.agent-approval-modal__copy {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text);
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+.agent-approval-modal__button {
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+.agent-approval-modal__button:hover:not(:disabled),
+.agent-approval-modal__close:hover:not(:disabled),
+.agent-approval-modal__copy:hover {
+  border-color: var(--color-text-muted);
+}
+.agent-approval-modal__button--primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-bg);
+}
+.agent-approval-modal__button--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+.agent-approval-modal__button--danger {
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
+}
+.agent-approval-modal__button--danger:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+}
+.agent-approval-modal__button:disabled,
+.agent-approval-modal__close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.agent-approval-modal__close {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0;
+  border-radius: 999px;
+  color: var(--color-text-muted);
+}
+.agent-approval-modal__copy {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius);
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 520px) {
+  .agent-approval-modal__facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-approval-modal__head,
+  .agent-approval-modal__body,
+  .agent-approval-modal__actions {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-approval-modal input[type='checkbox'],
+  .agent-approval-modal input[type='checkbox']::after {
+    transition: none;
+  }
+}
+
+/* Step 3: one compact card per agent waiting for approval. */
+.add-agent__pending-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.add-agent__pending {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 55%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface));
+}
+.add-agent__pending-summary {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.add-agent__pending-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.add-agent__pending-name {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 700;
+}
+.add-agent__pending-chip {
+  font-size: 0.68rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-warning) 22%, transparent);
+  color: var(--color-warning);
+  white-space: nowrap;
+}
+.add-agent__pending-chip--danger {
+  background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+  color: var(--color-danger);
+}
+.add-agent__pending-meta {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+.add-agent .add-agent__review {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-bg);
+  font-weight: 600;
+  padding: 6px 14px;
+}
+.add-agent .add-agent__review:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}

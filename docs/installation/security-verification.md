@@ -14,7 +14,7 @@ checksums and signatures.
 
 Verify checksums and signatures as before, then optionally cross-check the
 `build-info.json` fields below. Upgrades need no extra verification steps —
-`install.sh --upgrade` / `cb update` still verify the bundle they fetch.
+`install.sh --upgrade` still verifies the bundle it downloads against the release's `SHA256SUMS`.
 
 ## Rollback
 
