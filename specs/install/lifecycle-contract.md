@@ -463,3 +463,87 @@ codes are:
   test refuses property names that look like secrets. Secrets live in the recovery point's
   protected storage, and plans and journals reference that point by
   `{operation_id, manifest_digest}`. Logs, events, results and the history index carry no secret.
+
+## 10. The native state utility
+
+`deploy/scripts/lifecycle-state.py` is the only writer of lifecycle state. It is Python 3.9+
+standard library only, embeds the four schemas verbatim (a build test keeps the copy equal), and
+passes the shared fixtures in `packages/cli/test/fixtures/lifecycle/`. `deploy/lib/lifecycle.sh`
+runs it and is its only caller in sub-plan 03.
+
+**Interpreter and install.** `cb_lifecycle_python` resolves the interpreter once per transaction,
+before the first mutation: `/usr/bin/python3` when root owns it and the directories above it,
+neither group nor others can write them, and it is 3.9 or newer. Otherwise, for a fresh install
+only, the caller may pass the verified staged bundle's `python/bin/python3`. Without either it
+refuses with 7 before anything changes. `deploy/setup.sh` installs the library, the utility and
+`bundle-signature.sh` (which embeds the release bundle keys) into the control plane
+`/usr/local/lib/circuitbreaker` (directory 0755, files 0644, the utility 0755, all root's). A
+control plane that cannot be installed fails the install. The control plane and the state root lie
+outside the release tree and outside every removal scope, so replacing or removing the server
+never removes its recovery tools or its audit history.
+
+**Layout.** Under the state root: `history.json` (0644), and in `private/` (0700) the lock, the
+owner record and `operations/<operation id>/` (0700), which holds `journal.json` (0600) and
+`sequence` (0600), the operation's event sequence counter. Every directory and file is checked
+for a trusted owner, its exact mode and no symlink before it is used, through directory
+descriptors.
+
+**Requests.** One JSON object on stdin, at most 65536 bytes, closed, with the encoding rules of
+§1. Free text in a request is at most 4096 code points and is redacted (§1.7) before it is
+written. Members:
+
+| `request` | Members | Lock |
+| --- | --- | --- |
+| `inspect` | `operation_id` | none: reads only |
+| `list` | — | held |
+| `begin` | `kind`, `action`, `adapter`; optional `plan_digest`, `identity_digest`, `source_version`, `source_artifact_digest`, `target_version`, `target_artifact_digest`, `recovery_operation_id` with `recovery_manifest_digest`, `evidence_check` with `evidence_result` and optional `evidence_detail` | held, bound to no operation |
+| `checkpoint` | `operation_id`, `expected_generation`, `state`; optional `step`, `cause`, `outcome`, `error_code` with `error_reason`, the recovery reference and evidence members of `begin` | held, bound to `operation_id` |
+
+A write needs the lock: `CB_LIFECYCLE_LOCK_FD` must name a descriptor of `private/lock` (same
+device and inode) that holds the flock, which a fresh description of the lock cannot take, and
+`CB_LIFECYCLE_OPERATION` must be the operation the owner record binds. A legacy `begin` records
+a version that is not an installed version as null (J11); a transaction's is refused. The utility
+fills `sequence`, `at`, `generation`, `updated_at` and an interrupted record's `checkpoint` itself.
+A later step of the same progress state replaces the stepped record in place (J3).
+
+**Acknowledgement.** On success the utility prints `key=value` lines on stdout:
+`operation_id`, `generation`, `sequence`, `state`, any `warning` (redacted, one line), and
+`event`, the checkpoint event (§6) of the record just written. `inspect` prints the summary members,
+`status` (`finished`, `unfinished`, `running` or `abandoned`), `reported` (an abandoned operation
+is reported as `interrupted`) and `journal`, the canonical journal on one line. `list` prints
+counts, `unfinished`, `inspection`, `protected` and `releasable` lines and `retention`. The shell
+matches each line against its own shape and never evaluates one; the event goes only to
+`CB_LIFECYCLE_EVENT_FD`, after the acknowledgement.
+
+**Durability.** Every record is written to a temporary file in its own directory, flushed,
+fsynced, renamed over the old one, and the directory is fsynced before anything is acknowledged.
+A failure at any step leaves the old or the new valid record, never a mix, and acknowledges
+nothing. `begin` builds the operation's directory under a staging name and renames it into place.
+A write that cannot be made durable (a full disk among them) exits 7, so the caller stops before
+its next change. A writer whose `expected_generation` is not the journal's is stale and exits 9.
+INT, TERM and HUP are ignored while a request runs: the caller's trap acts once it returns.
+
+**Reconciliation.** Under the lock, `begin` and `list` close every operation still in progress
+other than the one the lock is bound to: its process is gone, so they append `interrupted` with
+cause `abandoned` and the last durable checkpoint, closed with outcome `interrupted` when that
+checkpoint is before mutation (§4). Then an unfinished `transaction` blocks every `begin` (9). A
+record that requires inspection blocks a transaction's `begin` and is a warning for a legacy one.
+An unfinished legacy record is a warning only. A new operation ID is always above every ID
+already used that day.
+
+**Inspection.** A record whose directory or journal has the wrong owner, mode or type, a
+symlink, invalid content, an unknown `schema_version`, or another operation's ID requires
+inspection. It is listed in the index as an inspection entry, reported by `inspect` with 9 (3 for
+an unknown version), and never deleted, rewritten or counted as a success.
+
+**Retention.** The utility deletes no record and no recovery point in v1. `list` reports what a
+pruner (sub-plan 05 on) may release: every recovery reference an unfinished operation holds and
+the newest one an operation that committed recorded (the last successful point) are
+`protected`. Other references are `releasable`, and none are while any record requires
+inspection (`retention=blocked`), since such a record may hold any reference. The index keeps
+unfinished operations and inspection entries ahead of finished ones (§8).
+
+**Exit codes.** 0, 2 (a malformed request, a write without the lock or its operation, an
+illegal record or transition, an unknown operation, the seam as root), 3 (an unknown journal
+version), 6 (an unsafe tree), 7 (a record that cannot be made durable), 9 (stale writer, a record
+that requires inspection, an unfinished transaction blocking `begin`).

@@ -1498,6 +1498,18 @@ EOF
           || sudo install -Dm644 "$resources_src" /usr/local/lib/circuitbreaker/cb_resources.py 2>/dev/null \
           || cb_warn "Could not install cb_resources.py — copy ${resources_src} to /usr/local/lib/circuitbreaker/"
       fi
+      # The lifecycle control plane the host cb locks and journals through:
+      # the files cb_lifecycle_install_control_plane (deploy/lib/lifecycle.sh)
+      # installs for native hosts. Not best-effort like the helpers above.
+      local plane_src="${repo_cb%/cb}/deploy" plane_item plane_dest
+      if [[ -f "${plane_src}/lib/lifecycle.sh" ]]; then
+        for plane_item in lib/lifecycle.sh:644 scripts/lifecycle-state.py:755 lib/bundle-signature.sh:644; do
+          plane_dest="/usr/local/lib/circuitbreaker/$(basename "${plane_item%%:*}")"
+          install -Dm"${plane_item##*:}" "${plane_src}/${plane_item%%:*}" "$plane_dest" 2>/dev/null \
+            || sudo install -Dm"${plane_item##*:}" "${plane_src}/${plane_item%%:*}" "$plane_dest" 2>/dev/null \
+            || cb_fail "Could not install ${plane_dest}" "Re-run the installer as root"
+        done
+      fi
     fi
   fi
 

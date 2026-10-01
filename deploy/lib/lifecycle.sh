@@ -10,10 +10,21 @@
 # plans/2026-09-30-v0.4.7-npm-cli-03-lock-journal-events.md (Task 2).
 #
 # Layout, created only by root and never by read-only planning:
-#   /var/lib/circuitbreaker-lifecycle/                0755  (history.json, Task 3)
+#   /var/lib/circuitbreaker-lifecycle/                0755
+#   /var/lib/circuitbreaker-lifecycle/history.json    0644  redacted index, derived from the journals
 #   /var/lib/circuitbreaker-lifecycle/private/        0700
 #   /var/lib/circuitbreaker-lifecycle/private/lock    0600  flock(2) target; never removed or truncated
 #   /var/lib/circuitbreaker-lifecycle/private/owner   0600  diagnostics only; never authority
+#   /var/lib/circuitbreaker-lifecycle/private/operations/<operation id>/
+#                                      journal.json   0600  authoritative, atomically replaced
+#                                      sequence       0600  the operation's event sequence counter
+#
+# Journals and the index are written only by the native state utility,
+# deploy/scripts/lifecycle-state.py, through cb_lifecycle_begin,
+# cb_lifecycle_checkpoint and cb_lifecycle_state below (Task 3). It runs under
+# a trusted Python 3.9+ interpreter (cb_lifecycle_python), and setup.sh keeps
+# it, this library and the release trust material in the control plane
+# /usr/local/lib/circuitbreaker, outside the release tree an update replaces.
 #
 # The lock is flock(2) on that one inode, held through an open file
 # description. A nested installer/backup/restore call inherits the
@@ -43,6 +54,14 @@
 # /proc. Nothing in the owner record or the environment is ever evaluated.
 
 CB_LIFECYCLE_DEFAULT_ROOT="/var/lib/circuitbreaker-lifecycle"
+# Where setup.sh installs this library, the state utility and the release
+# trust material, and the interpreter tried first (ruling R13).
+CB_LIFECYCLE_CONTROL_PLANE="/usr/local/lib/circuitbreaker"
+CB_LIFECYCLE_SYSTEM_PYTHON="/usr/bin/python3"
+# The directory this library was sourced from, so it finds the utility of its
+# own bundle or control plane.
+_CB_LIFECYCLE_LIB_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd)" || _CB_LIFECYCLE_LIB_DIR=""
+export -n _CB_LIFECYCLE_LIB_DIR
 
 # packages/cli/src/exit-codes.js; tests/build/test_lifecycle_lock.py keeps them equal.
 CB_LIFECYCLE_EXIT_USAGE=2
@@ -55,13 +74,17 @@ CB_LIFECYCLE_EXIT_LOCKED=10
 # opened or joined it ($BASHPID, so a subshell is a different holder) and
 # _DEPTH how many acquisitions in that process are still unreleased.
 _CB_LIFECYCLE_STATE_VARS=(_CB_LIFECYCLE_LOCK_FD _CB_LIFECYCLE_LOCK_ID _CB_LIFECYCLE_LOCK_PID _CB_LIFECYCLE_LOCK_DEPTH)
+# What this shell resolved or last saw for its operation: the interpreter, and
+# the journal generation it expects. Never exported, never read from the
+# environment either, and dropped with the lock.
+_CB_LIFECYCLE_CACHE_VARS=(_CB_LIFECYCLE_PYTHON _CB_LIFECYCLE_GENERATION _CB_LIFECYCLE_GEN_OPERATION)
 
 # Drop any holding state that is exported: it came from a parent's
 # environment (or was exported by hand), and proves nothing. Every public
 # entry point runs this first.
 _cb_lifecycle_forget_exported_state() {
   local name
-  for name in "${_CB_LIFECYCLE_STATE_VARS[@]}"; do
+  for name in "${_CB_LIFECYCLE_STATE_VARS[@]}" "${_CB_LIFECYCLE_CACHE_VARS[@]}"; do
     if [[ "$(declare -p "$name" 2>/dev/null || true)" =~ ^declare\ -[a-zA-Z]*x ]]; then
       unset "$name"
     fi
@@ -533,7 +556,7 @@ cb_lifecycle_lock_release() {
   if [[ "$fd" =~ ^[1-9][0-9]{0,4}$ ]] && (( fd >= 3 )) && [[ -n "$id" && "$(_cb_lifecycle_fd_id "$fd")" == "$id" ]]; then
     exec {fd}<&-
   fi
-  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
+  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" "${_CB_LIFECYCLE_CACHE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
 }
 
 # In a subshell that is about to exec something that must not hold the lock:
@@ -545,7 +568,7 @@ _cb_lifecycle_drop_lock() {
       exec {fd}<&-
     fi
   done
-  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
+  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" "${_CB_LIFECYCLE_CACHE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
 }
 
 # Run a command in the foreground without the lock, so that nothing it leaves
@@ -559,4 +582,319 @@ cb_lifecycle_run_unlocked() {
 # would hold the descriptor for as long as the command runs.
 cb_lifecycle_spawn_unlocked() {
   ( _cb_lifecycle_drop_lock && exec "$@" ) &
+}
+
+# --- The native state utility (Task 3) ---------------------------------------------------------
+
+# Whether uid $1 may own a program this library runs: root only when $2 is
+# set, otherwise the state tree's rule (root, and the caller when not root).
+_cb_lifecycle_program_owner() {
+  if [[ -n "${2:-}" ]]; then
+    [[ "$1" == 0 ]]
+  else
+    _cb_lifecycle_trusted_uid "$1"
+  fi
+}
+
+# Succeeds when every directory above $1 is a directory a trusted uid owns
+# ($2 as for _cb_lifecycle_program_owner) that neither group nor others can
+# write, unless it is sticky and root's (as /tmp is).
+_cb_lifecycle_safe_dirs() {
+  local path="$1" only_root="${2:-}" dir="" part
+  local -a parts
+  IFS=/ read -r -a parts <<<"${path#/}"
+  for part in "" "${parts[@]:0:${#parts[@]}-1}"; do
+    [[ -z "$part" ]] || dir="$dir/$part"
+    _cb_lifecycle_lstat "${dir:-/}" || return 1
+    [[ "$_CB_LC_TYPE" == dir ]] || return 1
+    _cb_lifecycle_program_owner "$_CB_LC_UID" "$only_root" || return 1
+    if (( _CB_LC_PERM & 022 )) && ! (( (_CB_LC_PERM & 01000) && _CB_LC_UID == 0 )); then
+      return 1
+    fi
+  done
+}
+
+# Succeeds when $1 is a program this library may run: a regular file (or a
+# symlink a trusted uid owns, to one) with a trusted owner, not writable by
+# group or others, below safe directories. $2 set: root must own all of it.
+_cb_lifecycle_trusted_program() {
+  local path="$1" only_root="${2:-}" real
+  [[ "$path" == /* ]] || return 1
+  _cb_lifecycle_safe_dirs "$path" "$only_root" || return 1
+  _cb_lifecycle_lstat "$path" || return 1
+  real="$path"
+  if [[ "$_CB_LC_TYPE" == link ]]; then
+    _cb_lifecycle_program_owner "$_CB_LC_UID" "$only_root" || return 1
+    real="$(readlink -f -- "$path" 2>/dev/null)" || return 1
+    [[ "$real" == /* ]] || return 1
+    _cb_lifecycle_safe_dirs "$real" "$only_root" || return 1
+    _cb_lifecycle_lstat "$real" || return 1
+  fi
+  [[ "$_CB_LC_TYPE" == file ]] || return 1
+  _cb_lifecycle_program_owner "$_CB_LC_UID" "$only_root" || return 1
+  (( (_CB_LC_PERM & 022) == 0 ))
+}
+
+_cb_lifecycle_python_is_new_enough() {
+  "$1" -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1
+}
+
+# Resolve the trusted interpreter for this transaction, before its first
+# mutation (ruling R13): /usr/bin/python3 when root owns it and the
+# directories above it, nobody else can write them, and it is 3.9 or newer;
+# otherwise, for a fresh install only, the verified staged bundle's
+# python/bin/python3, which the caller passes as $1. Sets _CB_LIFECYCLE_PYTHON.
+# Returns 0, or 7 before anything has been changed.
+cb_lifecycle_python() {
+  local fresh="${1:-}"
+  _cb_lifecycle_forget_exported_state
+  if _cb_lifecycle_trusted_program "$CB_LIFECYCLE_SYSTEM_PYTHON" root \
+    && _cb_lifecycle_python_is_new_enough "$CB_LIFECYCLE_SYSTEM_PYTHON"; then
+    _CB_LIFECYCLE_PYTHON="$CB_LIFECYCLE_SYSTEM_PYTHON"
+  elif [[ -n "$fresh" ]] && _cb_lifecycle_trusted_program "$fresh" && _cb_lifecycle_python_is_new_enough "$fresh"; then
+    _CB_LIFECYCLE_PYTHON="$fresh"
+  else
+    _cb_lifecycle_say "no trusted Python 3.9 or newer: $CB_LIFECYCLE_SYSTEM_PYTHON must be root's, not writable by group or others, and at least 3.9${fresh:+ (and so must $fresh)}"
+    _cb_lifecycle_say "nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  export -n _CB_LIFECYCLE_PYTHON
+}
+
+# Find the state utility next to this library (the control plane), in its
+# bundle's deploy/scripts, or in the control plane, and require that it is a
+# trusted file. Sets _CB_LC_UTILITY. Returns 0 or 7.
+_cb_lifecycle_find_utility() {
+  local dir="${_CB_LIFECYCLE_LIB_DIR:-}" candidate scripts=""
+  if [[ -n "$dir" && -d "$dir/../scripts" ]]; then
+    scripts="$(cd -P -- "$dir/../scripts" 2>/dev/null && pwd)" || scripts=""
+  fi
+  for candidate in "${dir:+$dir/lifecycle-state.py}" "${scripts:+$scripts/lifecycle-state.py}" \
+      "${dir:+$dir/deploy/scripts/lifecycle-state.py}" "$CB_LIFECYCLE_CONTROL_PLANE/lifecycle-state.py"; do
+    [[ -n "$candidate" && -e "$candidate" ]] || continue
+    if _cb_lifecycle_trusted_program "$candidate"; then
+      _CB_LC_UTILITY="$candidate"
+      return 0
+    fi
+    _cb_lifecycle_say "$candidate is not trusted (its owner, its mode or a directory above it); refusing to run it"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  done
+  _cb_lifecycle_say "the lifecycle state utility (lifecycle-state.py) is not installed"
+  return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+}
+
+# $1 as a JSON string. Byte by byte under LC_ALL=C, so UTF-8 passes through
+# untouched (the utility refuses anything that is not UTF-8) and every
+# control byte becomes a \u escape.
+_cb_lifecycle_json_string() {
+  local LC_ALL=C s="$1" out="" c code i
+  for (( i = 0; i < ${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      '"') out+='\"' ;;
+      '\') out+='\\' ;;
+      [[:cntrl:]])
+        printf -v code '%d' "'$c"
+        printf -v c '\\u%04x' "$code"
+        out+="$c"
+        ;;
+      *) out+="$c" ;;
+    esac
+  done
+  printf '"%s"' "$out"
+}
+
+# The JSON request for utility request $1 from key=value arguments. Values
+# are strings, except expected_generation.
+_cb_lifecycle_request() {
+  local json arg key value
+  json="{\"request\":$(_cb_lifecycle_json_string "$1")"
+  shift
+  for arg in "$@"; do
+    key="${arg%%=*}"
+    value="${arg#*=}"
+    if [[ "$arg" != *=* || ! "$key" =~ ^[a-z][a-z0-9_]{0,63}$ ]]; then
+      _cb_lifecycle_say "internal error: a state request takes key=value arguments"
+      return "$CB_LIFECYCLE_EXIT_USAGE"
+    fi
+    if [[ "$key" == expected_generation ]]; then
+      if [[ ! "$value" =~ ^[1-9][0-9]{0,15}$ ]]; then
+        _cb_lifecycle_say "internal error: expected_generation is a positive integer"
+        return "$CB_LIFECYCLE_EXIT_USAGE"
+      fi
+      json+=",\"$key\":$value"
+    else
+      json+=",\"$key\":$(_cb_lifecycle_json_string "$value")"
+    fi
+  done
+  printf '%s}' "$json"
+}
+
+# Run state utility request $1 (inspect, begin, checkpoint or list) with
+# key=value members; its acknowledgement lines go to stdout and its exit code
+# is returned. Prefer cb_lifecycle_begin and cb_lifecycle_checkpoint for
+# writes: they bind the lock, track the generation and emit events.
+cb_lifecycle_state() {
+  local request="${1:-}" json rc=0
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  _cb_lifecycle_forget_exported_state
+  if [[ -z "${_CB_LIFECYCLE_PYTHON:-}" ]]; then
+    cb_lifecycle_python || return $?
+  fi
+  _cb_lifecycle_find_utility || return $?
+  json="$(_cb_lifecycle_request "$request" "$@")" || return $?
+  "$_CB_LIFECYCLE_PYTHON" -I -B "$_CB_LC_UTILITY" <<<"$json" || rc=$?
+  return "$rc"
+}
+
+# Read an acknowledgement into _CB_LC_ACK_{OPERATION,GENERATION,EVENT}, each
+# line matched against its own shape; warnings go to stderr. Nothing in it is
+# ever evaluated.
+_cb_lifecycle_read_ack() {
+  local line key value
+  _CB_LC_ACK_OPERATION="" _CB_LC_ACK_GENERATION="" _CB_LC_ACK_EVENT=""
+  while IFS= read -r line; do
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      operation_id) if _cb_lifecycle_valid_operation "$value"; then _CB_LC_ACK_OPERATION="$value"; fi ;;
+      generation) if [[ "$value" =~ ^[1-9][0-9]{0,15}$ ]]; then _CB_LC_ACK_GENERATION="$value"; fi ;;
+      event) if (( ${#value} <= 4096 )) && [[ "$value" == '{"'*'}' ]]; then _CB_LC_ACK_EVENT="$value"; fi ;;
+      warning) printf 'lifecycle state: warning: %s\n' "$value" >&2 ;;
+    esac
+  done <<<"$1"
+}
+
+_cb_lifecycle_remember_generation() {
+  _CB_LIFECYCLE_GEN_OPERATION="$1"
+  _CB_LIFECYCLE_GENERATION="$2"
+  export -n _CB_LIFECYCLE_GEN_OPERATION _CB_LIFECYCLE_GENERATION
+}
+
+# Write one event line to the descriptor the coordinator handed down
+# (CB_LIFECYCLE_EVENT_FD), and nowhere else. Events are presentation: a
+# closed or missing descriptor never fails the durable write behind it.
+_cb_lifecycle_emit_event() {
+  local line="$1" fd="${CB_LIFECYCLE_EVENT_FD:-}"
+  [[ -n "$line" && "$fd" =~ ^[1-9][0-9]{0,4}$ ]] || return 0
+  (( fd >= 3 )) || return 0
+  [[ "$fd" != "${_CB_LIFECYCLE_LOCK_FD:-}" && "$fd" != "${CB_LIFECYCLE_LOCK_FD:-}" ]] || return 0
+  [[ -p "/dev/fd/$fd" || -S "/dev/fd/$fd" || -f "/dev/fd/$fd" ]] || return 0
+  ( trap '' PIPE; printf '%s\n' "$line" >&"$fd" ) 2>/dev/null || true
+}
+
+# Start an operation under the lock this shell holds: the utility allocates
+# its ID and writes its first durable record, then the lock is bound to it
+# and its checkpoint event is emitted. Members are key=value: kind, action,
+# adapter, and optionally plan_digest, identity_digest, source_version,
+# source_artifact_digest, target_version, target_artifact_digest,
+# recovery_operation_id, recovery_manifest_digest and evidence_check,
+# evidence_result, evidence_detail. Returns the utility's code: 9 while an
+# unfinished transaction (or, for a transaction, a record that requires
+# inspection) exists, 7 when the record cannot be made durable.
+cb_lifecycle_begin() {
+  local out rc=0
+  _cb_lifecycle_forget_exported_state
+  if ! _cb_lifecycle_held_here; then
+    _cb_lifecycle_say "internal error: an operation begins in the shell that holds the lock"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  if [[ -z "${_CB_LIFECYCLE_PYTHON:-}" ]]; then
+    cb_lifecycle_python || return $?
+  fi
+  out="$(cb_lifecycle_state begin "$@")" || rc=$?
+  _cb_lifecycle_read_ack "$out"
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  if [[ -z "$_CB_LC_ACK_OPERATION" || "$_CB_LC_ACK_GENERATION" != 1 ]]; then
+    _cb_lifecycle_say "internal error: the state utility did not acknowledge the operation"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  cb_lifecycle_lock_bind_operation "$_CB_LC_ACK_OPERATION" || return $?
+  _cb_lifecycle_remember_generation "$_CB_LC_ACK_OPERATION" 1
+  _cb_lifecycle_emit_event "$_CB_LC_ACK_EVENT"
+}
+
+# Record the next durable checkpoint of the operation the lock is bound to:
+# key=value members state, and optionally step, cause, outcome, error_code
+# with error_reason, recovery_operation_id with recovery_manifest_digest, and
+# evidence_*. It names the generation this shell last saw, so a checkpoint
+# another writer made in between makes this one stale (9). The checkpoint
+# event is emitted only after the utility has made the record durable.
+cb_lifecycle_checkpoint() {
+  local op="${CB_LIFECYCLE_OPERATION:-}" out rc=0
+  _cb_lifecycle_forget_exported_state
+  if ! _cb_lifecycle_valid_operation "$op"; then
+    _cb_lifecycle_say "internal error: a checkpoint needs the operation the lock is bound to"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  if [[ -z "${_CB_LIFECYCLE_PYTHON:-}" ]]; then
+    cb_lifecycle_python || return $?
+  fi
+  if [[ "${_CB_LIFECYCLE_GEN_OPERATION:-}" != "$op" ]]; then
+    # A process that joined the operation learns where it stands once.
+    out="$(cb_lifecycle_state inspect operation_id="$op")" || return $?
+    _cb_lifecycle_read_ack "$out"
+    if [[ -z "$_CB_LC_ACK_GENERATION" ]]; then
+      _cb_lifecycle_say "internal error: the state utility did not report $op"
+      return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+    fi
+    _cb_lifecycle_remember_generation "$op" "$_CB_LC_ACK_GENERATION"
+  fi
+  out="$(cb_lifecycle_state checkpoint operation_id="$op" expected_generation="$_CB_LIFECYCLE_GENERATION" "$@")" || rc=$?
+  _cb_lifecycle_read_ack "$out"
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  if [[ "$_CB_LC_ACK_OPERATION" != "$op" || -z "$_CB_LC_ACK_GENERATION" ]]; then
+    _cb_lifecycle_say "internal error: the state utility did not acknowledge the checkpoint"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  _cb_lifecycle_remember_generation "$op" "$_CB_LC_ACK_GENERATION"
+  _cb_lifecycle_emit_event "$_CB_LC_ACK_EVENT"
+}
+
+# Install the control plane from bundle deploy directory $1 into $2 (default
+# /usr/local/lib/circuitbreaker): this library, the state utility and the
+# release trust material (bundle-signature.sh, which embeds the release
+# bundle keys). Outside the release tree, so replacing or removing the server
+# never removes its recovery tools. Every source is checked before anything
+# is written, and each file is replaced by an atomic rename. Directory 0755,
+# files 0644, the utility 0755, all root's when run as root. Returns 0, 6 or 7.
+cb_lifecycle_install_control_plane() {
+  local src="${1:-}" dest="${2:-$CB_LIFECYCLE_CONTROL_PLANE}" item from name perm tmp
+  local -a items=("lib/lifecycle.sh lifecycle.sh 644" "scripts/lifecycle-state.py lifecycle-state.py 755" \
+    "lib/bundle-signature.sh bundle-signature.sh 644")
+  for item in "${items[@]}"; do
+    read -r from name perm <<<"$item"
+    if [[ ! -f "$src/$from" || -L "$src/$from" ]]; then
+      _cb_lifecycle_say "cannot install the lifecycle control plane: $src/$from is missing"
+      return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+    fi
+  done
+  if [[ -L "$dest" ]] || { [[ -e "$dest" ]] && [[ ! -d "$dest" ]]; }; then
+    _cb_lifecycle_say "$dest is not a directory; refusing to install into it"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if [[ ! -d "$dest" ]] && ! ( umask 022 && mkdir -p -- "$dest" ) 2>/dev/null; then
+    _cb_lifecycle_say "cannot create $dest"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  if ! chmod 755 -- "$dest" 2>/dev/null || { [[ "$EUID" -eq 0 ]] && ! chown 0:0 -- "$dest" 2>/dev/null; }; then
+    _cb_lifecycle_say "cannot make $dest root's, mode 0755"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  for item in "${items[@]}"; do
+    read -r from name perm <<<"$item"
+    if ! tmp="$(mktemp "$dest/.$name.XXXXXX" 2>/dev/null)"; then
+      _cb_lifecycle_say "cannot write in $dest"
+      return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+    fi
+    if ! cp -- "$src/$from" "$tmp" 2>/dev/null || ! chmod "$perm" -- "$tmp" 2>/dev/null \
+      || { [[ "$EUID" -eq 0 ]] && ! chown 0:0 -- "$tmp" 2>/dev/null; } \
+      || ! mv -f -- "$tmp" "$dest/$name" 2>/dev/null; then
+      rm -f -- "$tmp" 2>/dev/null || true
+      _cb_lifecycle_say "cannot install $dest/$name"
+      return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+    fi
+  done
 }

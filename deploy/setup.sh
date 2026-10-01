@@ -1716,8 +1716,31 @@ stage9_install_cb_cli() {
       /usr/local/lib/circuitbreaker/install-identity.sh 2>/dev/null || true
     chmod 644 /usr/local/lib/circuitbreaker/install-identity.sh 2>/dev/null || true
   fi
+  stage9_install_lifecycle_control_plane
 
   cb_ok "CB CLI installed"
+}
+
+# The lifecycle control plane: the host lock library, the native state
+# utility that writes operation journals, and the release trust material, in
+# /usr/local/lib/circuitbreaker, outside the release tree that an update
+# replaces and an uninstall removes. Not best-effort like the helpers above:
+# recovering an interrupted operation depends on these tools, so a control
+# plane that cannot be installed fails the install (npm CLI sub-plan 03,
+# ruling R12).
+stage9_install_lifecycle_control_plane() {
+  local deploy=/opt/circuitbreaker/deploy
+  if [[ ! -f "$deploy/lib/lifecycle.sh" ]]; then
+    cb_fail "The bundle has no lifecycle library ($deploy/lib/lifecycle.sh)" \
+      "Re-download the release bundle; this one is incomplete"
+  fi
+  # shellcheck source=lib/lifecycle.sh
+  source "$deploy/lib/lifecycle.sh"
+  if ! cb_lifecycle_install_control_plane "$deploy" /usr/local/lib/circuitbreaker; then
+    cb_fail "Could not install the lifecycle tools in /usr/local/lib/circuitbreaker" \
+      "Check free space and permissions under /usr/local/lib, then re-run the installer"
+  fi
+  cb_detail "Lifecycle tools: /usr/local/lib/circuitbreaker"
 }
 
 stage9_write_install_identity() {
