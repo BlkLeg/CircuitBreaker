@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -116,3 +120,64 @@ def test_the_dry_run_rehearses_signing_with_a_throwaway_key() -> None:
     assert "cb_verify_sums_signature" in run
     assert "tampered" in run  # the negative case must fail
     assert "secrets." not in yaml.safe_dump(step)
+
+
+# ---------------------------------------------------------------------------
+# The verify steps run for real, with cb_verify_sums_signature stubbed to the
+# exit code under test, so the message each code produces is pinned.
+# ---------------------------------------------------------------------------
+
+_SOURCE_LIB = re.compile(r'^\s*source "?(\$\{GITHUB_WORKSPACE\}/)?deploy/lib/bundle-signature\.sh"?$', re.MULTILINE)
+_NO_KEY = "deploy/keys/release-bundle-keys.txt holds no usable key, or"
+_VERIFY_STEPS = [
+    ("release", "Verify SHA256SUMS.sig against the trusted keys", "the new SHA256SUMS.sig does not verify"),
+    ("promote-verify", "Verify the draft's signature, bundle hashes and provenance",
+     "the draft's SHA256SUMS.sig does not verify"),
+    ("post-publish", "Verify the published signature", "the published SHA256SUMS.sig does not verify"),
+]
+
+
+def _run_with_stubbed_verify(run: str, rc: int, cwd: Path) -> subprocess.CompletedProcess[str]:
+    stub = (f'cb_verify_sums_signature() {{ [ {rc} -eq 0 ] && echo 0123456789abcdef; return {rc}; }}\n'
+            "cb_verify_sums_entry() { return 0; }\n"
+            "gh() { :; }\n")
+    assert _SOURCE_LIB.search(run), "the step no longer sources deploy/lib/bundle-signature.sh"
+    script = stub + _SOURCE_LIB.sub("", run).replace("/tmp/signed", str(cwd / "signed"))
+    env = {**os.environ, "GITHUB_WORKSPACE": str(cwd), "VERSION": "0.4.7", "GITHUB_REPOSITORY": "o/r"}
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=cwd, env=env, check=False)
+
+
+@pytest.mark.parametrize(("job", "name", "mismatch"), _VERIFY_STEPS, ids=[j for j, _, _ in _VERIFY_STEPS])
+def test_verify_steps_name_a_missing_key_apart_from_a_mismatch(job: str, name: str, mismatch: str,
+                                                               tmp_path: Path) -> None:
+    run = _steps(job)[_index(job, lambda s: s.get("name") == name)]["run"]
+    no_key = _run_with_stubbed_verify(run, 2, tmp_path)
+    assert no_key.returncode == 1
+    assert f"::error::{_NO_KEY}" in no_key.stdout
+    assert mismatch not in no_key.stdout
+    bad = _run_with_stubbed_verify(run, 1, tmp_path)
+    assert bad.returncode == 1
+    assert f"::error::{mismatch}" in bad.stdout
+    assert _NO_KEY not in bad.stdout
+
+
+def test_the_dry_run_rehearsal_reports_a_failed_verification(tmp_path: Path) -> None:
+    run = _steps("staged-publication", DRY_RUN)[
+        _index("staged-publication", lambda s: _runs(s, "sign_release_sums.sh"), DRY_RUN)]["run"]
+    (tmp_path / "scripts").symlink_to(ROOT / "scripts")
+    (tmp_path / "dist" / "release").mkdir(parents=True)
+    (tmp_path / "dist" / "release" / "SHA256SUMS").write_text("0" * 64 + "  ./x\n")
+    for rc in (1, 2):
+        r = _run_with_stubbed_verify(run, rc, tmp_path)
+        assert r.returncode == 1
+        assert "::error::the rehearsal SHA256SUMS.sig does not verify" in r.stdout
+
+
+def test_gpg_signing_is_strict_and_still_skips_without_a_key(tmp_path: Path) -> None:
+    step = _steps("release")[_index("release", lambda s: s.get("name") == "GPG sign artifacts")]
+    assert step["run"].startswith("set -euo pipefail\n")
+    env = {**os.environ, "GPG_PRIVATE_KEY": "", "GPG_PASSPHRASE": ""}
+    r = subprocess.run(["bash", "-c", step["run"]], capture_output=True, text=True, cwd=tmp_path, env=env,
+                       check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "skipping GPG signing" in r.stdout

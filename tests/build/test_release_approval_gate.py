@@ -13,10 +13,13 @@ succeeded — plus the post-release follow-up wiring.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -226,3 +229,25 @@ def test_the_followup_job_has_what_it_needs_and_nothing_is_interpolated_into_she
     assert "--force" not in run and "push -f" not in run, (
         "a re-run must continue the follow-up branch, never force-push over it"
     )
+
+
+@pytest.mark.parametrize("target", ["release-candidate", "release-stage-only", "release-promote"])
+def test_make_release_targets_refuse_to_dispatch_off_main(target: str, tmp_path: Path) -> None:
+    """The Stage job signs bundles only from main; a dispatch from dev would
+    build an unsigned draft. Fake git says the branch is dev; fake gh logs."""
+    log = tmp_path / "calls.log"
+    for tool, body in (
+        ("git", f'echo "git $*" >> "{log}"\n[ "$1" = rev-parse ] && echo dev\nexit 0\n'),
+        ("gh", f'echo "gh $*" >> "{log}"\nexit 0\n'),
+    ):
+        exe = tmp_path / tool
+        exe.write_text("#!/bin/sh\n" + body)
+        exe.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    r = subprocess.run(["make", "--no-print-directory", "-f", str(MAKEFILE), target],
+                       cwd=MAKEFILE.parent, capture_output=True, text=True, env=env, check=False)
+    assert r.returncode != 0
+    assert f"make {target} dispatches only from main" in r.stdout
+    assert "Current branch: dev" in r.stdout
+    calls = log.read_text() if log.exists() else ""
+    assert "gh " not in calls and "git fetch" not in calls, calls

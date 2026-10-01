@@ -454,7 +454,8 @@ jobs:
           printf '%s %s 0.0.0 dry-run throwaway\n' "${id}" "${pub}" > "${work}/keys.txt"
           scripts/ci/sign_release_sums.sh "${work}/key.pem" dist/release/SHA256SUMS "${work}/SHA256SUMS.sig"
           source deploy/lib/bundle-signature.sh
-          got="$(cb_verify_sums_signature dist/release/SHA256SUMS "${work}/SHA256SUMS.sig" "${work}/keys.txt")"
+          got="$(cb_verify_sums_signature dist/release/SHA256SUMS "${work}/SHA256SUMS.sig" "${work}/keys.txt")" \
+            || { echo "::error::the rehearsal SHA256SUMS.sig does not verify against the throwaway key"; exit 1; }
           [ "${got}" = "${id}" ] || { echo "::error::rehearsal signature verified by ${got}, expected ${id}"; exit 1; }
           cp dist/release/SHA256SUMS "${work}/tampered"
           printf 'tampered\n' >> "${work}/tampered"

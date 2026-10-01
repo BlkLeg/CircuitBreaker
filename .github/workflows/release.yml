@@ -679,6 +679,7 @@ jobs:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          set -euo pipefail
           if [ -z "${GPG_PRIVATE_KEY}" ]; then
             echo "GPG_PRIVATE_KEY not set — skipping GPG signing"
             exit 0
@@ -748,7 +749,14 @@ jobs:
         run: |
           set -euo pipefail
           source deploy/lib/bundle-signature.sh
-          if ! key_id="$(cb_verify_sums_signature dist/release/SHA256SUMS dist/release/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt)"; then
+          # rc 2: no usable trusted key, or an unreadable signature; rc 1: no
+          # trusted key verifies it. Both stop the release.
+          rc=0
+          key_id="$(cb_verify_sums_signature dist/release/SHA256SUMS dist/release/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt)" || rc=$?
+          if [ "${rc}" -eq 2 ]; then
+            echo "::error::deploy/keys/release-bundle-keys.txt holds no usable key, or the new SHA256SUMS.sig is unreadable"
+            exit 1
+          elif [ "${rc}" -ne 0 ]; then
             echo "::error::the new SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt: the release-signing secret and the committed public key do not match"
             exit 1
           fi
@@ -958,8 +966,15 @@ jobs:
             --pattern 'SHA256SUMS' --pattern 'SHA256SUMS.sig' \
             --pattern "circuit-breaker_${VERSION}_linux_*.tar.gz"
           source "${GITHUB_WORKSPACE}/deploy/lib/bundle-signature.sh"
-          key_id="$(cb_verify_sums_signature SHA256SUMS SHA256SUMS.sig "${GITHUB_WORKSPACE}/deploy/keys/release-bundle-keys.txt")" \
-            || { echo "::error::the draft's SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt"; exit 1; }
+          rc=0
+          key_id="$(cb_verify_sums_signature SHA256SUMS SHA256SUMS.sig "${GITHUB_WORKSPACE}/deploy/keys/release-bundle-keys.txt")" || rc=$?
+          if [ "${rc}" -eq 2 ]; then
+            echo "::error::deploy/keys/release-bundle-keys.txt holds no usable key, or the draft's SHA256SUMS.sig is unreadable"
+            exit 1
+          elif [ "${rc}" -ne 0 ]; then
+            echo "::error::the draft's SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt"
+            exit 1
+          fi
           echo "draft signed by trusted key ${key_id}"
           checked=0
           for tarball in circuit-breaker_"${VERSION}"_linux_*.tar.gz; do
@@ -1067,8 +1082,15 @@ jobs:
         run: |
           set -euo pipefail
           source deploy/lib/bundle-signature.sh
-          key_id="$(cb_verify_sums_signature published/SHA256SUMS published/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt)" \
-            || { echo "::error::the published SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt"; exit 1; }
+          rc=0
+          key_id="$(cb_verify_sums_signature published/SHA256SUMS published/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt)" || rc=$?
+          if [ "${rc}" -eq 2 ]; then
+            echo "::error::deploy/keys/release-bundle-keys.txt holds no usable key, or the published SHA256SUMS.sig is unreadable"
+            exit 1
+          elif [ "${rc}" -ne 0 ]; then
+            echo "::error::the published SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt"
+            exit 1
+          fi
           echo "published release signed by trusted key ${key_id}"
 
       - name: Verify the published tarball against the published checksums

@@ -225,6 +225,7 @@ build-from-source: ## Full power-user path: deps + venv + build (clean machine �
 	$(MAKE) --no-print-directory build
 
 release-candidate: ## Build, gate and stage a DRAFT for VERSION from HEAD, then promote it once approved on the `release` environment
+	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || (echo "make release-candidate dispatches only from main: the Stage job signs bundles only from main. Current branch: $$(git rev-parse --abbrev-ref HEAD)"; exit 1)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
 	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=true
@@ -232,12 +233,14 @@ release-candidate: ## Build, gate and stage a DRAFT for VERSION from HEAD, then 
 	@echo "Soak the draft before approving with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' --pattern 'SHA256SUMS*' && install.sh --local-bundle ..."
 
 release-stage-only: ## Build, gate and stage a DRAFT for VERSION from HEAD without promoting it (promote later with release-promote)
+	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || (echo "make release-stage-only dispatches only from main: the Stage job signs bundles only from main. Current branch: $$(git rev-parse --abbrev-ref HEAD)"; exit 1)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
 	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=false
 	@echo "Dispatched. Soak the draft with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' --pattern 'SHA256SUMS*' && install.sh --local-bundle ..., then: make release-promote"
 
 release-promote: ## Promote the staged draft for VERSION to stable once approved on `release` (no rebuild; the promote creates the tag)
+	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || (echo "make release-promote dispatches only from main: the Stage job signs bundles only from main. Current branch: $$(git rev-parse --abbrev-ref HEAD)"; exit 1)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first"; exit 1)
 	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=stable -f version="$$(cat VERSION)"
