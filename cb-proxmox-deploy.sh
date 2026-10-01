@@ -436,9 +436,45 @@ post_start_config() {
   fi
 }
 
+# ── Release files ─────────────────────────────────────────────────────────────
+# Container directory holding the release tarball, SHA256SUMS and (from 0.4.7)
+# SHA256SUMS.sig under their release names. install.sh --local-bundle looks for
+# SHA256SUMS(.sig) next to the tarball and matches the tarball by its name in
+# SHA256SUMS, so the three must travel together and keep their names.
+CB_CT_RELEASE_DIR="/tmp/cb-release"
+
+# Download the release files into $1 (a host directory), keeping their names.
+# $2 release JSON, $3 tarball name. SHA256SUMS.sig is optional: releases
+# before 0.4.7 do not publish one, and install.sh decides what that means.
+download_release_files() {
+  local dest="$1" release_json="$2" tarball_name="$3" name url
+  for name in "$tarball_name" SHA256SUMS SHA256SUMS.sig; do
+    url=$(printf '%s' "$release_json" \
+      | jq -r --arg n "$name" '[.assets[] | select(.name==$n)][0].browser_download_url')
+    if [[ -z "$url" ]] || [[ "$url" == "null" ]]; then
+      [[ "$name" == "SHA256SUMS.sig" ]] && continue
+      msg_err "${name} not found in the release"
+      return 1
+    fi
+    curl -fsSL -o "${dest}/${name}" "$url" \
+      || { msg_err "Failed to download ${name}"; return 1; }
+  done
+}
+
+# Push every file in $2 (host) into CB_CT_RELEASE_DIR in container $1.
+push_release_files() {
+  local ctid="$1" src="$2" f
+  pct exec "$ctid" -- mkdir -p "$CB_CT_RELEASE_DIR" || return 1
+  for f in "$src"/*; do
+    [[ -f "$f" ]] || continue
+    pct push "$ctid" "$f" "${CB_CT_RELEASE_DIR}/$(basename -- "$f")" || return 1
+  done
+}
+
 # ── Build installer command ───────────────────────────────────────────────────
+# $1 tarball name (inside CB_CT_RELEASE_DIR).
 build_installer_cmd() {
-  local cmd="bash /tmp/cb-bundle/install.sh --unattended --local-bundle /tmp/cb-bundle.tar.gz"
+  local cmd="bash /tmp/cb-bundle/install.sh --unattended --local-bundle ${CB_CT_RELEASE_DIR}/$1"
   [[ "$CB_NO_TLS" == true ]] && cmd+=" --no-tls"
   [[ -n "$CB_FQDN" ]] && cmd+=" --fqdn '${CB_FQDN}'"
   [[ "$CB_PORT" != "8088" ]] && cmd+=" --port ${CB_PORT}"
@@ -1187,14 +1223,25 @@ func_do_install() {
     return 1
   fi
 
-  curl -fsSL -o "/tmp/${tarball_name}" "$tarball_url" \
-    || { msg_err "Failed to download bundle"; return 1; }
+  # Tarball, SHA256SUMS and SHA256SUMS.sig, so install.sh can verify the
+  # bundle; a private directory rather than fixed /tmp names.
+  local host_release_dir
+  host_release_dir="$(mktemp -d)" || { msg_err "Could not create a temporary directory"; return 1; }
+  if ! download_release_files "$host_release_dir" "$release_json" "$tarball_name"; then
+    rm -rf -- "$host_release_dir"
+    return 1
+  fi
   echo "  ✔️  Bundle downloaded: v${cb_version} (${host_arch})"
 
   # ── Push bundle into container ────────────────────────────────────────────
   msg_info "Pushing bundle into container..."
-  pct push "$CTID" "/tmp/${tarball_name}" "/tmp/cb-bundle.tar.gz"
-  pct exec "$CTID" -- bash -c "mkdir -p /tmp/cb-bundle && tar -xzf /tmp/cb-bundle.tar.gz -C /tmp/cb-bundle"
+  if ! push_release_files "$CTID" "$host_release_dir"; then
+    rm -rf -- "$host_release_dir"
+    msg_err "Failed to push the release files into container $CTID"
+    return 1
+  fi
+  rm -rf -- "$host_release_dir"
+  pct exec "$CTID" -- bash -c "mkdir -p /tmp/cb-bundle && tar -xzf '${CB_CT_RELEASE_DIR}/${tarball_name}' -C /tmp/cb-bundle"
 
   # ── Install dependencies (curl+jq needed by installer) ───────────────────
   msg_info "Preparing container (installing curl and jq)..."
@@ -1205,14 +1252,11 @@ func_do_install() {
     return 1
   fi
 
-  # Clean up host-side tarball
-  rm -f "/tmp/${tarball_name}"
-
   # ── Install Circuit Breaker from bundle ──────────────────────────────────
   msg_info "Installing Circuit Breaker (this takes a few minutes)..."
   echo ""
   local installer_cmd
-  installer_cmd=$(build_installer_cmd)
+  installer_cmd=$(build_installer_cmd "$tarball_name")
 
   local install_log="/tmp/cb-install-${CTID}.log"
   if [[ "$VERBOSE" -eq 1 ]]; then
@@ -1232,7 +1276,7 @@ func_do_install() {
     echo "    2. Full install log: tail -50 /var/lib/circuitbreaker/logs/install.log"
     echo "    3. CB service:       systemctl status circuitbreaker.target"
     echo "    4. All CB logs:      journalctl -u 'circuitbreaker-*' --no-pager -n 50"
-    echo "    5. Re-run installer: bash /tmp/cb-bundle/install.sh --unattended"
+    echo "    5. Re-run installer: bash /tmp/cb-bundle/install.sh --unattended --local-bundle ${CB_CT_RELEASE_DIR}/${tarball_name}"
     echo ""
     CLEANUP_CTID=""
     read -rp "  Press Enter to return to menu..."
