@@ -687,6 +687,64 @@ def test_an_event_needs_the_lock_bound_to_its_operation(tmp_path: Path) -> None:
     assert (operations(state) / op / "sequence").read_text() == f"{durable}\n", "no refused event spent a sequence"
 
 
+def _emitted(events: Path, op: str) -> list[dict[str, Any]]:
+    """Every line on the event descriptor, parsed, after checking the order a consumer requires (E3)."""
+    parsed = [LS.parse_document("event", line.encode()) for line in events.read_text().splitlines()]
+    sequences = [e["sequence"] for e in parsed]
+    assert all(e["operation_id"] == op and e["source"] == "native" for e in parsed)
+    assert sequences == sorted(set(sequences)), f"sequences must rise in the order they reach the descriptor: {sequences}"
+    return parsed
+
+
+@seam
+def test_writers_sharing_the_lock_draw_distinct_sequences_and_write_them_in_order(tmp_path: Path) -> None:
+    """Holders of one inherited lock (R9: a subshell, a handed-down child) emit at once; E3 still holds."""
+    state = tmp_path / "state"
+    events = tmp_path / "events.jsonl"
+    r = ok(sh(
+        f'exec {{ev}}>"{events}"\nexport CB_LIFECYCLE_EVENT_FD=$ev\n'
+        + ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n'
+        "for i in 1 2 3 4 5 6 7 8; do ( cb_lifecycle_emit type=progress phase=apply done=$i total=8 unit=steps ) & done\n"
+        "wait\ncb_lifecycle_lock_release\n", state))
+    op = op_from(r)
+    parsed = _emitted(events, op)
+    assert [e["sequence"] for e in parsed] == list(range(1, 10)), "begin, then eight distinct progress events"
+    assert sorted(e["done"] for e in parsed[1:]) == list(range(1, 9)), "no event was lost"
+    assert (operations(state) / op / "sequence").read_text() == "9\n"
+    assert "lifecycle state" not in r.stderr, r.stderr
+
+
+@seam
+def test_events_racing_checkpoints_never_lose_a_checkpoint_event_or_a_checkpoint(tmp_path: Path) -> None:
+    """Two emit loops in background subshells race stepped checkpoints of the same operation.
+
+    No sequence repeats, the descriptor carries them in rising order (a consumer would drop a
+    checkpoint event that arrived after a later sequence), no writer removes another's temporary
+    file, and every durable checkpoint is acknowledged.
+    """
+    state = tmp_path / "state"
+    events = tmp_path / "events.jsonl"
+    r = ok(sh(
+        f'exec {{ev}}>"{events}"\nexport CB_LIFECYCLE_EVENT_FD=$ev\n'
+        + ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n'
+        "for loop in 1 2; do\n"
+        "  ( for i in $(seq 1 20); do cb_lifecycle_emit type=progress phase=apply done=$i unit=steps; done ) &\n"
+        "done\n"
+        "for i in $(seq 1 20); do cb_lifecycle_checkpoint state=applying step=s$i || exit $?; done\n"
+        "wait\ncb_lifecycle_checkpoint state=committed outcome=committed\ncb_lifecycle_lock_release\n", state))
+    op = op_from(r)
+    parsed = _emitted(events, op)
+    assert "cannot record" not in r.stderr and "lifecycle state" not in r.stderr, r.stderr
+    assert sum(e["type"] == "progress" for e in parsed) == 40, "every emit reached the descriptor"
+    checkpoints = [e for e in parsed if e["type"] == "checkpoint"]
+    assert [e["generation"] for e in checkpoints] == list(range(1, 23)), "every checkpoint event, in order"
+    journal = journal_of(state, op)
+    assert journal["generation"] == 22
+    assert [c["sequence"] for c in journal["checkpoints"]] == [checkpoints[0]["sequence"], *(e["sequence"] for e in checkpoints[-2:])]
+    assert (operations(state) / op / "sequence").read_text() == f"{len(parsed)}\n"
+    assert not [p.name for p in (operations(state) / op).iterdir() if p.name.startswith(".")], "no temporary file is left"
+
+
 @seam
 def test_the_clis_history_reads_what_the_utility_wrote_and_never_settles_a_killed_operation(
     tmp_path: Path, procs: list[subprocess.Popen[str]],
@@ -1267,6 +1325,49 @@ def _begin_bound(held: Held) -> str:
     op = lines["operation_id"][0]
     held.bind(op)
     return op
+
+
+@seam
+def test_the_utility_writes_events_only_to_a_descriptor_it_accepts_and_only_after_the_write(
+    held: Held, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_end, write_end = os.pipe()
+    os.set_blocking(read_end, False)
+
+    def drained() -> bytes:
+        try:
+            return os.read(read_end, 65536)
+        except BlockingIOError:
+            return b""
+
+    try:
+        monkeypatch.setenv("CB_LIFECYCLE_EVENT_FD", str(write_end))
+        op = _begin_bound(held)
+        first = drained().decode()
+        assert first.endswith("\n") and LS.parse_document("event", first[:-1].encode())["state"] == "applying"
+
+        real = LS.DISK.fsync_dir
+
+        def full_disk(_fd: int) -> None:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(LS.DISK, "fsync_dir", full_disk)
+        code, _, _ = held.request(request="checkpoint", operation_id=op, expected_generation=1,
+                                  state="committed", outcome="committed")
+        monkeypatch.setattr(LS.DISK, "fsync_dir", real)
+        assert code == 7 and drained() == b"", "a write that was not acknowledged emits nothing"
+
+        counter = operations(held.state) / op / "sequence"
+        before = int(counter.read_text())
+        for refused in (str(held.fd), "2", "999", "03"):
+            monkeypatch.setenv("CB_LIFECYCLE_EVENT_FD", refused)
+            code, _, err = held.request(request="emit", operation_id=op, type="phase", phase="apply", status="started")
+            assert code == 0, err
+            assert drained() == b"", f"no event goes to descriptor {refused}"
+        assert int(counter.read_text()) == before + 4, "each emit still spent its sequence; only the descriptor was refused"
+    finally:
+        os.close(read_end)
+        os.close(write_end)
 
 
 @seam

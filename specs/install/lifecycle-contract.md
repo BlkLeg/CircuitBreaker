@@ -350,7 +350,10 @@ Rules:
   operation's private directory. After a restart it continues above the journal's durable
   sequence, so nested native processes share one sequence. Native progress, phase and
   diagnostic events are emitted through `cb_lifecycle_emit` (the utility's `emit` request), and
-  checkpoint events only after the checkpoint is durable.
+  checkpoint events only after the checkpoint is durable. The state utility allocates each
+  sequence and writes its event under its writer lock (§10), so every holder of the lock
+  (a shell, a subshell of it, a child it handed the lock to) puts events on the descriptor in
+  sequence order and none is dropped for arriving late.
 - **E4** An event never authorizes, changes or proves state, including an out-of-order or invalid
   one. Only the journal is authoritative. No later plan may treat a progress event as mutation
   authority.
@@ -366,6 +369,15 @@ Rules:
   warning diagnostic and changes nothing (`packages/cli/src/events.js`).
 - The descriptor travels with the lock handoff (`CB_LIFECYCLE_LOCK_FD`, `CB_LIFECYCLE_OPERATION`).
   A claim in the environment alone grants nothing.
+- The coordinator's native step is over when the child exits. What it wrote before exiting is
+  still read, for at most `NATIVE_DRAIN_MS` (1 s); a process it left running that still holds
+  the descriptor or its stdout/stderr is then read to nowhere and never holds the coordinator.
+  Helpers started through `cb_lifecycle_run_unlocked` or `cb_lifecycle_spawn_unlocked` have the
+  descriptor closed; their stdout and stderr are the caller's to redirect.
+- A native step that stops without writing its own result is reported from the journal, never
+  from its status alone (`exitResult`): after the first mutation checkpoint an interruption is
+  `recovery_required` and a stop that closed nothing leaves the operation unfinished
+  (`interrupted`), while both exit with codes that cannot tell them from a stop before mutation.
 
 ## 7. Results and output streams
 
@@ -539,13 +551,24 @@ the index, because an event is presentation (E4). `inspect` prints the summary m
 `status` (`finished`, `unfinished`, `running` or `abandoned`), `reported` (an abandoned operation
 is reported as `interrupted`) and `journal`, the canonical journal on one line. `list` prints
 counts, `unfinished`, `inspection`, `protected` and `releasable` lines and `retention`. The shell
-matches each line against its own shape and never evaluates one; the event goes only to
-`CB_LIFECYCLE_EVENT_FD`, after the acknowledgement.
+matches each line against its own shape and never evaluates one. The `event` line is a copy: the
+utility itself writes the event to `CB_LIFECYCLE_EVENT_FD` once the record is durable (an `emit`,
+once its sequence is), before it releases its writer lock, and never to stdout or stderr. It
+accepts the descriptor only as inherited when it starts: 3 or above, not the lock's, and a pipe,
+socket or regular file; the library passes it only after the same check. A closed or stalled
+reader never fails the write behind the event.
 
 **Durability.** Every record is written to a temporary file in its own directory, flushed,
 fsynced, renamed over the old one, and the directory is fsynced before anything is acknowledged.
 A failure at any step leaves the old or the new valid record, never a mix, and acknowledges
-nothing. `begin` builds the operation's directory under a staging name and renames it into place.
+nothing.
+
+**Writer lock.** Every holder of the host lock's open file description is a lock holder, so a
+shell, its subshells and a child it handed the lock to can each send a write at the same time. A
+write request (`begin`, `checkpoint`, `emit`, `list`) therefore also holds an exclusive flock
+on its own description of `private/`, from before it reads a journal or a counter until it exits.
+The generation check and the write behind it, a sequence and its event, and the removal of
+temporaries a crashed writer left are each one step that no other writer interleaves with. `begin` builds the operation's directory under a staging name and renames it into place.
 A write that cannot be made durable (a full disk among them) exits 7, so the caller stops before
 its next change. A writer whose `expected_generation` is not the journal's is stale and exits 9.
 Once a record is durable, the request succeeds: a history index that cannot be rewritten (or

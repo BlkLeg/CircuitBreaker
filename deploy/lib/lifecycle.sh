@@ -578,8 +578,11 @@ cb_lifecycle_lock_release() {
 
 # In a subshell that is about to exec something that must not hold the lock:
 # close the descriptor and drop the handoff variables. The event descriptor
-# goes too: a daemon left holding it would keep the coordinator reading the
-# operation's events until the daemon exits.
+# goes too, since an unlocked helper has no operation to emit for. Its stdout
+# and stderr stay as the caller left them: the coordinator stops reading the
+# step's output shortly after the step exits (packages/cli/src/events.js,
+# NATIVE_DRAIN_MS), so a daemon that keeps them loses what it writes later
+# and should be given its own log by the caller.
 _cb_lifecycle_drop_lock() {
   local fd
   if _cb_lifecycle_event_fd_valid; then
@@ -771,9 +774,15 @@ _cb_lifecycle_request() {
 # Run state utility request $1 (inspect, begin, checkpoint, emit or list) with
 # key=value members; its acknowledgement lines go to stdout and its exit code
 # is returned. Prefer cb_lifecycle_begin and cb_lifecycle_checkpoint for
-# writes: they bind the lock, track the generation and emit events.
+# writes: they bind the lock and track the generation.
+#
+# The utility writes a request's event to the event descriptor itself, once
+# the record is durable and while it still holds its writer lock, so that
+# every holder of the lock (this shell, a subshell, a child it handed the lock
+# to) puts its events on the descriptor in sequence order. It sees the
+# descriptor only when this library accepts it, and checks it again itself.
 cb_lifecycle_state() {
-  local request="${1:-}" json rc=0
+  local request="${1:-}" json events="" rc=0
   if [[ $# -gt 0 ]]; then
     shift
   fi
@@ -783,23 +792,26 @@ cb_lifecycle_state() {
   fi
   _cb_lifecycle_find_utility || return $?
   json="$(_cb_lifecycle_request "$request" "$@")" || return $?
-  "$_CB_LIFECYCLE_PYTHON" -I -B "$_CB_LC_UTILITY" <<<"$json" || rc=$?
+  if _cb_lifecycle_event_fd_valid; then
+    events="$CB_LIFECYCLE_EVENT_FD"
+  fi
+  CB_LIFECYCLE_EVENT_FD="$events" "$_CB_LIFECYCLE_PYTHON" -I -B "$_CB_LC_UTILITY" <<<"$json" || rc=$?
   return "$rc"
 }
 
-# Read an acknowledgement into _CB_LC_ACK_{OPERATION,GENERATION,EVENT}, each
-# line matched against its own shape; warnings go to stderr. Nothing in it is
-# ever evaluated.
+# Read an acknowledgement into _CB_LC_ACK_{OPERATION,GENERATION}, each line
+# matched against its own shape; warnings go to stderr. Nothing in it is ever
+# evaluated, and its `event` line is not emitted again: the utility has
+# written it to the descriptor already.
 _cb_lifecycle_read_ack() {
   local line key value
-  _CB_LC_ACK_OPERATION="" _CB_LC_ACK_GENERATION="" _CB_LC_ACK_EVENT=""
+  _CB_LC_ACK_OPERATION="" _CB_LC_ACK_GENERATION=""
   while IFS= read -r line; do
     key="${line%%=*}"
     value="${line#*=}"
     case "$key" in
       operation_id) if _cb_lifecycle_valid_operation "$value"; then _CB_LC_ACK_OPERATION="$value"; fi ;;
       generation) if [[ "$value" =~ ^[1-9][0-9]{0,15}$ ]]; then _CB_LC_ACK_GENERATION="$value"; fi ;;
-      event) if (( ${#value} <= 4096 )) && [[ "$value" == '{"'*'}' ]]; then _CB_LC_ACK_EVENT="$value"; fi ;;
       warning) printf 'lifecycle state: warning: %s\n' "$value" >&2 ;;
     esac
   done <<<"$1"
@@ -815,15 +827,6 @@ _cb_lifecycle_remember_generation() {
   export -n _CB_LIFECYCLE_GEN_OPERATION _CB_LIFECYCLE_GENERATION _CB_LIFECYCLE_GEN_UNSURE
 }
 
-# Write one event line to the descriptor the coordinator handed down
-# (CB_LIFECYCLE_EVENT_FD), and nowhere else. Events are presentation: a
-# closed or missing descriptor never fails the durable write behind it.
-_cb_lifecycle_emit_event() {
-  local line="$1" fd="${CB_LIFECYCLE_EVENT_FD:-}"
-  [[ -n "$line" ]] && _cb_lifecycle_event_fd_valid || return 0
-  ( trap '' PIPE; printf '%s\n' "$line" >&"$fd" ) 2>/dev/null || true
-}
-
 # Whether CB_LIFECYCLE_EVENT_FD names a descriptor events may go to: 3 or
 # above, not the lock, and a pipe, socket or file.
 _cb_lifecycle_event_fd_valid() {
@@ -837,8 +840,9 @@ _cb_lifecycle_event_fd_valid() {
 # bound to (ruling R15): key=value members type (phase, progress or
 # diagnostic) and that type's members, phase status [duration_ms], phase done
 # [total] unit, or level message [code]. The state utility spends the
-# operation's next sequence on it under the lock, so events and checkpoints
-# of nested native processes share one rising sequence. Without a valid
+# operation's next sequence on it and writes it to the descriptor under its
+# writer lock, so events and checkpoints of nested native processes share one
+# rising sequence and reach the descriptor in that order. Without a valid
 # CB_LIFECYCLE_EVENT_FD nothing is emitted and nothing is written. Events are
 # presentation: only a malformed event (2) is an error, and any other failure
 # to emit one returns 0 so it never stops the operation.
@@ -854,14 +858,12 @@ cb_lifecycle_emit() {
   if [[ "$rc" -eq "$CB_LIFECYCLE_EXIT_USAGE" ]]; then
     return "$rc"
   fi
-  [[ "$rc" -eq 0 ]] || return 0
-  _cb_lifecycle_read_ack "$out"
-  _cb_lifecycle_emit_event "$_CB_LC_ACK_EVENT"
+  return 0
 }
 
 # Start an operation under the lock this shell holds: the utility allocates
-# its ID and writes its first durable record, then the lock is bound to it
-# and its checkpoint event is emitted. Members are key=value: kind, action,
+# its ID, writes its first durable record and emits its checkpoint event, then
+# the lock is bound to it. Members are key=value: kind, action,
 # adapter, and optionally plan_digest, identity_digest, source_version,
 # source_artifact_digest, target_version, target_artifact_digest,
 # recovery_operation_id, recovery_manifest_digest and evidence_check,
@@ -887,14 +889,13 @@ cb_lifecycle_begin() {
   fi
   cb_lifecycle_lock_bind_operation "$_CB_LC_ACK_OPERATION" || return $?
   _cb_lifecycle_remember_generation "$_CB_LC_ACK_OPERATION" 1
-  _cb_lifecycle_emit_event "$_CB_LC_ACK_EVENT"
 }
 
 # Record the next durable checkpoint of the operation the lock is bound to:
 # key=value members state, and optionally step, cause, outcome, error_code
 # with error_reason, recovery_operation_id with recovery_manifest_digest, and
-# evidence_*. The checkpoint event is emitted only after the utility has made
-# the record durable.
+# evidence_*. The utility emits the checkpoint event only once the record is
+# durable.
 #
 # Under the held lock only this operation's own writers can move its journal:
 # this shell, a subshell of it, or a child it handed the lock to (cb update ->
@@ -938,7 +939,6 @@ cb_lifecycle_checkpoint() {
     return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
   fi
   _cb_lifecycle_remember_generation "$op" "$_CB_LC_ACK_GENERATION"
-  _cb_lifecycle_emit_event "$_CB_LC_ACK_EVENT"
 }
 
 # Install the control plane from bundle deploy directory $1 into $2 (default

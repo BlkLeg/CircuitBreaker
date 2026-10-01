@@ -13,6 +13,16 @@ CB_LIFECYCLE_LOCK_FD must hold the flock on private/lock, and the operation the
 lock is bound to must be the one the request names. A writer must also name the
 generation it last saw, so a stale writer is refused rather than overwriting.
 
+Every process that holds one open file description of the host lock (a
+subshell, a child it was handed to) is a lock holder, so several writers of
+one operation can run at once. Each write request therefore also holds an
+exclusive flock on private/ (the writer lock) from before it reads the
+journal until it exits: a sequence is never spent twice, a generation check
+and the write behind it are one step, and no writer removes another's
+temporary file. The events a request produces are written to the validated
+CB_LIFECYCLE_EVENT_FD by the utility itself, after the record is durable and
+under the writer lock, so they reach the coordinator in sequence order.
+
 Every record is validated against the versioned lifecycle contract before it
 is written. The contract's schemas are embedded verbatim below, so nothing is
 read from the release tree at run time; tests/build/test_lifecycle_journal.py
@@ -36,9 +46,11 @@ import hashlib
 import json
 import os
 import re
+import select
 import signal
 import stat
 import sys
+import time
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any, BinaryIO, NoReturn
@@ -1031,7 +1043,7 @@ def _write_failure(what: str, error: OSError) -> StateError:
 
 
 def _remove_leftovers(dir_fd: int, prefixes: Iterable[str]) -> None:
-    """Remove temporaries a crashed writer left; only a lock holder writes, so none is live."""
+    """Remove temporaries a crashed writer left; only the writer-lock holder writes, so none is live."""
     for name in os.listdir(dir_fd):
         if name.startswith(tuple(prefixes)):
             _unlink_quietly(dir_fd, name)
@@ -1310,6 +1322,56 @@ def _valid_or_usage(kind: str, document: Doc) -> None:
         raise StateError("USAGE", f"the record would break the lifecycle contract: {result['path']}: {result['reason']}")
 
 
+# --- The event descriptor (contract section 6): presentation only, never a reason to fail a write.
+
+# How long one event may wait for a non-blocking descriptor that is full.
+EVENT_WRITE_SECONDS = 10.0
+
+
+class EventSink:
+    """The descriptor events go to: CB_LIFECYCLE_EVENT_FD as this process inherited it, or none.
+
+    It is resolved before the utility opens anything, so a number that names
+    no inherited descriptor can never come to name one of the utility's own
+    files. It must be 3 or above, not the lock's descriptor, and a pipe, a
+    socket or a regular file, as lifecycle.sh's own check requires.
+    """
+
+    def __init__(self, fd: int | None) -> None:
+        self.fd = fd
+
+    @staticmethod
+    def inherited() -> EventSink:
+        """The validated descriptor named by CB_LIFECYCLE_EVENT_FD, or a sink that writes nothing."""
+        raw = os.environ.get("CB_LIFECYCLE_EVENT_FD", "")
+        if not re.fullmatch(r"[1-9][0-9]{0,4}", raw) or int(raw) < 3 or raw == os.environ.get("CB_LIFECYCLE_LOCK_FD"):
+            return EventSink(None)
+        try:
+            mode = os.fstat(int(raw)).st_mode
+        except OSError:
+            return EventSink(None)
+        usable = stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISREG(mode)
+        return EventSink(int(raw) if usable else None)
+
+    def write(self, line: str) -> None:
+        """Write one event line whole, or give up quietly: a closed or stalled reader never fails a durable write."""
+        if self.fd is None:
+            return
+        view = memoryview((line + "\n").encode("utf-8"))
+        deadline = time.monotonic() + EVENT_WRITE_SECONDS
+        try:
+            while view:
+                try:
+                    view = view[os.write(self.fd, view):]
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    select.select([], [self.fd], [], remaining)
+        except OSError:
+            self.fd = None
+
+
 def _checkpoint_event(journal: Doc) -> str:
     record = last(journal)
     event = {
@@ -1518,11 +1580,21 @@ def _warning_lines(warnings: Iterable[str]) -> list[str]:
 
 
 def _locked_tree() -> tuple[Tree, str]:
+    """The tree for a write: the host lock proven, then the writer lock held until the tree is closed.
+
+    The host lock admits every holder of its open file description at once (a
+    shell, its subshells, a child it handed the lock to), so a write request
+    also takes an exclusive flock on its own description of private/. Only
+    this utility takes it, for one bounded request, and closing the tree
+    releases it.
+    """
     tree = open_tree()
     if tree is None:
         raise StateError("USAGE", "a state write needs the host lifecycle lock held through CB_LIFECYCLE_LOCK_FD")
     try:
-        return tree, require_lock(tree)
+        bound = require_lock(tree)
+        fcntl.flock(tree.private, fcntl.LOCK_EX)
+        return tree, bound
     except BaseException:
         tree.close()
         raise
@@ -1538,7 +1610,7 @@ def _status(tree: Tree, journal: Doc) -> str:
     return "running" if alive and owner.get("operation") == journal["operation_id"] else "abandoned"
 
 
-def handle_inspect(request: Doc) -> list[str]:
+def handle_inspect(request: Doc, _events: EventSink) -> list[str]:
     """Report one operation's durable state; reads only, needs no lock."""
     op = request["operation_id"]
     tree = open_tree()
@@ -1576,8 +1648,8 @@ def _today_ids(names: Iterable[str], day: str) -> int:
     return highest
 
 
-def handle_begin(request: Doc) -> list[str]:
-    """Allocate an operation ID under the lock and write its first durable record."""
+def handle_begin(request: Doc, events: EventSink) -> list[str]:
+    """Allocate an operation ID under the lock, write its first durable record, then emit its checkpoint event."""
     kind = request["kind"]
     tree, bound = _locked_tree()
     try:
@@ -1641,6 +1713,7 @@ def handle_begin(request: Doc) -> list[str]:
         except OSError as error:
             _remove_staging(operations, staging)
             raise _write_failure(f"operation {op}", error) from None
+        events.write(event)
         records.append(Record(op, journal=journal))
         warnings += _index_quietly(tree, lambda: records)
         return _lines(operation_id=op, generation=1, sequence=1, state=LIFECYCLE["initial"][kind]) + _warning_lines(warnings) + [f"event={event}"]
@@ -1665,8 +1738,12 @@ def _index_quietly(tree: Tree, records: Callable[[], list[Record]]) -> list[str]
     return [f"history.json lists the first {len(current) - omitted} operations"] if omitted else []
 
 
-def handle_checkpoint(request: Doc) -> list[str]:
-    """Append (or, for a later step, replace) one durable record of the operation the lock is bound to."""
+def handle_checkpoint(request: Doc, events: EventSink) -> list[str]:
+    """Append (or, for a later step, replace) one durable record of the operation the lock is bound to.
+
+    The generation check, the sequence and the write all happen under the
+    writer lock, and the checkpoint event goes out once the record is durable.
+    """
     op = request["operation_id"]
     tree, bound = _locked_tree()
     try:
@@ -1698,6 +1775,7 @@ def handle_checkpoint(request: Doc) -> list[str]:
                 raise _write_failure(f"the {entry['state']} checkpoint of {op}", error) from None
         finally:
             os.close(op_fd)
+        events.write(event)
         warnings = _index_quietly(tree, lambda: [r if r.name != op else Record(op, journal=updated) for r in read_records(tree)])
         return _lines(operation_id=op, generation=updated["generation"], sequence=entry["sequence"],
                       state=entry["state"]) + _warning_lines(warnings) + [f"event={event}"]
@@ -1741,11 +1819,13 @@ def _next_journal(op_fd: int, journal: Doc, request: Doc) -> tuple[Doc, Doc]:
     return updated, entry
 
 
-def handle_emit(request: Doc) -> list[str]:
+def handle_emit(request: Doc, events: EventSink) -> list[str]:
     """Spend the next sequence of the operation the lock is bound to on one progress, phase or diagnostic event.
 
     Only the counter is written, by atomic replace; the journal and the index
-    are never touched, since an event is presentation and proves nothing.
+    are never touched, since an event is presentation and proves nothing. The
+    event is written while the writer lock is still held, so no other writer
+    of the operation can put a later sequence on the descriptor first.
     """
     op = request["operation_id"]
     tree, bound = _locked_tree()
@@ -1769,12 +1849,14 @@ def handle_emit(request: Doc) -> list[str]:
                 raise _write_failure(f"event sequence {event['sequence']} of {op}", error) from None
         finally:
             os.close(op_fd)
-        return _lines(operation_id=op, sequence=event["sequence"]) + [f"event={canonicalize(event)}"]
+        line = canonicalize(event)
+        events.write(line)
+        return _lines(operation_id=op, sequence=event["sequence"]) + [f"event={line}"]
     finally:
         tree.close()
 
 
-def handle_list(_: Doc) -> list[str]:
+def handle_list(_request: Doc, _events: EventSink) -> list[str]:
     """Persist abandoned operations, rewrite history.json and report what retention must keep."""
     tree, bound = _locked_tree()
     try:
@@ -1796,7 +1878,7 @@ def handle_list(_: Doc) -> list[str]:
         tree.close()
 
 
-HANDLERS: dict[str, Callable[[Doc], list[str]]] = {
+HANDLERS: dict[str, Callable[[Doc, EventSink], list[str]]] = {
     "inspect": handle_inspect,
     "begin": handle_begin,
     "checkpoint": handle_checkpoint,
@@ -1807,9 +1889,10 @@ HANDLERS: dict[str, Callable[[Doc], list[str]]] = {
 
 def run(stdin: BinaryIO, stdout: Callable[[str], object], stderr: Callable[[str], object]) -> int:
     """Serve one request; returns the lifecycle exit code."""
+    events = EventSink.inherited()
     try:
         request = read_request(stdin)
-        lines = HANDLERS[request["request"]](request)
+        lines = HANDLERS[request["request"]](request, events)
     except StateError as error:
         for line in error.lines:
             stdout(line + "\n")

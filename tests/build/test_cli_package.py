@@ -60,7 +60,10 @@ REQUIRED_PACKED = {
 # the event and result writers, the bounded descriptor decoder and the native
 # step runner), lifecycle-state.js (10.6 KB: history over the trusted index),
 # and main, install --plan, help and README growing the two machine streams.
-UNPACKED_SIZE_BUDGET = 163 * 1024
+# 168 KiB takes that task's review fixes (measured 170,126 B): the native step
+# runner's bounded drain after exit, and exitResult building a stopped step's
+# result from its journal instead of its status.
+UNPACKED_SIZE_BUDGET = 168 * 1024
 SHRINKWRAP_SIZE_BUDGET = 40 * 1024
 SHRINKWRAP = PKG / "npm-shrinkwrap.json"
 ENTRY_BUDGET = 40

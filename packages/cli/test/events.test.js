@@ -2,14 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod, readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  EVENT_LINE_MAX, createEventWriter, createEventDecoder, createResultWriter, runNativeStep,
+  EVENT_LINE_MAX, NATIVE_DRAIN_MS, createEventWriter, createEventDecoder, createResultWriter, runNativeStep,
 } from '../src/events.js';
 import { exitResult } from '../src/lifecycle-state.js';
-import { parseDocument, canonicalize } from '../src/lifecycle-contract.js';
+import { parseDocument, canonicalize, validateDocument } from '../src/lifecycle-contract.js';
 import { EXIT } from '../src/exit-codes.js';
 
 const OP = 'op-20261001-001';
@@ -233,6 +234,7 @@ for (const [label, ending, code, outcome] of [
   ['contention', 'process.exit(10);', EXIT.LOCKED, 'refused'],
   ['interruption', 'process.exit(130);', EXIT.INTERRUPTED, 'interrupted'],
   ['a SIGINT that killed it', "process.kill(process.pid, 'SIGINT'); await sleep(1000);", EXIT.INTERRUPTED, 'interrupted'],
+  ['a SIGTERM that killed it', "process.kill(process.pid, 'SIGTERM'); await sleep(1000);", 143, 'interrupted'],
 ]) {
   test(`--events=jsonl --json stay framed and parseable on ${label}`, async () => {
     const cliPath = await fakeNative(nativeBody(ending));
@@ -240,12 +242,13 @@ for (const [label, ending, code, outcome] of [
     const result = createResultWriter(deps.out);
     const exit = await runNativeStep({ cliPath, args: ['update'], deps, json: true });
     assert.equal(exit, code);
-    result.write(exitResult(exit, { action: 'update', currentVersion: '0.4.6', targetVersion: '0.4.7' }));
+    // The fake began no operation, which is what its native side would report.
+    result.write(exitResult(exit, { action: 'update', journal: null, currentVersion: '0.4.6', targetVersion: '0.4.7' }));
 
     // stdout: exactly one final document, valid, carrying no secret or escape.
     assert.equal(output.out.split('\n').length, 2, output.out);
     const final = parseDocument('result', output.out.trimEnd());
-    assert.equal(final.outcome, outcome, 'the result follows the exit status, never an event');
+    assert.equal(final.outcome, outcome, 'the result follows the status and the journal, never an event');
     assert.equal(final.error.code, outcome === 'refused' ? 'LOCKED' : 'INTERRUPTED');
     assert.equal(final.operation_id, null);
 
@@ -276,22 +279,134 @@ test('without event mode the descriptor is still drained and stdout keeps only t
   assert.doesNotMatch(output.err, /"schema_version"/, 'native events are not printed unframed');
 });
 
+// The step forks a process that outlives it holding stdout and stderr, and
+// the event descriptor too with CB_TEST_KEEP_FD3 (a daemon started through
+// cb_lifecycle_spawn_unlocked keeps its output; one started any other way
+// keeps everything), then exits 10 after one event and one line.
+const LINGERING = `
+  const { spawn } = require('node:child_process');
+  const fd = Number(process.env.CB_LIFECYCLE_EVENT_FD);
+  const stdio = ['ignore', 'inherit', 'inherit', process.env.CB_TEST_KEEP_FD3 ? 'inherit' : 'ignore'];
+  const daemon = spawn('sleep', ['30'], { stdio, detached: true });
+  fs.writeFileSync(process.env.CB_TEST_PIDFILE, String(daemon.pid));
+  daemon.unref();
+  fs.writeSync(fd, ${JSON.stringify(`${canonicalize(nativeEvent(1))}\n`)});
+  process.stdout.write('started the daemon\\n');
+  process.exit(10);
+`;
+
+for (const [eventMode, keepFd3, held] of [[true, false, 'stdout and stderr'], [false, true, 'every pipe']]) {
+  test(`a process the step leaves holding ${held} cannot hold the coordinator (${eventMode ? 'events' : 'plain'})`, async () => {
+    const cliPath = await fakeNative(LINGERING);
+    const pidFile = join(await mkdtemp(join(tmpdir(), 'cb-daemon-')), 'pid');
+    const { deps, output } = stepDeps(eventMode);
+    deps.env.CB_TEST_PIDFILE = pidFile;
+    if (keepFd3) deps.env.CB_TEST_KEEP_FD3 = '1';
+    const started = Date.now();
+    try {
+      const exit = await runNativeStep({ cliPath, args: [], deps, json: true });
+      assert.equal(exit, EXIT.LOCKED);
+      assert.ok(Date.now() - started < NATIVE_DRAIN_MS + 4000, `resolved after ${Date.now() - started} ms, not when the daemon exits`);
+      if (eventMode) {
+        const parsed = output.err.trimEnd().split('\n').map((line) => parseDocument('event', line));
+        assert.deepEqual(parsed.filter((e) => e.source === 'native').map((e) => e.sequence), [1], 'what it wrote before exiting is read');
+        assert.ok(parsed.some((e) => e.message === 'started the daemon'));
+      } else {
+        assert.match(output.err, /started the daemon/);
+      }
+    } finally {
+      process.kill(Number(await readFile(pidFile, 'utf8')), 'SIGKILL');
+    }
+  });
+}
+
 test('a native step that cannot be started rejects with the spawn error', async () => {
   const { deps } = stepDeps(true);
   await assert.rejects(runNativeStep({ cliPath: '/nonexistent/native-step', args: [], deps, json: true }), { code: 'ENOENT' });
 });
 
-test('exit results never claim what only the native result can', () => {
-  const context = { action: 'update', currentVersion: '0.4.6', targetVersion: '0.4.7' };
-  assert.deepEqual(exitResult(EXIT.LOCKED, context), {
+const JOURNALS = Object.fromEntries(
+  JSON.parse(readFileSync(new URL('./fixtures/lifecycle/valid.json', import.meta.url), 'utf8')).journal.map((c) => [c.name, c.document]),
+);
+// A fixture journal cut back to its first `count` records: an operation whose
+// process stopped there without closing it.
+function stoppedAt(count, { recovery } = {}) {
+  const journal = structuredClone(JOURNALS['committed update']);
+  journal.checkpoints = journal.checkpoints.slice(0, count);
+  if (recovery === null) journal.recovery = null;
+  assert.ok(validateDocument('journal', journal).ok, JSON.stringify(validateDocument('journal', journal)));
+  return journal;
+}
+const CONTEXT = { action: 'update', currentVersion: '0.4.6', targetVersion: '0.4.7' };
+const resultOf = (code, journal) => {
+  const result = exitResult(code, { ...CONTEXT, journal });
+  assert.ok(validateDocument('result', result).ok, JSON.stringify(validateDocument('result', result)));
+  return result;
+};
+
+test('without the journal or the native result no status is turned into a result', () => {
+  for (const code of [EXIT.OK, EXIT.USAGE, EXIT.PREFLIGHT, EXIT.RECOVERED, EXIT.MANUAL, EXIT.LOCKED, EXIT.INTERRUPTED, 137, 143]) {
+    assert.throws(() => exitResult(code, CONTEXT), /needs the native result or the operation's journal/, String(code));
+  }
+  for (const code of [EXIT.OK, EXIT.RECOVERED, EXIT.MANUAL, 1, 255]) {
+    assert.throws(() => exitResult(code, { ...CONTEXT, journal: null }), /native result/, String(code));
+  }
+});
+
+test('a step that began no operation is refused or interrupted, and nothing changed', () => {
+  assert.deepEqual(resultOf(EXIT.LOCKED, null), {
     schema_version: 1, action: 'update', outcome: 'refused', operation_id: null,
     current_version: '0.4.6', target_version: '0.4.7', recovery_available: false,
     error: { code: 'LOCKED', reason: 'another lifecycle operation holds the host lock; nothing was changed' },
   });
-  assert.equal(exitResult(EXIT.PREFLIGHT, context).error.code, 'PREFLIGHT');
-  for (const code of [EXIT.OK, EXIT.RECOVERED, EXIT.MANUAL, 1, 255]) {
-    assert.throws(() => exitResult(code, context), /native result/, String(code));
+  assert.equal(resultOf(EXIT.PREFLIGHT, null).error.code, 'PREFLIGHT');
+  for (const code of [EXIT.INTERRUPTED, 137, 143]) {
+    const result = resultOf(code, null);
+    assert.deepEqual([result.outcome, result.error.code, result.recovery_available], ['interrupted', 'INTERRUPTED', false], String(code));
   }
+});
+
+test('after the first mutation checkpoint an interruption is never reported as a plain one', () => {
+  // INT/TERM after mutation: the trap recorded recovery_required (cause interrupted) and exited 130.
+  const trapped = resultOf(EXIT.INTERRUPTED, JOURNALS['recovery required after Ctrl-C']);
+  assert.equal(trapped.outcome, 'recovery_required');
+  assert.equal(trapped.error.code, 'INTERRUPTED');
+  assert.equal(trapped.operation_id, JOURNALS['recovery required after Ctrl-C'].operation_id);
+  assert.equal(trapped.recovery_available, JOURNALS['recovery required after Ctrl-C'].recovery !== null);
+
+  // Killed (no trap ran), or stopped under errexit (2) mid-apply: unfinished, awaiting recovery.
+  for (const code of [137, 143, EXIT.USAGE, EXIT.LOCKED]) {
+    const result = resultOf(code, stoppedAt(5));
+    assert.deepEqual([result.outcome, result.error.code, result.recovery_available], ['interrupted', 'INTERRUPTED', true], String(code));
+    assert.match(result.error.reason, /unfinished and awaits recovery/);
+  }
+  const abandoned = resultOf(EXIT.INTERRUPTED, JOURNALS['killed during apply, still unfinished']);
+  assert.deepEqual([abandoned.outcome, abandoned.error.code], ['interrupted', 'INTERRUPTED']);
+  assert.match(abandoned.error.reason, /awaits recovery/);
+
+  // A helper that recorded its failure is reported as the journal records it.
+  const failed = resultOf(EXIT.USAGE, JOURNALS['legacy migrate failure']);
+  assert.deepEqual([failed.outcome, failed.error.code], ['recovery_required', 'MANUAL']);
+});
+
+test('before mutation a stopped step is interrupted or refused, as the journal and status agree', () => {
+  for (const code of [EXIT.INTERRUPTED, 143]) {
+    const result = resultOf(code, stoppedAt(2, { recovery: null }));
+    assert.deepEqual([result.outcome, result.error.code, result.recovery_available], ['interrupted', 'INTERRUPTED', false]);
+  }
+  const preflight = resultOf(EXIT.PREFLIGHT, stoppedAt(2, { recovery: null }));
+  assert.deepEqual([preflight.outcome, preflight.error.code], ['refused', 'PREFLIGHT']);
+  assert.deepEqual(resultOf(EXIT.INTERRUPTED, JOURNALS['interrupted before mutation']).outcome, 'interrupted');
+  const refused = resultOf(EXIT.TRUST, JOURNALS['refused before mutation']);
+  assert.deepEqual(refused.error, JOURNALS['refused before mutation'].checkpoints.at(-1).error);
+});
+
+test('a journal that closed in success, or one the contract refuses, needs the native result', () => {
+  for (const name of ['committed update', 'recovered', 'recovery attempts exhausted, closed by hand']) {
+    assert.throws(() => exitResult(EXIT.INTERRUPTED, { ...CONTEXT, journal: JOURNALS[name] }), /only the native result/, name);
+  }
+  const forged = { ...stoppedAt(5), checkpoints: [] };
+  assert.throws(() => exitResult(EXIT.INTERRUPTED, { ...CONTEXT, journal: forged }), /does not satisfy the lifecycle contract/);
 });
 
 test('a raw output line over the bound is framed once, cut, and the next line still arrives', async () => {

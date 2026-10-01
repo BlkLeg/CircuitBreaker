@@ -4,7 +4,7 @@ import { open as fsOpen } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EXIT } from './exit-codes.js';
 import { checkTrustedFile } from './trust.js';
-import { ContractError, SCHEMA_VERSION, parseDocument, redactText, validateDocument } from './lifecycle-contract.js';
+import { ContractError, LIFECYCLE, SCHEMA_VERSION, parseDocument, redactText, validateDocument } from './lifecycle-contract.js';
 import { createResultWriter, exitName, refuseWith } from './events.js';
 
 // What the coordinator may know of native lifecycle state without privilege:
@@ -199,26 +199,74 @@ export async function runHistory(args, deps) {
 
 const STOPPED = {
   [EXIT.LOCKED]: 'another lifecycle operation holds the host lock; nothing was changed',
-  [EXIT.INTERRUPTED]: "interrupted; run 'circuitbreaker history' to see what was recorded",
+  [EXIT.INTERRUPTED]: "interrupted before anything was changed; run 'circuitbreaker history' to see what was recorded",
 };
+const CLOSED_BY_SUCCESS = new Set(['committed', 'recovered', 'manual']);
 
-// The result for a native step that stopped without writing its own: a
-// refusal under the code it exited with, or an interruption. Success,
-// recovery (8) and manual intervention (9) are claims only the native
-// helper's own result can make, so they throw here.
-export function exitResult(code, { action, operationId = null, currentVersion = null, targetVersion = null, recoveryAvailable = false }) {
-  const name = exitName(code);
-  if (!name || [EXIT.OK, EXIT.RECOVERED, EXIT.MANUAL].includes(code)) {
-    throw new TypeError(`exit ${code} needs the native result; the status alone cannot say what happened`);
+// The highest status a fatal signal can leave (128 + the largest signal number).
+const SIGNAL_STATUS_MAX = 128 + 64;
+
+// The result for a native step that stopped without writing its own, built
+// from what the journal says rather than from the status alone: after the
+// first mutation checkpoint an interruption records recovery_required, and a
+// helper that failed under errexit or was killed leaves its operation
+// unfinished, and none of that shows in the status (contract §4, ruling R5).
+//
+// `journal` is the operation's journal as the native side reported it once
+// the step had stopped (the state utility's inspect), or null when the native
+// side reported that the step began no operation. It is required: without it
+// only the native result can say what happened, so this throws, as it does for
+// success, recovery (8) and manual intervention (9), for a journal the
+// contract refuses, and for a journal that closed in success.
+export function exitResult(code, { action, journal, currentVersion = null, targetVersion = null }) {
+  const killed = code > EXIT.INTERRUPTED && code <= SIGNAL_STATUS_MAX;
+  const name = killed ? 'INTERRUPTED' : exitName(code);
+  if (!name || [EXIT.OK, EXIT.RECOVERED, EXIT.MANUAL].includes(code) || journal === undefined) {
+    throw new TypeError(`exit ${code} needs the native result or the operation's journal; the status alone cannot say what happened`);
   }
-  return {
+  const interrupted = name === 'INTERRUPTED';
+  const members = (outcome, error, operation = null) => ({
     schema_version: 1,
     action,
-    outcome: code === EXIT.INTERRUPTED ? 'interrupted' : 'refused',
-    operation_id: operationId,
+    outcome,
+    operation_id: operation?.operation_id ?? null,
     current_version: currentVersion,
     target_version: targetVersion,
-    recovery_available: recoveryAvailable,
-    error: { code: name, reason: STOPPED[code] ?? `the native step stopped with exit ${code} (${name}) before writing a result` },
-  };
+    recovery_available: operation ? operation.recovery !== null : false,
+    error,
+  });
+  if (journal === null) {
+    const reason = killed
+      ? `the native step was killed (exit ${code}) before it began an operation; nothing was changed`
+      : STOPPED[code] ?? `the native step stopped with exit ${code} (${name}) before it began an operation`;
+    return members(interrupted ? 'interrupted' : 'refused', { code: name, reason });
+  }
+  const verdict = validateDocument('journal', journal);
+  if (!verdict.ok) throw new TypeError(`the journal does not satisfy the lifecycle contract (${verdict.path}: ${verdict.reason})`);
+  const last = journal.checkpoints.at(-1);
+  const where = `${journal.operation_id} (last recorded state: ${last.state})`;
+  if (CLOSED_BY_SUCCESS.has(last.outcome ?? last.state)) {
+    throw new TypeError(`exit ${code} contradicts ${where}, which closed as ${last.outcome}; only the native result can say what happened`);
+  }
+  // A closed failure before mutation, or an operation awaiting recovery: the journal's own record.
+  if (last.outcome === 'refused' || last.state === 'recovery_required') {
+    return members(last.outcome === 'refused' ? 'refused' : 'recovery_required', last.error, journal);
+  }
+  if (last.state === 'interrupted') {
+    const reason = last.error?.reason ?? (last.outcome === 'interrupted'
+      ? `${journal.operation_id} was interrupted before anything was changed`
+      : `${journal.operation_id} was interrupted after it began changing the host and awaits recovery`);
+    return members('interrupted', { code: 'INTERRUPTED', reason }, journal);
+  }
+  // Still in progress with its process gone: what inspect reports as interrupted.
+  if (LIFECYCLE.pre_mutation.includes(last.state)) {
+    const reason = interrupted
+      ? `${where} was interrupted before anything was changed`
+      : `the native step stopped with exit ${code} (${name}) at ${where} before anything was changed`;
+    return members(interrupted ? 'interrupted' : 'refused', { code: name, reason }, journal);
+  }
+  return members('interrupted', {
+    code: 'INTERRUPTED',
+    reason: `the native step stopped with exit ${code} at ${where} after it began changing the host, without closing it; the operation is unfinished and awaits recovery`,
+  }, journal);
 }

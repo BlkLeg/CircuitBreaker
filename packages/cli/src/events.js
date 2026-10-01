@@ -15,6 +15,7 @@ const MESSAGE_MAX = 900;
 // bytes are kept (a diagnostic keeps 900 code points of them).
 const OUTPUT_LINE_MAX = 4096;
 const NEWLINE = 0x0a;
+export const NATIVE_DRAIN_MS = 1000;
 
 function contractFailure(kind, value) {
   const verdict = validateDocument(kind, value);
@@ -191,10 +192,19 @@ const RELAYED = ['SIGTERM', 'SIGHUP'];
 // stdout belongs to the --json result. Resolves the child's exit status
 // (128 + signal when a signal ended it); never a result, which the caller
 // builds from the status or reads from the helper itself.
+//
+// The step is over when the child exits, not when every copy of its pipes is
+// closed: a process it left running (a daemon that kept stdout, or one
+// started without cb_lifecycle_spawn_unlocked that kept the descriptor too)
+// may hold them for as long as it lives. What the child wrote before it
+// exited is read for up to `drainMs` more (NATIVE_DRAIN_MS); then whatever is
+// still open is read and discarded without holding the coordinator, and
+// nothing more is relayed.
 export function runNativeStep({ cliPath, args, deps, json }) {
   const { events } = deps;
   const spawnImpl = deps.spawnImpl ?? nodeSpawn;
   const proc = deps.proc ?? process;
+  const drainMs = deps.drainMs ?? NATIVE_DRAIN_MS;
   return new Promise((resolve, reject) => {
     const child = spawnImpl(cliPath, args, {
       stdio: ['inherit', 'pipe', 'pipe', 'pipe'],
@@ -217,7 +227,13 @@ export function runNativeStep({ cliPath, args, deps, json }) {
         sinks.push([stream, { push: (bytes) => write(bytes.toString('utf8')) }]);
       }
     }
-    for (const [stream, sink] of sinks) stream.on('data', (chunk) => sink.push(chunk));
+    let settled = false;
+    const open = new Set();
+    for (const [stream, sink] of sinks) {
+      open.add(stream);
+      stream.on('data', (chunk) => { if (!settled) sink.push(chunk); });
+      stream.once('close', () => open.delete(stream));
+    }
     const ignore = () => {};
     const relay = (signal) => child.kill(signal);
     proc.on('SIGINT', ignore);
@@ -226,19 +242,37 @@ export function runNativeStep({ cliPath, args, deps, json }) {
       proc.off('SIGINT', ignore);
       for (const signal of RELAYED) proc.off(signal, relay);
     };
-    child.once('error', (error) => {
-      detach();
-      reject(error);
-    });
-    // 'close' comes after every pipe, the descriptor included, has closed.
-    child.once('close', (code, signal) => {
-      detach();
+    let status = null;
+    let timer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // A pipe some leftover process still holds is read to nowhere, and
+      // never keeps the coordinator alive.
+      for (const stream of open) stream.unref?.();
       decoder.end();
       for (const [framing, say] of framings) {
         const { bytes, dropped } = framing.rest();
         if (bytes.length > 0 && !dropped) say(bytes);
       }
-      resolve(code ?? 128 + (constants.signals[signal] ?? 0));
+      resolve(status);
+    };
+    child.once('error', (error) => {
+      if (status !== null || settled) return;
+      settled = true;
+      detach();
+      reject(error);
+    });
+    child.once('exit', (code, signal) => {
+      detach();
+      status = code ?? 128 + (constants.signals[signal] ?? 0);
+      timer = setTimeout(finish, drainMs);
+    });
+    // 'close' follows once every pipe, the descriptor included, has closed:
+    // nothing is left to read.
+    child.once('close', () => {
+      if (status !== null) finish();
     });
   });
 }
