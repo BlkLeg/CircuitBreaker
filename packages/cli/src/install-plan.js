@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { EXIT } from './exit-codes.js';
 import { fetchJson, fetchBytes, NetworkError } from './http.js';
-import { resolveTarget, debArch } from './release-resolve.js';
+import { resolveTarget, debArch, VERSION_ARG } from './release-resolve.js';
 import { stagingDir } from './staging.js';
 import { downloadAsset, discardAsset } from './release-download.js';
 import { verifyAttestation, sigstoreCacheDir } from './attestation.js';
@@ -13,8 +13,6 @@ import { loadIdentityFor } from './identity.js';
 
 const USAGE = 'usage: circuitbreaker install --plan [--version VERSION | --channel stable|candidate] [--local-bundle PATH] [--airgap] [--json]';
 
-// What --version may name: a release tag's version, never a path or query.
-const VERSION_ARG = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const LOCAL_NAME = /^circuit-breaker_(.+)_linux_(amd64|arm64)\.tar\.gz$/;
 // Same truthy spellings as install.sh's CB_AIRGAP.
 const AIRGAP_ON = /^(true|1|yes|on)$/i;
@@ -132,7 +130,10 @@ async function planLocal(localBundle, deps) {
   const sumsPath = await isFile(join(dir, 'SHA256SUMS')) ? join(dir, 'SHA256SUMS') : null;
   const sigPath = await isFile(join(dir, 'SHA256SUMS.sig')) ? join(dir, 'SHA256SUMS.sig') : null;
   const named = LOCAL_NAME.exec(basename(tarballPath));
-  const target = { version: named ? named[1] : '', explicitVersion: false, channel: null, arch: named ? named[2] : deps.arch ?? null };
+  const target = {
+    version: named ? named[1] : '', arch: named ? named[2] : deps.arch ?? null,
+    explicitVersion: false, requestedVersion: null, channel: null,
+  };
   return { origin: 'local', target, tarballPath, sumsPath, sigPath };
 }
 
@@ -179,7 +180,7 @@ function renderTarget(origin, target) {
 function renderSignature(signature, target) {
   if (signature.keyId) return `verified, key ${signature.keyId}`;
   if (signature.unsigned === 'pinned') return 'unsigned, accepted: the genuine v0.4.6 bundle (pinned hash)';
-  return `unsigned, accepted: v${target.version} was requested explicitly and predates release signing`;
+  return `unsigned, accepted: v${target.requestedVersion} was requested explicitly and predates release signing`;
 }
 
 const PROVENANCE_TEXT = {

@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { checkArchive } from '../src/archive-check.js';
+import { randomBytes } from 'node:crypto';
+import { archiveScanner, checkArchive } from '../src/archive-check.js';
 import { makeTarGz } from './helpers/tar.js';
 
 async function write(entries) {
@@ -227,4 +228,57 @@ test('refuses a GNU sparse (type S) entry', async () => {
   const r = await refused([{ name: 'sp', type: 'S', data: Buffer.from('x') }]);
   assert.equal(r.ok, false);
   assert.match(r.reason, /unsupported entry type/);
+});
+
+// Feeds the scan sink `bytes` in chunks of `size`, as a reader of one open
+// file would, stopping once it has a verdict.
+async function scanInChunks(bytes, size) {
+  const scan = archiveScanner();
+  for (let i = 0; i < bytes.length && !scan.settled; i += size) await scan.write(bytes.subarray(i, i + size));
+  return scan.end();
+}
+
+test('the scan sink gives the same verdict however the bytes are chunked, large writes included', async () => {
+  // Incompressible content, so the gzip is about as large as the blob.
+  const archive = (blobBytes) => makeTarGz([
+    { name: 'bin/', type: '5' },
+    { name: 'bin/blob', data: randomBytes(blobBytes) },
+    { name: 'bin/link', type: '2', linkname: 'blob' },
+  ]);
+  // Small, odd writes split the gzip and tar headers at every offset.
+  const small = archive(4096);
+  for (const size of [1, 7, 513]) {
+    assert.deepEqual(await scanInChunks(small, size), { ok: true, entries: 3, totalBytes: 4096 }, `chunks of ${size}`);
+  }
+  // Megabytes in one write fill the inflater, so the sink must wait for it to drain.
+  const large = archive(3 * 1024 * 1024);
+  for (const size of [65536, large.length]) {
+    assert.deepEqual(await scanInChunks(large, size), { ok: true, entries: 3, totalBytes: 3 * 1024 * 1024 }, `chunks of ${size}`);
+  }
+});
+
+test('the scan sink settles on its first refusal and ignores what is written after', async () => {
+  const scan = archiveScanner();
+  await scan.write(makeTarGz([{ name: '../escape', data: Buffer.from('x') }, { name: 'later', data: randomBytes(1024 * 1024) }]));
+  await scan.write(Buffer.from('not part of any archive'));
+  const verdict = await scan.end();
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /'\.\.' segment/);
+  assert.equal(scan.settled, true);
+});
+
+test('bytes that are not gzip settle the verdict, even while a large write waits on the inflater', async () => {
+  const scan = archiveScanner();
+  await scan.write(Buffer.alloc(1024 * 1024, 0x41));
+  await scan.write(Buffer.alloc(1024, 0x41));
+  const verdict = await scan.end();
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.reason, /not a valid gzip stream/);
+});
+
+test('an unreadable path is a refusal, not a throw', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cb-tar-'));
+  const r = await checkArchive(join(dir, 'missing.tar.gz'));
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /cannot read .*missing\.tar\.gz \(ENOENT\)/);
 });

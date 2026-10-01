@@ -428,6 +428,33 @@ test('--json reports an accepted unsigned older release as such', async () => {
   assert.deepEqual(h.attested, []);
 });
 
+test('an answer for an older unsigned release than the --version asked for is refused, not accepted as explicit', async () => {
+  // The answer for tags/v0.4.8 claims to be v0.4.3, without a signature.
+  const rel = release({ version: '0.4.3', signed: false });
+  const answer = await (await github(rel).fetchImpl(`${RELEASE_API}/tags/v0.4.3`)).json();
+  const gh = github(rel, { overrides: { [`${RELEASE_API}/tags/v0.4.8`]: () => Response.json(answer) } });
+  const h = await host({ fetchImpl: gh.fetchImpl, keys: rel.keys });
+  assert.equal(await run(['install', '--plan', '--json', '--version', '0.4.8'], h.deps), EXIT.TRUST, h.output.out);
+  const { error } = JSON.parse(h.output.out);
+  assert.equal(error.code, 'TRUST');
+  assert.match(error.reason, /asked for release v0\.4\.8 .*answered with v0\.4\.3/);
+  assert.doesNotMatch(h.output.err, /requested explicitly/);
+  assert.deepEqual(gh.calls, [`${RELEASE_API}/tags/v0.4.8`], 'nothing is downloaded for an answer that is not trusted');
+  await assert.rejects(stat(join(h.root, 'cache')), { code: 'ENOENT' }, 'nothing is staged');
+});
+
+test('a release tag that is not a version never names a staging path', async () => {
+  // Deep enough that even the unguarded paths would stay inside this test's root.
+  const rel = release({ version: '0.4.8/../../../../escaped' });
+  const gh = github(rel);
+  const h = await host({ fetchImpl: gh.fetchImpl, keys: rel.keys });
+  h.deps.env.XDG_CACHE_HOME = join(h.root, 'a', 'b', 'c', 'd', 'cache');
+  assert.equal(await run(['install', '--plan', '--channel', 'stable'], h.deps), EXIT.TRUST);
+  assert.match(h.output.err, /not a release version/);
+  assert.deepEqual(gh.calls, [`${RELEASE_API}?per_page=30`]);
+  assert.deepEqual(await readdir(h.root, { recursive: true }), [], 'no directory or file was created');
+});
+
 test('an existing install is reported, and the plan says an install would be an update', async () => {
   const rel = release();
   const h = await host({ fetchImpl: github(rel).fetchImpl, keys: rel.keys, identity: { version: '0.4.6' } });

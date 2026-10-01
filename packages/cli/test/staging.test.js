@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, stat, chmod, mkdir } from 'node:fs/promises';
+import { mkdtemp, stat, chmod, mkdir, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stagingDir } from '../src/staging.js';
@@ -16,6 +16,15 @@ test('falls back to ~/.cache', async () => {
   const home = await mkdtemp(join(tmpdir(), 'cb-home-'));
   const dir = await stagingDir({ env: {}, home, version: '0.4.7', arch: 'arm64', uid: process.getuid() });
   assert.equal(dir, join(home, '.cache', 'circuitbreaker', 'staging', '0.4.7-arm64'));
+});
+
+test('refuses a version or arch that would name anything but one directory under staging', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'cb-cache-'));
+  const cache = join(root, 'cache');
+  for (const [version, arch] of [['0.4.8/../../../../escaped', 'amd64'], ['..', 'amd64'], ['0.4.8', '../x'], ['', 'amd64'], ['0.4.8', '']]) {
+    await assert.rejects(stagingDir({ env: { XDG_CACHE_HOME: cache }, home: '/x', version, arch, uid: process.getuid() }), { code: 'PREFLIGHT' }, `${version} ${arch}`);
+  }
+  assert.deepEqual(await readdir(root), [], 'nothing was created, inside the cache or beside it');
 });
 
 test('refuses a group/world-accessible or foreign-owned staging directory', async () => {

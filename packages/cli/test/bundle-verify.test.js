@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign, createHash } from 'node:crypto';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifyBundle } from '../src/bundle-verify.js';
@@ -11,10 +11,13 @@ import { makeTarGz } from './helpers/tar.js';
 const NAME = 'circuit-breaker_0.4.7_linux_amd64.tar.gz';
 
 // SHA256SUMS lists `name`; the tarball is written as `fileName` (defaults to
-// `name`), so a renamed copy of a genuine bundle can be modelled.
+// `name`), so a renamed copy of a genuine bundle can be modelled. The target's
+// requestedVersion is what the operator passed (by default: the version, when
+// explicit), kept apart from the version GitHub answered with.
 async function fixture({
   signed = true, trusted = true, name = NAME, fileName = name, tamper = false, version = '0.4.7',
-  explicitVersion = false, entries = [{ name: 'bin/circuit-breaker', data: Buffer.from('x') }], sig,
+  explicitVersion = false, requestedVersion = explicitVersion ? version : null,
+  entries = [{ name: 'bin/circuit-breaker', data: Buffer.from('x') }], sig,
 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'cb-vb-'));
   const tarball = makeTarGz(entries);
@@ -30,10 +33,10 @@ async function fixture({
   if (tamper) await writeFile(join(dir, fileName), Buffer.concat([tarball, Buffer.from('x')]));
   const calls = [];
   return {
-    id, sha256, calls,
+    id, sha256, calls, dir, path: join(dir, fileName),
     args: (over = {}) => ({
       tarballPath: join(dir, fileName), sumsPath: join(dir, 'SHA256SUMS'), sigPath: signed ? join(dir, 'SHA256SUMS.sig') : null,
-      origin: 'download', target: { version, explicitVersion }, airgap: false,
+      origin: 'download', target: { version, explicitVersion, requestedVersion }, airgap: false,
       keys: parseTrustedKeys(`${id} ${raw.toString('base64')} 0.4.7 t`),
       attest: async (digest) => { calls.push(digest); return { ok: true }; },
       ...over,
@@ -112,6 +115,20 @@ test('unsigned is refused unless explicitly older and canonical', async () => {
   assert.equal((await verifyBundle(prerelease.args())).ok, false, 'non-canonical versions always need a signature');
 });
 
+test('the unsigned exemption follows the version the operator asked for, never the tag answered', async () => {
+  const older = { signed: false, version: '0.4.3', explicitVersion: true, name: 'circuit-breaker_0.4.3_linux_amd64.tar.gz' };
+  // The operator asked for v0.4.8 (signed from v0.4.7 on); the answer was v0.4.3.
+  const answeredOlder = await fixture({ ...older, requestedVersion: '0.4.8' });
+  const r = await verifyBundle(answeredOlder.args());
+  assert.equal(r.code, 'TRUST');
+  assert.match(r.reason, /publishes no SHA256SUMS\.sig/);
+  // A target that does not say what was asked for is never exempt.
+  const unstated = await fixture(older);
+  assert.equal((await verifyBundle(unstated.args({ target: { version: '0.4.3', explicitVersion: true } }))).ok, false);
+  const asked = await fixture(older);
+  assert.deepEqual((await verifyBundle(asked.args())).signature, { unsigned: 'explicit-older' });
+});
+
 test('a hash-mismatched bundle wearing a pinned v0.4.6 name is refused unsigned', async () => {
   const f = await fixture({ signed: false, version: '0.4.6', name: 'circuit-breaker_0.4.6_linux_amd64.tar.gz' });
   const r = await verifyBundle(f.args());
@@ -147,4 +164,36 @@ test('an unsafe archive fails after provenance, with the scan reason', async () 
   assert.equal(r.code, 'TRUST');
   assert.match(r.reason, /^unsafe bundle archive: .*'\.\.' segment/);
   assert.deepEqual(f.calls, [f.sha256]);
+});
+
+test('a signature that does not verify is refused before the tarball is read', async () => {
+  const f = await fixture({ trusted: false });
+  const r = await verifyBundle(f.args({ tarballPath: join(f.dir, 'missing', NAME) }));
+  assert.equal(r.code, 'TRUST');
+  assert.match(r.reason, /does not verify/);
+});
+
+// Replaces the file at `path` with `bytes` the way another writer of its
+// directory can: a new file renamed over it.
+async function replace(path, bytes) {
+  await writeFile(`${path}.swap`, bytes);
+  await rename(`${path}.swap`, path);
+}
+
+test('the sha256 and the archive verdict describe the same bytes, even if the path is replaced during provenance', async () => {
+  const f = await fixture();
+  const other = makeTarGz([{ name: 'bin/circuit-breaker', data: Buffer.from('x') }, { name: 'bin/extra', data: Buffer.from('y') }]);
+  const r = await verifyBundle(f.args({ attest: async () => { await replace(f.path, other); return { ok: true }; } }));
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.sha256, f.sha256);
+  assert.deepEqual(r.archive, { entries: 1, totalBytes: 1 }, 'the archive verdict is for the hashed bytes');
+  assert.notEqual(createHash('sha256').update(await readFile(f.path)).digest('hex'), f.sha256, 'the path now holds other bytes');
+});
+
+test('an unsafe signed bundle stays refused when a safe archive replaces it during provenance', async () => {
+  const f = await fixture({ entries: [{ name: '../escape', data: Buffer.from('x') }] });
+  const safe = makeTarGz([{ name: 'bin/circuit-breaker', data: Buffer.from('x') }]);
+  const r = await verifyBundle(f.args({ attest: async () => { await replace(f.path, safe); return { ok: true }; } }));
+  assert.equal(r.code, 'TRUST');
+  assert.match(r.reason, /^unsafe bundle archive: .*'\.\.' segment/);
 });

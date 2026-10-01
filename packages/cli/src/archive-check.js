@@ -85,135 +85,165 @@ function paxRecords(data) {
   return out;
 }
 
-// Streams the gzip and walks ustar/GNU/pax headers without extracting anything.
-export function checkArchive(path, limits = ARCHIVE_LIMITS) {
-  return new Promise((resolve) => {
-    let buffer = Buffer.alloc(0);
-    let skip = 0;
-    let collect = null; // { kind: 'L' | 'K' | 'x', remaining, chunks, pad }
-    let pending = {};
-    let entries = 0;
-    let totalBytes = 0;
-    let zeroBlocks = 0;
-    const symlinks = new Set();
-    const seen = []; // { name, segments } for every entry
-    const links = []; // { kind, name, segments, target }
-    let done = false;
-    const input = createReadStream(path);
-    const gunzip = createGunzip();
-    const finish = (result) => {
-      if (done) return;
-      done = true;
-      input.destroy();
-      gunzip.destroy();
-      resolve(result);
-    };
-    // Needs the whole entry set, so entry order cannot matter.
-    const crossCheck = () => {
-      for (const { name, segments } of seen) {
-        for (let i = 1; i < segments.length; i += 1) {
-          const prefix = segments.slice(0, i).join('/');
-          if (symlinks.has(prefix)) return `${name} is written through symlink ${prefix}`;
-        }
+// A sink for a .tar.gz's raw bytes that gunzips them and walks the ustar/GNU/pax
+// headers, extracting nothing; a caller can feed it the very chunks it hashes.
+// write(chunk) resolves when it can take more; end() resolves with the verdict.
+// Once `settled`, writes are ignored.
+export function archiveScanner(limits = ARCHIVE_LIMITS) {
+  let buffer = Buffer.alloc(0);
+  let skip = 0;
+  let collect = null; // { kind: 'L' | 'K' | 'x', remaining, chunks, pad }
+  let pending = {};
+  let entries = 0;
+  let totalBytes = 0;
+  let zeroBlocks = 0;
+  const symlinks = new Set();
+  const seen = []; // { name, segments } for every entry
+  const links = []; // { kind, name, segments, target }
+  let done = false;
+  let settle;
+  const verdict = new Promise((resolve) => { settle = resolve; });
+  const gunzip = createGunzip();
+  const finish = (result) => {
+    if (done) return;
+    done = true;
+    gunzip.destroy();
+    settle(result);
+  };
+  // Needs the whole entry set, so entry order cannot matter.
+  const crossCheck = () => {
+    for (const { name, segments } of seen) {
+      for (let i = 1; i < segments.length; i += 1) {
+        const prefix = segments.slice(0, i).join('/');
+        if (symlinks.has(prefix)) return `${name} is written through symlink ${prefix}`;
       }
-      for (const { kind, name, segments, target } of links) {
-        const problem = linkProblem(kind, name, segments, target, symlinks);
-        if (problem) return problem;
-      }
-      return null;
-    };
-    const fail = (reason) => finish({ ok: false, reason });
+    }
+    for (const { kind, name, segments, target } of links) {
+      const problem = linkProblem(kind, name, segments, target, symlinks);
+      if (problem) return problem;
+    }
+    return null;
+  };
+  const fail = (reason) => finish({ ok: false, reason });
 
-    gunzip.on('data', (chunk) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      while (!done) {
-        if (skip > 0) {
-          const n = Math.min(skip, buffer.length);
-          skip -= n;
-          buffer = buffer.subarray(n);
-          if (skip > 0) return;
-          continue;
-        }
-        if (collect) {
-          const n = Math.min(collect.remaining, buffer.length);
-          collect.chunks.push(buffer.subarray(0, n));
-          collect.remaining -= n;
-          buffer = buffer.subarray(n);
-          if (collect.remaining > 0) return;
-          const data = Buffer.concat(collect.chunks);
-          if (collect.kind === 'L') pending.path = field(data, 0, data.length);
-          else if (collect.kind === 'K') pending.linkpath = field(data, 0, data.length);
-          else {
-            const records = paxRecords(data);
-            if (!records) return fail('malformed pax extended header');
-            for (const key of Object.keys(records)) {
-              if (!PAX_KEYS.has(key)) return fail(`unsupported pax keyword ${key}`);
-            }
-            for (const key of ['path', 'linkpath', 'size']) if (key in records) pending[key] = records[key];
-          }
-          skip = collect.pad;
-          collect = null;
-          continue;
-        }
-        if (buffer.length < 512) return;
-        const header = buffer.subarray(0, 512);
-        buffer = buffer.subarray(512);
-        if (header.every((b) => b === 0)) {
-          zeroBlocks += 1;
-          if (zeroBlocks >= 2) {
-            const problem = crossCheck();
-            return problem ? fail(problem) : finish({ ok: true, entries, totalBytes });
-          }
-          continue;
-        }
-        zeroBlocks = 0;
-        if (!checksumOk(header)) return fail('corrupt tar header (checksum mismatch)');
-        const type = String.fromCharCode(header[156] || 48);
-        let size = number(header, 124, 12);
-        const pad = (512 - (size % 512)) % 512;
-        if (type === 'g') return fail('global pax headers are not supported');
-        if (type === 'L' || type === 'K' || type === 'x') {
-          if (size > 1024 * 1024) return fail('oversized extended header');
-          collect = { kind: type, remaining: size, chunks: [], pad };
-          continue;
-        }
-        if (pending.size !== undefined && !FILE_TYPES.has(type)) {
-          return fail(`pax size on non-file entry type '${type}' is not supported`);
-        }
-        if (pending.size !== undefined) {
-          if (!/^[0-9]+$/.test(pending.size)) return fail('malformed pax size');
-          size = Number(pending.size);
-        }
-        const prefix = field(header, 345, 155);
-        const name = pending.path ?? (prefix ? `${prefix}/${field(header, 0, 100)}` : field(header, 0, 100));
-        const linkname = pending.linkpath ?? field(header, 157, 100);
-        pending = {};
-        entries += 1;
-        if (entries > limits.maxEntries) return fail(`more than ${limits.maxEntries} entries`);
-        const split = splitName(name);
-        let problem = split.problem ?? null;
-        if (!problem && !FILE_TYPES.has(type) && !SKIP_TYPES.has(type) && type !== '1' && type !== '2') {
-          problem = `unsupported entry type '${type}' for ${name}`;
-        }
-        if (problem) return fail(problem);
-        const segments = split.segments;
-        const joined = segments.join('/');
-        seen.push({ name, segments });
-        if (type === '2') symlinks.add(joined);
-        if (type === '1' || type === '2') {
-          links.push({ kind: type === '2' ? 'symlink' : 'hardlink', name, segments, target: linkname });
-        }
-        const entryPad = (512 - (size % 512)) % 512;
-        if (FILE_TYPES.has(type)) {
-          totalBytes += size;
-          if (totalBytes > limits.maxTotalBytes) return fail(`more than ${limits.maxTotalBytes} bytes of content`);
-        }
-        skip = FILE_TYPES.has(type) ? size + entryPad : 0;
+  gunzip.on('data', (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    while (!done) {
+      if (skip > 0) {
+        const n = Math.min(skip, buffer.length);
+        skip -= n;
+        buffer = buffer.subarray(n);
+        if (skip > 0) return;
+        continue;
       }
-    });
-    gunzip.on('end', () => fail('archive ended before the end-of-archive marker'));
-    gunzip.on('error', (error) => fail(`not a valid gzip stream (${error.code ?? error.message})`));
-    input.on('error', (error) => fail(`cannot read ${path} (${error.code})`));
-    input.pipe(gunzip);
+      if (collect) {
+        const n = Math.min(collect.remaining, buffer.length);
+        collect.chunks.push(buffer.subarray(0, n));
+        collect.remaining -= n;
+        buffer = buffer.subarray(n);
+        if (collect.remaining > 0) return;
+        const data = Buffer.concat(collect.chunks);
+        if (collect.kind === 'L') pending.path = field(data, 0, data.length);
+        else if (collect.kind === 'K') pending.linkpath = field(data, 0, data.length);
+        else {
+          const records = paxRecords(data);
+          if (!records) return fail('malformed pax extended header');
+          for (const key of Object.keys(records)) {
+            if (!PAX_KEYS.has(key)) return fail(`unsupported pax keyword ${key}`);
+          }
+          for (const key of ['path', 'linkpath', 'size']) if (key in records) pending[key] = records[key];
+        }
+        skip = collect.pad;
+        collect = null;
+        continue;
+      }
+      if (buffer.length < 512) return;
+      const header = buffer.subarray(0, 512);
+      buffer = buffer.subarray(512);
+      if (header.every((b) => b === 0)) {
+        zeroBlocks += 1;
+        if (zeroBlocks >= 2) {
+          const problem = crossCheck();
+          return problem ? fail(problem) : finish({ ok: true, entries, totalBytes });
+        }
+        continue;
+      }
+      zeroBlocks = 0;
+      if (!checksumOk(header)) return fail('corrupt tar header (checksum mismatch)');
+      const type = String.fromCharCode(header[156] || 48);
+      let size = number(header, 124, 12);
+      const pad = (512 - (size % 512)) % 512;
+      if (type === 'g') return fail('global pax headers are not supported');
+      if (type === 'L' || type === 'K' || type === 'x') {
+        if (size > 1024 * 1024) return fail('oversized extended header');
+        collect = { kind: type, remaining: size, chunks: [], pad };
+        continue;
+      }
+      if (pending.size !== undefined && !FILE_TYPES.has(type)) {
+        return fail(`pax size on non-file entry type '${type}' is not supported`);
+      }
+      if (pending.size !== undefined) {
+        if (!/^[0-9]+$/.test(pending.size)) return fail('malformed pax size');
+        size = Number(pending.size);
+      }
+      const prefix = field(header, 345, 155);
+      const name = pending.path ?? (prefix ? `${prefix}/${field(header, 0, 100)}` : field(header, 0, 100));
+      const linkname = pending.linkpath ?? field(header, 157, 100);
+      pending = {};
+      entries += 1;
+      if (entries > limits.maxEntries) return fail(`more than ${limits.maxEntries} entries`);
+      const split = splitName(name);
+      let problem = split.problem ?? null;
+      if (!problem && !FILE_TYPES.has(type) && !SKIP_TYPES.has(type) && type !== '1' && type !== '2') {
+        problem = `unsupported entry type '${type}' for ${name}`;
+      }
+      if (problem) return fail(problem);
+      const segments = split.segments;
+      const joined = segments.join('/');
+      seen.push({ name, segments });
+      if (type === '2') symlinks.add(joined);
+      if (type === '1' || type === '2') {
+        links.push({ kind: type === '2' ? 'symlink' : 'hardlink', name, segments, target: linkname });
+      }
+      const entryPad = (512 - (size % 512)) % 512;
+      if (FILE_TYPES.has(type)) {
+        totalBytes += size;
+        if (totalBytes > limits.maxTotalBytes) return fail(`more than ${limits.maxTotalBytes} bytes of content`);
+      }
+      skip = FILE_TYPES.has(type) ? size + entryPad : 0;
+    }
   });
+  gunzip.on('end', () => fail('archive ended before the end-of-archive marker'));
+  gunzip.on('error', (error) => fail(`not a valid gzip stream (${error.code ?? error.message})`));
+  // A destroyed inflater takes no bytes and never drains; 'close' wakes a waiter.
+  return {
+    get settled() { return done; },
+    write(chunk) {
+      if (done || gunzip.destroyed || gunzip.write(chunk)) return Promise.resolve();
+      return new Promise((resolve) => {
+        const ready = () => { gunzip.off('drain', ready); gunzip.off('close', ready); resolve(); };
+        gunzip.on('drain', ready);
+        gunzip.on('close', ready);
+      });
+    },
+    end() {
+      if (!done && !gunzip.destroyed && !gunzip.writableEnded) gunzip.end();
+      return verdict;
+    },
+  };
+}
+
+// Streams the gzip at `path` through the scan. An unreadable file is a refusal.
+export async function checkArchive(path, limits = ARCHIVE_LIMITS) {
+  const scan = archiveScanner(limits);
+  try {
+    for await (const chunk of createReadStream(path)) {
+      if (scan.settled) break;
+      await scan.write(chunk);
+    }
+  } catch (error) {
+    scan.end();
+    return { ok: false, reason: `cannot read ${path} (${error.code})` };
+  }
+  return scan.end();
 }
