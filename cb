@@ -316,7 +316,7 @@ _load_install_identity() {
   CB_IDENTITY_LOADED=1
   local v
   v="$(_cb_json_get data_dir)"; [[ -n "$v" ]] && CB_DATA_DIR="$v"
-  v="$(_cb_json_get env_file)"; [[ -n "$v" ]] && { [[ "$CB_IDENTITY_MODE" == "package" ]] && CB_BINARY_ENV_FILE="$v"; }
+  v="$(_cb_json_get env_file)"; [[ -n "$v" ]] && CB_BINARY_ENV_FILE="$v"
   v="$(_cb_json_get container_name)"; [[ -n "$v" ]] && CB_CONTAINER="$v"
   v="$(_cb_json_get compose_file)"; [[ -n "$v" ]] && CB_COMPOSE_FILE="$v"
   v="$(_cb_json_get health_url)"; [[ -n "$v" ]] && CB_HEALTH_URL="$v"
@@ -1541,8 +1541,20 @@ cmd_update() {
 # operator asked for a backup; encrypting it for transport does not mean the
 # local copy should stop existing, and a flag that quietly replaced one artifact
 # with another the host cannot read would be a surprising way to lose a restore.
+# Resolve the native snapshot runtime from the installed layout, never PATH.
+_cb_snapshot_runtime() {
+  if [[ "$CB_MODE" == "native" ]]; then
+    CB_BINARY="${CB_NATIVE_BIN:-/opt/circuitbreaker/bin/circuit-breaker}"
+    CB_BINARY_ENV_FILE="${CB_BINARY_ENV_FILE:-/etc/circuitbreaker/.env}"
+    # The package default is initialized before the identity is read.
+    [[ "$CB_BINARY_ENV_FILE" != "/etc/circuit-breaker/circuit-breaker.env" ]] \
+      || CB_BINARY_ENV_FILE="/etc/circuitbreaker/.env"
+  fi
+}
+
 cmd_backup() {
   local backup_dir out recipient="" encrypted="" created
+  _cb_snapshot_runtime
   local -a created_dirs=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1604,7 +1616,7 @@ cmd_backup() {
       out="$backup_dir/$(basename "$out")"
       ;;
 
-    binary)
+    binary|native)
       _require_postgres_client
 
       local env_file="$CB_BINARY_ENV_FILE"
@@ -1672,6 +1684,7 @@ cmd_backup() {
 # operator who discovers that *after* the service is down has an outage instead
 # of a failed command.
 cmd_restore() {
+  _cb_snapshot_runtime
   local archive="" identity="" force="" assume_yes="" safety="1" arg
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1778,7 +1791,7 @@ cmd_restore() {
                    python -m app.cli snapshot verify "${CB_DATA_DIR}/tmp/cb-restore.tar.gz") \
         || _fail "This archive cannot be restored — see the reason above."
       ;;
-    binary)
+    binary|native)
       # No `python -m app.cli` on a packaged install; the frozen binary is the
       # whole of Python there, exactly as in cmd_config and cmd_backup.
       _require_binary "$CB_BINARY" \
@@ -1814,7 +1827,7 @@ cmd_restore() {
   # ── 4-8. Mode-specific restore ──────────────────────────────────────────
   case "$CB_MODE" in
     docker|compose) _restore_container "$archive" ;;
-    binary)         _restore_binary "$archive" ;;
+    binary|native)         _restore_binary "$archive" ;;
   esac
 
   # ── 9. Verify the result ────────────────────────────────────────────────
@@ -1984,11 +1997,16 @@ _restore_binary() {
   # cb has already verified the archive and taken the operator's confirmation;
   # restore.sh asks for its own. Answering it here keeps `cb restore --yes`
   # non-interactive instead of blocking on a prompt nobody is watching.
+  local unit="${CB_SERVICE_UNIT:-circuit-breaker.service}" owner="${CB_DB_OWNER:-circuitbreaker}"
+  if [[ "$CB_MODE" == "native" ]]; then
+    unit="circuitbreaker.target"
+    owner="breaker"
+  fi
   printf 'y\n' | \
     CB_ENV_FILE="$CB_BINARY_ENV_FILE" \
-    CB_SERVICE_UNIT="${CB_SERVICE_UNIT:-circuit-breaker.service}" \
+    CB_SERVICE_UNIT="$unit" \
     CB_DB_NAME="${CB_DB_NAME:-circuitbreaker}" \
-    CB_DB_OWNER="${CB_DB_OWNER:-circuitbreaker}" \
+    CB_DB_OWNER="$owner" \
     CB_DB_SUPERUSER="${CB_DB_SUPERUSER:-postgres}" \
     "$script" "$archive" \
     || _fail "Restore failed — see the output above."

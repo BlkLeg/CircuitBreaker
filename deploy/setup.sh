@@ -2389,7 +2389,9 @@ run_upgrade() {
   # Backup before upgrade (while services are still running)
   cb_step "Creating pre-upgrade backup"
   local backup_file="${CB_DATA_DIR}/backups/pre-upgrade-$(date +%Y%m%d-%H%M%S).sql"
-  if systemctl is-active circuitbreaker-pgbouncer &>/dev/null; then
+  # pg_dump itself proves connectivity; pool service state is not database health.
+  (
+    umask 077
     # stage1_bootstrap creates ${CB_DATA_DIR}/backups, and run_upgrade never calls it.
     # Upgrading an install that predates that directory made the redirection below fail
     # before pg_dump ever started, which is one of the ways this used to report a
@@ -2403,7 +2405,7 @@ run_upgrade() {
     # is what stage1_bootstrap:137 declares for this path; match it exactly.
     mkdir -p "${CB_DATA_DIR}/backups"
     chown breaker:breaker "${CB_DATA_DIR}/backups"
-    chmod 755 "${CB_DATA_DIR}/backups"
+    chmod 700 "${CB_DATA_DIR}/backups"
     # Port 5432 direct, not pgbouncer on 6432: pgbouncer runs pool_mode = transaction
     # (deploy/config/pgbouncer.ini) and pg_dump needs one session held open for the
     # whole dump, so the pool cannot serve it. 5432 is also what CB_DB_URL points at.
@@ -2416,6 +2418,7 @@ run_upgrade() {
       # Delete the stub first: a zero-byte file sitting alongside real dumps reads as
       # a usable backup months later, which is worse than having none at all.
       rm -f "$backup_file"
+      _CB_FAIL_STATUS=7
       cb_fail "Pre-upgrade backup failed — refusing to upgrade without one" \
               "Check: tail -50 ${LOG_FILE}. Take a verified backup with 'cb backup', then re-run the upgrade."
     fi
@@ -2443,9 +2446,7 @@ run_upgrade() {
     # itself from an unguarded raw echo landing mid-phase.
     declare -f cb_ui_teardown >/dev/null 2>&1 && cb_ui_teardown
     echo "    Roll back with: sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${backup_file}"
-  else
-    cb_warn "Database not running - skipping backup"
-  fi
+  ) || return 7
 
   cb_phase_end backup
 

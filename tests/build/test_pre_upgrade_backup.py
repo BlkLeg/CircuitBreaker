@@ -53,7 +53,7 @@ SETUP_SH = REPO_ROOT / "deploy" / "setup.sh"
 # outer `fi` that closes the "is pgbouncer up?" test. Anchored on two-space
 # indentation so the nested `fi` of the failure guard cannot end the match.
 BLOCK_RE = re.compile(
-    r'^  cb_step "Creating pre-upgrade backup"\n.*?^  fi$',
+    r'^  cb_step "Creating pre-upgrade backup"\n.*?^  \) \|\| return 7$',
     re.MULTILINE | re.DOTALL,
 )
 
@@ -277,51 +277,19 @@ def test_backups_directory_is_created_before_the_dump(tmp_path):
     assert run.dumps[0].read_text(encoding="utf-8").startswith("-- PostgreSQL")
 
 
-def test_pgbouncer_down_still_only_warns(tmp_path):
-    """Nothing to dump is a different situation from a dump that broke."""
+def test_pgbouncer_down_still_backs_up_reachable_database(tmp_path):
     run = run_backup(tmp_path, pgbouncer="inactive")
     assert run.returncode == 0, run.proc.stderr
-    assert "WARN|" in run.stdout
+    assert "OK|Backup saved:" in run.stdout
+    assert len(run.dumps) == 1
+    assert run.dumps[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_unavailable_database_with_pool_down_blocks_upgrade(tmp_path):
+    run = run_backup(tmp_path, pgbouncer="inactive", pg_dump="fail")
+    assert run.returncode == 7
+    assert not run.dumps
     assert "OK|Backup saved:" not in run.stdout
-
-
-def test_pgbouncer_is_named_only_by_the_liveness_probe_never_by_the_dump(tmp_path):
-    """The systemctl probe names pgbouncer only because it proves Postgres is up.
-
-    This used to assert `"circuitbreaker-pgbouncer" in block`, which the
-    `systemctl is-active` guard has satisfied since long before the fix -- it
-    passed against the defect it was written for and pinned nothing.
-
-    The real invariant is the other half of that sentence: pgbouncer is a
-    *liveness signal* here, not a connection target. pg_dump holds one session
-    open for the whole run and `deploy/config/pgbouncer.ini` sets
-    `pool_mode = transaction`, so a dump routed through the pool cannot
-    complete. `test_dump_targets_postgres_directly_not_the_transaction_pool`
-    watches the port at runtime; this watches the shape of the source, so a
-    reintroduction that reaches the pool by some other spelling -- a
-    `$PGBOUNCER_HOST`, a `--port "$POOL_PORT"` -- is caught even when the argv
-    it expands to is not the literal 6432 that test looks for.
-    """
-    probe = []
-    elsewhere = []
-    for line in _block().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        if "pgbouncer" not in stripped.lower() and "6432" not in stripped:
-            continue
-        (probe if "systemctl is-active" in stripped else elsewhere).append(stripped)
-
-    assert probe, (
-        "the backup block no longer probes pgbouncer at all, so nothing establishes "
-        f"that Postgres is up before the dump:\n{_block()}"
-    )
-    assert not elsewhere, (
-        "pgbouncer is reachable from the dump itself, not just from the liveness "
-        "probe. pool_mode = transaction cannot serve a pg_dump, which needs one "
-        "session held open for the whole run -- dump against 5432 direct:\n  "
-        + "\n  ".join(elsewhere)
-    )
 
 
 def test_the_saved_backup_names_the_command_that_restores_it(tmp_path):
@@ -351,11 +319,7 @@ def test_the_saved_backup_names_the_command_that_restores_it(tmp_path):
     )
 
 
-def test_no_rollback_command_is_printed_when_no_backup_was_taken(tmp_path):
-    """The pgbouncer-down branch writes no file; it must not advertise restoring one."""
-    run = run_backup(tmp_path, pgbouncer="inactive")
-    assert run.returncode == 0, run.proc.stderr
-    assert "restore.sh" not in run.stdout, (
-        "the upgrade skipped the backup and still told the operator how to restore "
-        f"the file it did not write:\n{run.stdout}"
-    )
+def test_no_rollback_command_is_printed_when_backup_fails(tmp_path):
+    run = run_backup(tmp_path, pgbouncer="inactive", pg_dump="fail")
+    assert run.returncode == 7
+    assert "restore.sh" not in run.stdout
