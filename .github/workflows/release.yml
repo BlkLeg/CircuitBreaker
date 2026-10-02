@@ -358,7 +358,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download per-architecture digests
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: image-digest-*
@@ -431,7 +431,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Download the candidate packages
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: packages-*
           merge-multiple: true
@@ -439,7 +439,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download image provenance
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: image-build-info-*
           merge-multiple: false
@@ -488,7 +488,7 @@ jobs:
         run: python3 scripts/release_checklist.py --version "${VERSION}"
 
       - name: Download all package artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: packages-*
           merge-multiple: true
