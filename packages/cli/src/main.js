@@ -9,6 +9,7 @@ import { checkTrustedFile } from './trust.js';
 import { forwardToNative, FORWARD_MARKER } from './bridge.js';
 import { renderHelp } from './help.js';
 import { runVersion } from './version.js';
+import { runUninstall } from './uninstall.js';
 import { runRollback } from './rollback.js';
 import { runLifecycle } from './lifecycle.js';
 import { runInstallPlan } from './install-plan.js';
@@ -102,6 +103,7 @@ async function dispatch(argv, deps) {
   if (command === 'version' || command === '--version') return runVersion(rest, deps);
   if (command === 'install' && rest.includes('--plan')) return runInstallPlan(rest, deps);
   if (command === 'install' || command === 'update') return runLifecycle(command, rest, deps);
+  if (command === 'uninstall') return runUninstall(rest, deps, forwardManagement);
   if (command === 'rollback') return runRollback(rest, deps);
   if (['downgrade', 'recover', 'cli'].includes(command)) return refuse(deps, EXIT.UNSUPPORTED, `${command} is deferred; inspect history, use rollback for the previous update, and update the npm tool with your package manager`);
   if (command === 'history') return runHistory(rest, deps);

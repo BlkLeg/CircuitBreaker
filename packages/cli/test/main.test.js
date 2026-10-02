@@ -66,15 +66,6 @@ test('unknown commands are usage errors', async () => {
   assert.match(output.err, /unknown command 'rm'/);
 });
 
-test('lifecycle commands are refused, not forwarded', async () => {
-  for (const name of ['uninstall']) {
-    const { deps, output } = await host({ identity: {} });
-    assert.equal(await run([name], deps), EXIT.UNSUPPORTED);
-    assert.match(output.err, new RegExp(`cb ${name}`));
-    await assert.rejects(readFile(deps.env.OUT, 'utf8'), { code: 'ENOENT' });
-  }
-});
-
 test('a forwarding loop is refused before anything else', async () => {
   const { deps, output } = await host({ identity: {} });
   deps.env.CIRCUITBREAKER_FORWARDED = '1';
