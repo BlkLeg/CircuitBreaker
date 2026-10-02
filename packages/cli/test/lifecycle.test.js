@@ -77,3 +77,16 @@ test('semantic ordering handles numeric versions and prereleases', () => {
   assert.equal(compareVersions('1.0.0-rc.2', '1.0.0'), -1);
   assert.equal(compareVersions('1.0.0', '1.0.0'), 0);
 });
+
+test('rollback cancellation never invokes the native adapter; explicit data consent is forwarded', async () => {
+  const f = await fixture({ installed: '0.4.8' });
+  f.deps.confirm = async () => false;
+  assert.equal(await run(['rollback', '--restore-data'], f.deps), 2);
+  assert.equal(f.io.steps.length, 0);
+  const script = join(f.dir, 'rollback.sh');
+  await writeFile(script, '#!/bin/bash\n');
+  f.deps.realpath = async (path) => path.endsWith('rollback-release.sh') ? script : realpath(path);
+  f.deps.nativeStep = async (step) => { f.io.steps.push(step); return { code: 0, result: { schema_version: 1, action: 'rollback', operation_id: 'op-20261002-001', outcome: 'committed', current_version: '0.4.7', target_version: '0.4.7', recovery_available: true } }; };
+  assert.equal(await run(['rollback', '--yes', '--restore-data', '--json'], f.deps), 0, f.io.err);
+  assert.ok(f.io.steps[0].args.includes('--restore-data'));
+});

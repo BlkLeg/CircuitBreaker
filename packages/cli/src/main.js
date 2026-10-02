@@ -9,6 +9,7 @@ import { checkTrustedFile } from './trust.js';
 import { forwardToNative, FORWARD_MARKER } from './bridge.js';
 import { renderHelp } from './help.js';
 import { runVersion } from './version.js';
+import { runRollback } from './rollback.js';
 import { runLifecycle } from './lifecycle.js';
 import { runInstallPlan } from './install-plan.js';
 import { runHistory } from './lifecycle-state.js';
@@ -101,6 +102,8 @@ async function dispatch(argv, deps) {
   if (command === 'version' || command === '--version') return runVersion(rest, deps);
   if (command === 'install' && rest.includes('--plan')) return runInstallPlan(rest, deps);
   if (command === 'install' || command === 'update') return runLifecycle(command, rest, deps);
+  if (command === 'rollback') return runRollback(rest, deps);
+  if (['downgrade', 'recover', 'cli'].includes(command)) return refuse(deps, EXIT.UNSUPPORTED, `${command} is deferred; inspect history, use rollback for the previous update, and update the npm tool with your package manager`);
   if (command === 'history') return runHistory(rest, deps);
   const native = findNativeCommand(command);
   if (!native) return refuse(deps, EXIT.USAGE, `unknown command '${command}'. Run 'circuitbreaker help'.`);
@@ -113,7 +116,7 @@ async function dispatch(argv, deps) {
 
 const EVENTS_FLAG = /^--events(?:=(.*))?$/su;
 // Commands this CLI answers itself; every other inventory command is forwarded.
-const OWN_COMMANDS = new Set(['help', '--help', '-h', 'version', '--version', 'install', 'update', 'history']);
+const OWN_COMMANDS = new Set(['help', '--help', '-h', 'version', '--version', 'install', 'update', 'rollback', 'history']);
 
 // The machine streams argv asks for (lifecycle contract §7), read before any
 // command runs so its usage and unexpected errors are framed too. A forwarded
@@ -138,7 +141,7 @@ function requestedStreams(argv) {
 // result, so a run that fails before the command answers still prints one.
 function resultMembers(command, argv) {
   if (command === 'install' && argv.includes('--plan')) return { schema_version: 1, action: command, plan: true };
-  if (command === 'install' || command === 'update') return { schema_version: 1, action: command, operation_id: null, current_version: null, target_version: null, recovery_available: false };
+  if (['install', 'update', 'rollback'].includes(command)) return { schema_version: 1, action: command, operation_id: null, current_version: null, target_version: null, recovery_available: false };
   if (command === 'history') return { schema_version: 1, action: 'history' };
   return null;
 }
