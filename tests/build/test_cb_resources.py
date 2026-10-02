@@ -669,14 +669,19 @@ def test_watch_json_lines_and_sigterm(tmp_path):
         text=True,
     )
     try:
-        import select
-
+        # Read the raw descriptor: select() on the text wrapper misses a second sample that the first
+        # readline() already buffered, and would then wait for nothing.
+        fd = process.stdout.fileno()
+        pending = b""
         lines = []
-        for _ in range(2):
-            assert select.select([process.stdout], [], [], 8)[0], (
-                "watch did not emit a sample"
-            )
-            lines.append(json.loads(process.stdout.readline()))
+        while len(lines) < 2:
+            while b"\n" not in pending:
+                assert select.select([fd], [], [], 8)[0], "watch did not emit a sample"
+                chunk = os.read(fd, 65536)
+                assert chunk, "watch exited before emitting two samples"
+                pending += chunk
+            sample, pending = pending.split(b"\n", 1)
+            lines.append(json.loads(sample))
         assert lines[1]["sampled_at"] > lines[0]["sampled_at"]
         assert lines[1]["totals"]["cpu_cores"]["value"] == pytest.approx(1, abs=0.05)
         process.terminate()

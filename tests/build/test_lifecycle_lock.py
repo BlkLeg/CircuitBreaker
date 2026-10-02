@@ -109,15 +109,24 @@ class Proc:
         self.p = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
         )
+        self._pending = b""
 
     def line(self, timeout: float = 15) -> str:
-        """Read the next stdout line, failing instead of hanging."""
+        """Read the next stdout line, failing instead of hanging.
+
+        Reads the raw descriptor into our own buffer: select() on the text wrapper misses lines that
+        an earlier readline() already pulled into Python's buffer, and would then wait for nothing.
+        """
         assert self.p.stdout is not None
-        ready, _, _ = select.select([self.p.stdout], [], [], timeout)
-        assert ready, "the process printed nothing"
-        text: str = self.p.stdout.readline()
-        assert text, f"the process exited first: rc={self.p.wait()} stderr={self.stderr()}"
-        return text.strip()
+        fd = self.p.stdout.fileno()
+        while b"\n" not in self._pending:
+            ready, _, _ = select.select([fd], [], [], timeout)
+            assert ready, "the process printed nothing"
+            chunk = os.read(fd, 65536)
+            assert chunk, f"the process exited first: rc={self.p.wait()} stderr={self.stderr()}"
+            self._pending += chunk
+        text, self._pending = self._pending.split(b"\n", 1)
+        return text.decode("utf-8", "replace").strip()
 
     def stderr(self) -> str:
         """Everything the process wrote to stderr; only valid once it has exited."""
