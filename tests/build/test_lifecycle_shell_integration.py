@@ -1106,32 +1106,57 @@ def _await(condition: object, what: str, seconds: float = 20.0) -> None:
     pytest.fail(f"timed out waiting for {what}")
 
 
+_SPAWNED: list[subprocess.Popen[str]] = []
+# Output _await_stdout read past its marker, keyed by pid, so _interrupt still reports it.
+_UNREPORTED: dict[int, str] = {}
+
+
+@pytest.fixture(autouse=True)
+def _reap_spawned() -> Iterator[None]:
+    """Kill any process a test spawned and left running, so a failure cannot leak into the next test."""
+    yield
+    while _SPAWNED:
+        proc = _SPAWNED.pop()
+        if proc.poll() is None:
+            proc.kill()
+        proc.communicate()
+        _UNREPORTED.pop(proc.pid, None)
+
+
 def _spawn(argv: list[str], env: dict[str, str], cwd: Path = ROOT) -> subprocess.Popen[str]:
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True,
         # A runner may start the suite with SIGINT ignored, and a shell cannot trap what it inherits ignored.
         preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),  # noqa: PLW1509
     )
+    _SPAWNED.append(proc)
+    return proc
 
 
 def _await_stdout(proc: subprocess.Popen[str], marker: str) -> str:
-    """Read the process's stdout until a line contains the marker."""
+    """Read the process's stdout until it contains the marker.
+
+    Reads the raw descriptor rather than the buffered text wrapper: a readline() can pull the marker
+    into Python's buffer, after which select() on the empty pipe would wait for data already read.
+    """
     assert proc.stdout is not None
+    fd = proc.stdout.fileno()
     seen = ""
     while marker not in seen:
-        ready, _, _ = select.select([proc.stdout], [], [], 20)
+        ready, _, _ = select.select([fd], [], [], 20)
         assert ready, f"never saw {marker!r}: {seen}"
-        line = proc.stdout.readline()
-        assert line, f"stdout closed before {marker!r}: {seen}{proc.stderr.read() if proc.stderr else ''}"
-        seen += line
+        chunk = os.read(fd, 65536)
+        assert chunk, f"stdout closed before {marker!r}: {seen}{proc.stderr.read() if proc.stderr else ''}"
+        seen += chunk.decode("utf-8", "replace")
+    _UNREPORTED[proc.pid] = _UNREPORTED.get(proc.pid, "") + seen
     return seen
 
 
 def _interrupt(proc: subprocess.Popen[str], sig: int) -> tuple[int, str]:
     proc.send_signal(sig)
     out, err = proc.communicate(timeout=30)
-    return proc.returncode, out + err
+    return proc.returncode, _UNREPORTED.pop(proc.pid, "") + out + err
 
 
 def _blocking_stub(env: dict[str, str], name: str, trigger: str) -> Path:
