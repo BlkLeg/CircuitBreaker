@@ -1127,6 +1127,7 @@ cb_lifecycle_checkpoint() {
     return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
   fi
   _cb_lifecycle_remember_generation "$op" "$_CB_LC_ACK_GENERATION"
+  if [[ " $* " == *" state=applying "* ]]; then cb_lifecycle_mark_mutation; fi
 }
 
 # INT and TERM at the lock boundary (Task 5b). An entrypoint arms this once,

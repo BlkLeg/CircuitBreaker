@@ -314,6 +314,7 @@ export async function runInstallPlan(args, given) {
     phases.complete();
     const lookup = await loadIdentityFor(deps);
     const server = lookup.status === 'found' ? { version: serverVersion(lookup.identity.version), mode: lookup.identity.mode } : null;
+    if (deps.onVerified) return await deps.onVerified(plan, result);
     if (json) deps.result.write(planJson(plan, result, server));
     else deps.out(renderPlan(plan, result, server));
     return EXIT.OK;

@@ -209,10 +209,10 @@ There are two kinds of operation:
 | staged | verified, interrupted | — |
 | verified | recovery_saved, applying, interrupted | — |
 | recovery_saved | applying, interrupted | — |
-| applying | checking, recovering, recovery_required, interrupted | committed, recovery_required, interrupted |
-| checking | committed, recovering, recovery_required, interrupted | — |
+| applying | checking, recovering, recovery_required, interrupted | checking, committed, recovering, recovery_required, interrupted |
+| checking | committed, recovering, recovery_required, interrupted | committed, recovering, recovery_required, interrupted |
 | committed | — | — |
-| recovering | recovered, recovery_required, interrupted | — |
+| recovering | recovered, recovery_required, interrupted | recovered, recovery_required, interrupted |
 | recovered | — | — |
 | recovery_required | recovering | — |
 | interrupted | recovering, recovery_required | — |
@@ -755,3 +755,7 @@ lacks it.
 more. The legacy records of §4, closing `committed` or `recovery_required` on every exit path, come
 with the interruption handling of Task 5b. Until then no entrypoint here writes an `applying`
 record it cannot close.
+
+Plan 05 amendment (2026-10-02): legacy native installers may record checking and
+one in-process recovery attempt. These records still carry no plan digest or
+full recovery manifest, and do not authorize later automated reconciliation.

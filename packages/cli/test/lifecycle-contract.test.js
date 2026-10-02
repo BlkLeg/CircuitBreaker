@@ -178,7 +178,7 @@ test('the transition table is the eleven states, closed, with the legacy subset'
   assert.ok(isTransition('legacy', 'applying', 'recovery_required'));
   assert.ok(!isTransition('transaction', 'committed', 'applying'));
   assert.ok(!isTransition('transaction', 'planned', 'applying'));
-  assert.ok(!isTransition('legacy', 'applying', 'checking'));
+  assert.ok(isTransition('legacy', 'applying', 'checking'));
   assert.ok(!isTransition('legacy', 'recovery_required', 'recovering'), 'legacy reconciliation belongs to 06');
   assert.ok(!isTransition('transaction', 'toString', 'staged'));
   assert.ok(!isTransition('saga', 'planned', 'staged'));

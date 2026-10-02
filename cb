@@ -1657,6 +1657,12 @@ cmd_backup() {
   chmod 600 "$out" 2>/dev/null || true
   _cb_hand_back ${created_dirs[@]+"${created_dirs[@]}"} "$out" ${encrypted:+"$encrypted"}
 
+  if [[ "$CB_MODE" == native ]]; then
+    "$CB_BINARY" --snapshot-verify "$out" >/dev/null \
+      || _fail "Snapshot verification failed — refusing to use this backup."
+  fi
+  # Private result descriptor used by the installer under the inherited lock.
+  if [[ -e /proc/self/fd/4 ]]; then printf '%s\n' "$out" >&4; fi
   _ok "Backup written to ${out}"
   echo -e "  ${GR}Contains the database, uploads, config and the vault key.${R}"
   echo -e "  ${Y}The vault key is stored in plaintext — this file is mode 0600, treat it as a secret.${R}"

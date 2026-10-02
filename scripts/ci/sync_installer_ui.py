@@ -61,6 +61,10 @@ _LIFECYCLE_BEGIN = (
 _LIFECYCLE_END = "# --- END INLINED deploy/lib/lifecycle.sh ---"
 
 BLOCKS: list[Block] = [
+    *[Block(REPO_ROOT / f"packaging/{name}.sh", REPO_ROOT / "deploy/lib/lifecycle.sh", _LIFECYCLE_BEGIN, _LIFECYCLE_END) for name in ("preinstall", "postinstall")],
+    Block(INSTALL_SH, REPO_ROOT / "deploy/lib/release-retention.sh",
+          "# --- BEGIN INLINED deploy/lib/release-retention.sh — regenerate with scripts/ci/sync_installer_ui.py ---",
+          "# --- END INLINED deploy/lib/release-retention.sh ---"),
     Block(INSTALL_SH, REPO_ROOT / "deploy" / "lib" / "ui.sh", _UI_BEGIN, _UI_END),
     Block(
         INSTALL_SH,
@@ -92,7 +96,7 @@ BLOCKS: list[Block] = [
 ]
 
 # Aliases for the first block, kept for anything that still uses the old names.
-UI_SH, BEGIN_MARKER, END_MARKER = BLOCKS[0].library, BLOCKS[0].begin, BLOCKS[0].end
+UI_SH, BEGIN_MARKER, END_MARKER = BLOCKS[1].library, BLOCKS[0].begin, BLOCKS[0].end
 
 
 def block_regex(begin: str, end: str) -> re.Pattern[str]:

@@ -1781,6 +1781,7 @@ cb_lifecycle_checkpoint() {
     return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
   fi
   _cb_lifecycle_remember_generation "$op" "$_CB_LC_ACK_GENERATION"
+  if [[ " $* " == *" state=applying "* ]]; then cb_lifecycle_mark_mutation; fi
 }
 
 # INT and TERM at the lock boundary (Task 5b). An entrypoint arms this once,
@@ -1876,6 +1877,91 @@ cb_lifecycle_install_control_plane() {
 }
 # --- END INLINED deploy/lib/lifecycle.sh ---
 
+# --- BEGIN INLINED deploy/lib/release-retention.sh — regenerate with scripts/ci/sync_installer_ui.py ---
+# shellcheck shell=bash
+# Native release retention. Caller holds the lifecycle lock through health.
+# Data recovery remains an explicit cb restore; no migration reversal is inferred.
+CB_PREVIOUS_RELEASE=/opt/circuitbreaker.previous
+_CB_RELEASE_MOVED=false
+_CB_RELEASE_BACKUP=""
+
+cb_release_stop_writers() {
+  local worker
+  for worker in discovery notification telemetry integration monitor_scheduler monitor_poll monitor_probe_dispatch; do
+    systemctl stop "circuitbreaker-worker@${worker}" || return 7
+  done
+  systemctl stop circuitbreaker-backend || return 7
+}
+
+cb_release_prepare() {
+  [[ "${UPGRADE_MODE:-false}" == true ]] || return 0
+  [[ -d /opt/circuitbreaker && ! -L /opt/circuitbreaker ]] || return 7
+  # Capture using the OLD builder and schema, before stage0 installs new files.
+  local reference
+  reference="$(mktemp)" || return 7
+  chmod 600 "$reference"
+  if ! /usr/local/bin/cb backup 4>"$reference"; then
+    rm -f -- "$reference"
+    echo 'Pre-update snapshot failed; release was not replaced.' >&2
+    return 7
+  fi
+  IFS= read -r _CB_RELEASE_BACKUP < "$reference" || true
+  rm -f -- "$reference"
+  [[ -n "$_CB_RELEASE_BACKUP" && -s "$_CB_RELEASE_BACKUP" ]] || return 7
+  printf 'Backup: %s\nRestore manually: sudo cb restore %q\n' "$_CB_RELEASE_BACKUP" "$_CB_RELEASE_BACKUP"
+  cb_release_stop_writers || return $?
+  if [[ -e "$CB_PREVIOUS_RELEASE" || -L "$CB_PREVIOUS_RELEASE" ]]; then
+    [[ -d "$CB_PREVIOUS_RELEASE" && ! -L "$CB_PREVIOUS_RELEASE" ]] || return 7
+    # Keep earlier recovery artifacts; never erase a sole recovery point.
+    local archived
+    archived="$(mktemp -d /opt/circuitbreaker.retained.XXXXXXXX)" || return 7
+    rmdir "$archived" || return 7
+    mv -T -- "$CB_PREVIOUS_RELEASE" "$archived" || return 7
+  fi
+  mv -T -- /opt/circuitbreaker "$CB_PREVIOUS_RELEASE" || return 7
+  _CB_RELEASE_MOVED=true
+  (umask 077; printf '%s\n' "$_CB_RELEASE_BACKUP" > "$CB_PREVIOUS_RELEASE/.cb-backup-reference") || return 7
+}
+
+cb_release_health() {
+  local expected="$1" attempt body
+  [[ "$expected" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 7
+  for ((attempt=0; attempt<60; attempt++)); do
+    if curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8000/api/v1/readyz >/dev/null; then
+      body="$(curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8000/api/v1/health)" || body=""
+      if printf '%s' "$body" | /usr/bin/python3 -I -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("version") == sys.argv[1] else 1)' "$expected"; then
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  echo "Readiness/version check failed for $expected." >&2
+  return 7
+}
+
+cb_release_revert_failed() {
+  [[ "$_CB_RELEASE_MOVED" == true ]] || return 0
+  # Retain the failed tree for diagnosis instead of deleting changed state.
+  cb_release_stop_writers || return 9
+  local failed
+  failed="$(mktemp -d /opt/circuitbreaker.failed.XXXXXXXX)" || return 9
+  rmdir "$failed" || return 9
+  if [[ -e /opt/circuitbreaker ]]; then
+    [[ ! -L /opt/circuitbreaker ]] || return 9
+    mv -T -- /opt/circuitbreaker "$failed" || return 9
+  fi
+  mv -T -- "$CB_PREVIOUS_RELEASE" /opt/circuitbreaker || return 9
+  _CB_RELEASE_MOVED=false
+  systemctl daemon-reload || return 9
+  systemctl restart circuitbreaker.target circuitbreaker-backend || return 9
+  printf 'Previous release restored. Database restoration is manual: sudo cb restore %q\n' "$_CB_RELEASE_BACKUP" >&2
+  local previous
+  previous="$(cat /opt/circuitbreaker/share/VERSION)" || return 9
+  cb_release_health "$previous" || return 9
+  return 8
+}
+# --- END INLINED deploy/lib/release-retention.sh ---
+
 # Take the lifecycle lock for this run, labelled $1, or stop with the
 # library's exit code (10 while another lifecycle operation holds it, 6 for a
 # permission failure, 7 when the state root cannot be prepared). Called before
@@ -1930,6 +2016,7 @@ case "$_cb_verbose_from_env" in
 esac
 unset _cb_verbose_from_env
 export CB_VERBOSE
+CB_NPM_RESULT=false
 UNATTENDED=false
 UPGRADE_MODE=false
 NO_TLS=false
@@ -2207,9 +2294,49 @@ _cb_note_err() {
   _CB_ERR_AT="${file:-install.sh}:${line} in ${func}(): ${text:-${command}} (exit ${status})"
 }
 
+# Final authoritative child result; progress events never grant mutation authority.
+cb_install_result() {
+  local status="$1" outcome=committed state=committed error_code="" current="${CB_EXPECTED_VERSION:-}" recovery=false
+  [[ -n "${CB_LIFECYCLE_OPERATION:-}" ]] || return 0
+  [[ -n "${_CB_RELEASE_BACKUP:-}" ]] && recovery=true
+  case "$status" in
+    0) cb_lifecycle_checkpoint state=committed outcome=committed || { status=9; outcome=recovery_required; } ;;
+    8) outcome=recovered; current="${CB_LIFECYCLE_SOURCE_VERSION:-}"; error_code=RECOVERED
+       cb_lifecycle_checkpoint state=recovered outcome=recovered error_code=RECOVERED "error_reason=previous release restored; data restore is manual" || { status=9; outcome=recovery_required; } ;;
+    *) outcome=recovery_required; current=""; error_code=MANUAL
+       cb_lifecycle_checkpoint state=recovery_required cause=apply_failed error_code=MANUAL "error_reason=installer stopped; inspect retained release and restore instructions" || true
+       cb_lifecycle_checkpoint state=recovery_required outcome=manual error_code=MANUAL "error_reason=installer stopped; inspect retained release and restore instructions" || true ;;
+  esac
+  if [[ "${CB_NPM_RESULT:-false}" == true ]]; then
+    /usr/bin/python3 -I -c 'import json,sys
+op,action,outcome,current,target,recovery,code=sys.argv[1:]
+r=dict(schema_version=1,operation_id=op,action=action,outcome=outcome,current_version=current or None,target_version=target or None,recovery_available=recovery=="true")
+if outcome != "committed": r["error"]=dict(code=code or "MANUAL",reason="Inspect history and the printed backup/restore instructions.")
+print("CIRCUITBREAKER_RESULT="+json.dumps(r))' "$CB_LIFECYCLE_OPERATION" "${CB_LIFECYCLE_ACTION:-install}" "$outcome" "$current" "${CB_EXPECTED_VERSION:-}" "$recovery" "$error_code"
+  fi
+  return 0
+}
+
 _cb_on_exit() {
   local status=$?
   trap - ERR
+  if [[ "$status" -eq 0 && -n "${CB_EXPECTED_VERSION:-}" ]]; then
+    cb_lifecycle_checkpoint state=checking || status=$?
+  fi
+  if [[ "$status" -eq 0 && -n "${CB_EXPECTED_VERSION:-}" ]]; then
+    cb_release_health "$CB_EXPECTED_VERSION" || status=$?
+  fi
+  if [[ "$status" -ne 0 && "${_CB_RELEASE_MOVED:-false}" == true ]]; then
+    local recovery_status=0
+    cb_lifecycle_checkpoint state=recovering || true
+    cb_release_revert_failed || recovery_status=$?
+    status="$recovery_status"
+    _CB_EXIT_REPORTED=true
+    cb_install_result "$status"
+    cb_ui_teardown
+    exit "$status"
+  fi
+  cb_install_result "$status"
   # Private download and extraction directory (see stage0_download_bundle).
   if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
     rm -rf -- "$CB_PRIVATE_TMP"
@@ -3397,6 +3524,10 @@ while [[ $# -gt 0 ]]; do
       DOCKER_MODE=true
       shift
       ;;
+    --npm-result)
+      CB_NPM_RESULT=true
+      shift
+      ;;
     --skip-checksum)
       SKIP_CHECKSUM=true
       shift
@@ -3513,6 +3644,21 @@ main() {
   cb_phase_begin bundle "Downloading bundle"
   stage0_download_bundle
   cb_phase_end bundle
+
+  local expected_version
+  expected_version="$(cat "${CB_BUNDLE_DIR}/share/VERSION")"
+  CB_EXPECTED_VERSION="$expected_version"
+  cb_lifecycle_install_control_plane "$CB_BUNDLE_DIR/deploy" || exit $?
+  local action=install source_version=""
+  if [[ "$UPGRADE_MODE" == true ]]; then
+    action=update
+    source_version="$(cat /opt/circuitbreaker/share/VERSION)"
+  fi
+  CB_LIFECYCLE_ACTION="$action"
+  CB_LIFECYCLE_SOURCE_VERSION="$source_version"
+  cb_lifecycle_begin kind=legacy "action=$action" adapter=native "source_version=$source_version" "target_version=$expected_version" || exit $?
+  cb_lifecycle_mark_mutation
+  cb_release_prepare || exit $?
 
   cb_phase_begin files "Installing files"
   cb_lifecycle_mark_mutation

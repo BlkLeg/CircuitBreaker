@@ -108,6 +108,9 @@ def test_blocks_lists_exactly_the_inlined_libraries() -> None:
         )
         for target, lib, _, _ in BLOCKS
     ] == [
+        ("packaging/preinstall.sh", "deploy/lib/lifecycle.sh"),
+        ("packaging/postinstall.sh", "deploy/lib/lifecycle.sh"),
+        ("install.sh", "deploy/lib/release-retention.sh"),
         ("install.sh", "deploy/lib/ui.sh"),
         ("install.sh", "deploy/lib/bundle-signature.sh"),
         ("cb-proxmox-deploy.sh", "deploy/lib/bundle-signature.sh"),

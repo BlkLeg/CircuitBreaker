@@ -9,6 +9,7 @@ import { checkTrustedFile } from './trust.js';
 import { forwardToNative, FORWARD_MARKER } from './bridge.js';
 import { renderHelp } from './help.js';
 import { runVersion } from './version.js';
+import { runLifecycle } from './lifecycle.js';
 import { runInstallPlan } from './install-plan.js';
 import { runHistory } from './lifecycle-state.js';
 import { createEventWriter, createResultWriter, exitName, refuseWith } from './events.js';
@@ -98,7 +99,8 @@ async function dispatch(argv, deps) {
     return EXIT.OK;
   }
   if (command === 'version' || command === '--version') return runVersion(rest, deps);
-  if (command === 'install') return runInstallPlan(rest, deps);
+  if (command === 'install' && rest.includes('--plan')) return runInstallPlan(rest, deps);
+  if (command === 'install' || command === 'update') return runLifecycle(command, rest, deps);
   if (command === 'history') return runHistory(rest, deps);
   const native = findNativeCommand(command);
   if (!native) return refuse(deps, EXIT.USAGE, `unknown command '${command}'. Run 'circuitbreaker help'.`);
@@ -111,7 +113,7 @@ async function dispatch(argv, deps) {
 
 const EVENTS_FLAG = /^--events(?:=(.*))?$/su;
 // Commands this CLI answers itself; every other inventory command is forwarded.
-const OWN_COMMANDS = new Set(['help', '--help', '-h', 'version', '--version', 'install', 'history']);
+const OWN_COMMANDS = new Set(['help', '--help', '-h', 'version', '--version', 'install', 'update', 'history']);
 
 // The machine streams argv asks for (lifecycle contract §7), read before any
 // command runs so its usage and unexpected errors are framed too. A forwarded
@@ -134,8 +136,9 @@ function requestedStreams(argv) {
 
 // The --json result members of the commands whose result is a lifecycle
 // result, so a run that fails before the command answers still prints one.
-function resultMembers(command) {
-  if (command === 'install') return { schema_version: 1, action: 'install', plan: true };
+function resultMembers(command, argv) {
+  if (command === 'install' && argv.includes('--plan')) return { schema_version: 1, action: command, plan: true };
+  if (command === 'install' || command === 'update') return { schema_version: 1, action: command, operation_id: null, current_version: null, target_version: null, recovery_available: false };
   if (command === 'history') return { schema_version: 1, action: 'history' };
   return null;
 }
@@ -149,7 +152,7 @@ export async function run(argv, deps = defaultDeps()) {
   const io = { ...deps, events, result: deps.result ?? createResultWriter(deps.out) };
   // In event mode nothing reaches stderr unframed, whatever a command writes.
   if (events) io.err = (text) => events.diagnostic(text);
-  const members = streams.json ? resultMembers(argv[0]) : null;
+  const members = streams.json ? resultMembers(argv[0], argv) : null;
   try {
     if (streams.invalid !== null) {
       return refuseWith(io, { prefix: 'circuitbreaker', code: EXIT.USAGE, reason: `--events takes jsonl, not '${streams.invalid}'`, result: members });

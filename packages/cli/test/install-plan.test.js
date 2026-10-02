@@ -101,9 +101,9 @@ function noNetwork() {
   return { calls, fetchImpl: async (url) => { calls.push(url); throw new Error(`air gap broken: ${url}`); } };
 }
 
-test('install without --plan is not in this build and names install --plan', async () => {
+test('install requires explicit --yes and names install --plan', async () => {
   const h = await host();
-  assert.equal(await run(['install'], h.deps), EXIT.UNSUPPORTED);
+  assert.equal(await run(['install'], h.deps), EXIT.USAGE);
   assert.match(h.output.err, /install --plan/);
   assert.equal(h.output.out, '');
 });

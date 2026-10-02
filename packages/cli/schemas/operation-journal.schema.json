@@ -28,7 +28,9 @@
         "interrupted": ["recovering", "recovery_required"]
       },
       "legacy": {
-        "applying": ["committed", "recovery_required", "interrupted"]
+        "applying": ["checking", "committed", "recovering", "recovery_required", "interrupted"],
+        "checking": ["committed", "recovering", "recovery_required", "interrupted"],
+        "recovering": ["recovered", "recovery_required", "interrupted"]
       }
     }
   },

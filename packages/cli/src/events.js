@@ -216,10 +216,21 @@ export function runNativeStep({ cliPath, args, deps, json }) {
       onReject: (reason) => events?.diagnostic(reason, { level: 'warning' }),
     });
     const sinks = [[child.stdio[3], decoder]];
+    let nativeResult = null;
+    let resultError = null;
     const framings = [];
     for (const [stream, level, write] of [[child.stdout, 'info', json ? deps.err : deps.out], [child.stderr, 'warning', deps.err]]) {
-      if (events) {
-        const say = (bytes) => events.diagnostic(bytes.toString('utf8'), { level });
+      if (events || (deps.captureResult && stream === child.stdout)) {
+        const say = (bytes) => {
+          const line = bytes.toString('utf8');
+          if (deps.captureResult && stream === child.stdout && line.startsWith('CIRCUITBREAKER_RESULT=')) {
+            try {
+              if (nativeResult) throw new TypeError('duplicate native result');
+              nativeResult = parseDocument('result', Buffer.from(line.slice('CIRCUITBREAKER_RESULT='.length)));
+            } catch (error) { resultError = error; }
+          } else if (events) events.diagnostic(line, { level });
+          else write(`${line}\n`);
+        };
         const framing = lineSplitter({ max: OUTPUT_LINE_MAX, onLine: say, onOverflow: say });
         framings.push([framing, say]);
         sinks.push([stream, framing]);
@@ -256,7 +267,8 @@ export function runNativeStep({ cliPath, args, deps, json }) {
         const { bytes, dropped } = framing.rest();
         if (bytes.length > 0 && !dropped) say(bytes);
       }
-      resolve(status);
+      if (resultError) reject(Object.assign(new Error(`invalid native result: ${resultError.message}; inspect history`), { code: EXIT.MANUAL }));
+      else resolve(deps.captureResult ? { code: status, result: nativeResult } : status);
     };
     child.once('error', (error) => {
       if (status !== null || settled) return;

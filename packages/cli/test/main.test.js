@@ -67,7 +67,7 @@ test('unknown commands are usage errors', async () => {
 });
 
 test('lifecycle commands are refused, not forwarded', async () => {
-  for (const name of ['update', 'uninstall']) {
+  for (const name of ['uninstall']) {
     const { deps, output } = await host({ identity: {} });
     assert.equal(await run([name], deps), EXIT.UNSUPPORTED);
     assert.match(output.err, new RegExp(`cb ${name}`));
@@ -261,7 +261,7 @@ test('with --events=jsonl every refusal main makes is a framed, redacted diagnos
   for (const [argv, code, echo] of [
     [['rm', '--events=jsonl', 'token=hunter2'], EXIT.USAGE, null],
     [['token=hunter2', '--events=jsonl'], EXIT.USAGE, 'hunter2'],
-    [['update', '--events', 'jsonl'], EXIT.UNSUPPORTED, null],
+    [['update', '--events', 'jsonl'], EXIT.USAGE, null],
     [['history', '--events=jsonl'], EXIT.USAGE, null],
     [['version', '--events=jsonl'], EXIT.USAGE, null],
   ]) {

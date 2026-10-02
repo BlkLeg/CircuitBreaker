@@ -570,11 +570,11 @@ def test_checkpoint_events_reach_only_the_event_descriptor_and_only_after_the_wr
     r = ok(sh(
         f'exec {{ev}}>"{events}"\nexport CB_LIFECYCLE_EVENT_FD=$ev\n'
         + ACQUIRE + LEGACY + 'echo "op=$CB_LIFECYCLE_OPERATION"\n'
-        "if cb_lifecycle_checkpoint state=checking; then echo accepted; else echo \"refused $?\"; fi\n"
+        "if cb_lifecycle_checkpoint state=verified; then echo accepted; else echo \"refused $?\"; fi\n"
         "cb_lifecycle_checkpoint state=committed outcome=committed\n"
         "cb_lifecycle_lock_release\n", state))
     op = op_from(r)
-    assert "refused 2" in r.stdout, "legacy applying -> checking is not a transition"
+    assert "refused 2" in r.stdout, "legacy applying -> verified is not a transition"
     lines = events.read_text().splitlines()
     parsed = [LS.parse_document("event", line.encode()) for line in lines]
     assert [(e["type"], e["source"], e["state"], e["generation"]) for e in parsed] == [
