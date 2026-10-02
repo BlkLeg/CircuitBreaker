@@ -139,7 +139,7 @@ test('an online plan resolves, stages and verifies, and writes only inside stagi
   assert.match(out, new RegExp(`\\nSignature  verified, key ${rel.keyId}\\n`));
   assert.match(out, /\nProvenance verified\n/);
   assert.match(out, /\nArchive    1 entry, 10 bytes unpacked; no unsafe paths or types\n/);
-  assert.equal(h.output.err, '');
+  assert.match(h.output.err, /✓ resolve.*\n✓ download.*\n✓ verify/);
   assert.deepEqual(h.attested, [rel.sha256]);
   for (const file of await filesUnder(h.root)) {
     assert.ok(!relative(h.staging('0.4.7'), file).startsWith('..'), `${file} was written outside staging`);
@@ -543,7 +543,7 @@ test('help lists install --plan under this CLI and says host-changing installs c
   const h = await host();
   assert.equal(await run(['help'], h.deps), EXIT.OK);
   assert.match(h.output.out, /This CLI:\n {2}install --plan +Resolve, download and verify a release; changes nothing \[--json\]\n/);
-  assert.match(h.output.out, /\nInstall, update and uninstall that change the host arrive in later builds; `install --plan` shows what an install would do\.\n/);
+  assert.match(h.output.out, /Review install\/update --plan before --yes/);
 });
 
 // --- Event mode (lifecycle contract §6-7, ruling R16).

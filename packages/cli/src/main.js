@@ -9,6 +9,7 @@ import { checkTrustedFile } from './trust.js';
 import { forwardToNative, FORWARD_MARKER } from './bridge.js';
 import { renderHelp } from './help.js';
 import { runVersion } from './version.js';
+import { createPhaseRenderer } from './render.js';
 import { runUninstall } from './uninstall.js';
 import { runRollback } from './rollback.js';
 import { runLifecycle } from './lifecycle.js';
@@ -44,7 +45,7 @@ export function defaultDeps() {
 // In event mode a refusal is a framed diagnostic carrying its code; otherwise
 // stderr reads as it always has.
 function refuse(deps, code, message) {
-  if (deps.events) deps.events.diagnostic(message, { code: exitName(code) });
+  if (deps.events && deps.events.machine !== false) deps.events.diagnostic(message, { code: exitName(code) });
   else deps.err(`circuitbreaker: ${message}\n`);
   return code;
 }
@@ -153,10 +154,11 @@ function resultMembers(command, argv) {
 // deps.err as JSON lines and the one result to deps.out.
 export async function run(argv, deps = defaultDeps()) {
   const streams = requestedStreams(argv);
-  const events = streams.events ? (deps.events ?? createEventWriter({ write: deps.err, now: deps.now ?? Date.now })) : null;
+  const events = streams.events ? (deps.events ?? createEventWriter({ write: deps.err, now: deps.now ?? Date.now })) :
+    (!streams.json && ['install', 'update', 'rollback'].includes(argv[0]) ? createPhaseRenderer({ write: deps.err, now: deps.now ?? Date.now, env: deps.env }) : null);
   const io = { ...deps, events, result: deps.result ?? createResultWriter(deps.out) };
   // In event mode nothing reaches stderr unframed, whatever a command writes.
-  if (events) io.err = (text) => events.diagnostic(text);
+  if (streams.events) io.err = (text) => events.diagnostic(text);
   const members = streams.json ? resultMembers(argv[0], argv) : null;
   try {
     if (streams.invalid !== null) {

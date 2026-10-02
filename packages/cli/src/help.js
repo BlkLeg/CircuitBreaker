@@ -2,6 +2,10 @@ import { NATIVE_COMMANDS } from './inventory.js';
 
 const OWN = [
   ['install --plan', 'Resolve, download and verify a release; changes nothing [--json]'],
+  ['install --yes', 'Install a verified release with native health checks'],
+  ['update', 'Update native install [--plan | --check | --yes]'],
+  ['rollback', 'Previous native update [--restore-data] [--yes]'],
+  ['uninstall', 'Native removal; keeps data by default [--purge [--yes]]'],
   ['history', 'Lifecycle operations recorded on this host; read-only [--json]'],
   ['version', 'CLI and server versions, install mode, compatibility [--json]'],
   ['help', 'Show this help'],
@@ -16,8 +20,8 @@ export function renderHelp(lookup) {
   for (const c of managed) text += row(c.name, c.summary);
   text += '\nThis CLI:\n';
   for (const [name, summary] of OWN) text += row(name, summary);
-  text += '\nInstall, update and uninstall that change the host arrive in later builds; `install --plan` shows what an install would do.\n';
-  text += 'Machine output: --json prints one final JSON result on stdout; install --plan --events=jsonl writes JSONL events, and nothing else, on stderr.\n\n';
+  text += '\nReview install/update --plan before --yes. Rollback can restore pre-update data with --restore-data. Downgrade and automated recover are deferred.\n';
+  text += 'Machine output: --json prints one final JSON result on stdout; install/update/rollback --events=jsonl write JSONL events, and nothing else, on stderr. Native management and uninstall output are forwarded unchanged.\n\n';
   text += `Identity: ${lookup.status === 'found' ? lookup.path : lookup.status}\n`;
   if (lookup.status === 'found') text += `Mode:     ${lookup.identity.mode}\n`;
   return `${text}\n`;

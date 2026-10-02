@@ -311,5 +311,5 @@ test('help lists history and says where each machine stream goes', async () => {
   const { deps, output } = await host({ identity: {} });
   assert.equal(await run(['help'], deps), EXIT.OK);
   assert.match(output.out, /\n {2}history +Lifecycle operations recorded on this host; read-only \[--json\]\n/);
-  assert.match(output.out, /\nMachine output: --json prints one final JSON result on stdout; install --plan --events=jsonl writes JSONL events, and nothing else, on stderr\.\n/);
+  assert.match(output.out, /\nMachine output: --json prints one final JSON result on stdout; install\/update\/rollback --events=jsonl write JSONL events, and nothing else, on stderr\. Native management and uninstall output are forwarded unchanged\.\n/);
 });

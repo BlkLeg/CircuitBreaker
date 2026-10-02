@@ -93,7 +93,7 @@ export function exitName(code) {
 // result members), the refused result follows unless one was printed already.
 export function refuseWith(deps, { prefix, code, reason, result = null }) {
   const text = redactText(reason);
-  if (deps.events) deps.events.diagnostic(text, { code: exitName(code) });
+  if (deps.events && deps.events.machine !== false) deps.events.diagnostic(text, { code: exitName(code) });
   else deps.err(`${prefix}: ${text}\n`);
   if (result && !deps.result.written) {
     deps.result.write({ ...result, outcome: 'refused', error: { code: exitName(code), reason: text } });
@@ -220,7 +220,7 @@ export function runNativeStep({ cliPath, args, deps, json }) {
     let resultError = null;
     const framings = [];
     for (const [stream, level, write] of [[child.stdout, 'info', json ? deps.err : deps.out], [child.stderr, 'warning', deps.err]]) {
-      if (events || (deps.captureResult && stream === child.stdout)) {
+      if ((events && events.machine !== false) || (deps.captureResult && stream === child.stdout)) {
         const say = (bytes) => {
           const line = bytes.toString('utf8');
           if (deps.captureResult && stream === child.stdout && line.startsWith('CIRCUITBREAKER_RESULT=')) {
@@ -228,7 +228,7 @@ export function runNativeStep({ cliPath, args, deps, json }) {
               if (nativeResult) throw new TypeError('duplicate native result');
               nativeResult = parseDocument('result', Buffer.from(line.slice('CIRCUITBREAKER_RESULT='.length)));
             } catch (error) { resultError = error; }
-          } else if (events) events.diagnostic(line, { level });
+          } else if (events && events.machine !== false) events.diagnostic(line, { level });
           else write(`${line}\n`);
         };
         const framing = lineSplitter({ max: OUTPUT_LINE_MAX, onLine: say, onOverflow: say });
