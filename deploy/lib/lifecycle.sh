@@ -1058,6 +1058,52 @@ cb_lifecycle_checkpoint() {
   _cb_lifecycle_remember_generation "$op" "$_CB_LC_ACK_GENERATION"
 }
 
+# INT and TERM at the lock boundary (Task 5b). An entrypoint arms this once,
+# right after it takes the lock, and marks its first change of the host:
+#
+#   cb_lifecycle_arm_interrupt          # installs the INT and TERM traps
+#   cb_lifecycle_mark_mutation          # the next change is the first one
+#
+# A signal that arrives first has changed nothing: the trap exits 130 (INT) or
+# 143 (TERM), which runs the entrypoint's own EXIT trap (its staging cleanup)
+# and closes the lock descriptor with the process. One that arrives after the
+# mark prints that the operation was interrupted after changes began and
+# exits the same way, leaving the host for `cb doctor` to inspect. Either way
+# an orchestrated operation (CB_LIFECYCLE_OPERATION) records the interruption
+# as the contract's section 4 defines it: `interrupted`, closed with outcome
+# interrupted, before the mark; `recovery_required` with cause interrupted
+# after it. Bash runs a trap only once its foreground command has finished, so
+# a child still mutating is waited for and the lock stays held until it exits;
+# `wait` covers background children. The trap string ends in `exit`, which the
+# library's functions never do. Arming again, as a nested acquire does, keeps
+# the mark. Only INT and TERM reach it, so no other
+# failure's status changes, and an existing ERR or EXIT trap is left alone.
+cb_lifecycle_arm_interrupt() {
+  _CB_LIFECYCLE_MUTATED="${_CB_LIFECYCLE_MUTATED-}"
+  trap 'cb_lifecycle_interrupted INT; exit 130' INT
+  trap 'cb_lifecycle_interrupted TERM; exit 143' TERM
+}
+
+cb_lifecycle_mark_mutation() {
+  _CB_LIFECYCLE_MUTATED=1
+}
+
+# The body of the traps above, for signal name $1. Always returns 0.
+cb_lifecycle_interrupted() {
+  trap '' INT TERM
+  wait 2>/dev/null || true
+  if [[ -n "${_CB_LIFECYCLE_MUTATED:-}" ]]; then
+    printf '%s\n' "Interrupted by $1 after changes began. Run 'cb doctor' (or re-run the command) to inspect what was changed." >&2
+    if _cb_lifecycle_valid_operation "${CB_LIFECYCLE_OPERATION:-}"; then
+      cb_lifecycle_checkpoint state=recovery_required cause=interrupted error_code=INTERRUPTED \
+        "error_reason=interrupted by $1 after changes began" || true
+    fi
+  elif _cb_lifecycle_valid_operation "${CB_LIFECYCLE_OPERATION:-}"; then
+    cb_lifecycle_checkpoint state=interrupted cause=interrupted outcome=interrupted || true
+  fi
+  return 0
+}
+
 # Install the control plane from bundle deploy directory $1 into $2 (default
 # /usr/local/lib/circuitbreaker): this library, the state utility and the
 # release trust material (bundle-signature.sh, which embeds the release

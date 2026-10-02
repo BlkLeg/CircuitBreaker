@@ -152,6 +152,7 @@ EOF
 
 
 stage1_bootstrap() {
+  cb_lifecycle_mark_mutation
   cb_section "User & Directory Setup"
 
   # Create breaker user
@@ -514,6 +515,8 @@ cb_setup_take_lifecycle_lock() {
     _CB_EXIT_REPORTED=true
     exit "$rc"
   fi
+  # Arming again under install.sh keeps its mark; on its own this is the first arm.
+  cb_lifecycle_arm_interrupt
 }
 
 stage0_preflight() {
@@ -2367,6 +2370,7 @@ stage2_dependencies() {
 
 run_upgrade() {
   cb_setup_take_lifecycle_lock
+  cb_lifecycle_mark_mutation
   cb_phase_begin upgrade_check "Pre-flight checks"
 
   cb_header

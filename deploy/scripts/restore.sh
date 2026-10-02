@@ -145,6 +145,9 @@ if [[ "$_cb_lock_rc" -ne 0 ]]; then
     echo "       Nothing has been changed." >&2
     exit "$_cb_lock_rc"
 fi
+# INT/TERM before step 8 changes nothing: the EXIT trap below removes the scratch
+# directory. From step 8 on the host is changing, and the trap says so.
+cb_lifecycle_arm_interrupt
 
 # ── 2. Validate required tools ─────────────────────────────────────────────
 
@@ -608,6 +611,7 @@ fi
 # is the database being dropped out from under a service that never stopped, and the
 # only clue is a line of output nobody is reading. Nothing has been destroyed yet, so a
 # stop that did not happen is a refusal.
+cb_lifecycle_mark_mutation
 echo "==> Stopping ${CB_SERVICE_UNIT}..."
 if ! systemctl cat "$CB_SERVICE_UNIT" >/dev/null 2>&1; then
     echo "ERROR: systemd unit '${CB_SERVICE_UNIT}' does not exist on this host." >&2

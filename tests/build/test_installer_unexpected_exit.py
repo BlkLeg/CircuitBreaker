@@ -53,6 +53,8 @@ LOG_FILE="$1"
 echo "MARKER_LOG_CONTENT" >> "$LOG_FILE"
 
 source "{ui}"
+# The INT/TERM traps call into the lifecycle library, which install.sh inlines.
+source "{lifecycle}"
 cb_ui_init
 
 CB_STAGE_HINTS=()
@@ -82,7 +84,7 @@ def _run(tmp_path: Path, stage_function: str) -> subprocess.CompletedProcess[str
     stage = tmp_path / "setup.sh"
     stage.write_text(_STAGE.format(), encoding="utf-8")
     script = tmp_path / "drive.sh"
-    script.write_text(_HARNESS.format(ui=UI, hooks=hooks, stage=stage), encoding="utf-8")
+    script.write_text(_HARNESS.format(ui=UI, lifecycle=UI.parent / "lifecycle.sh", hooks=hooks, stage=stage), encoding="utf-8")
     return subprocess.run(
         ["bash", str(script), str(tmp_path / "install.log"), stage_function],
         capture_output=True,

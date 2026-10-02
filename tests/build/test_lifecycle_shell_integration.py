@@ -1026,3 +1026,247 @@ def test_as_root_every_case_runs_unprivileged() -> None:
     reasons = re.findall(r"^SKIPPED \[\d+\] \S+: (.*)$", r.stdout, re.MULTILINE)
     allowed = ("needs root to drop privileges", "this host has an installed lifecycle library")
     assert all(reason.startswith(allowed) for reason in reasons), reasons
+
+
+# --- INT/TERM at the lock boundary (sub-plan 03 Task 5b) ----------------------------------
+
+INTERRUPTED_AFTER = "after changes began"
+_JOURNAL = _load("lifecycle_journal_for_signals", ROOT / "tests" / "build" / "test_lifecycle_journal.py")
+
+
+def _await(condition: object, what: str, seconds: float = 20.0) -> None:
+    """Poll a zero-argument predicate until it holds."""
+    assert callable(condition)
+    for _ in range(int(seconds / 0.05)):
+        if condition():
+            return
+        select.select([], [], [], 0.05)
+    pytest.fail(f"timed out waiting for {what}")
+
+
+def _spawn(argv: list[str], env: dict[str, str], cwd: Path = ROOT) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True,
+        # A runner may start the suite with SIGINT ignored, and a shell cannot trap what it inherits ignored.
+        preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),  # noqa: PLW1509
+    )
+
+
+def _await_stdout(proc: subprocess.Popen[str], marker: str) -> str:
+    """Read the process's stdout until a line contains the marker."""
+    assert proc.stdout is not None
+    seen = ""
+    while marker not in seen:
+        ready, _, _ = select.select([proc.stdout], [], [], 20)
+        assert ready, f"never saw {marker!r}: {seen}"
+        line = proc.stdout.readline()
+        assert line, f"stdout closed before {marker!r}: {seen}{proc.stderr.read() if proc.stderr else ''}"
+        seen += line
+    return seen
+
+
+def _interrupt(proc: subprocess.Popen[str], sig: int) -> tuple[int, str]:
+    proc.send_signal(sig)
+    out, err = proc.communicate(timeout=30)
+    return proc.returncode, out + err
+
+
+def _blocking_stub(env: dict[str, str], name: str, trigger: str) -> Path:
+    """A stub that, run as `name trigger`, announces itself and blocks while the block file exists."""
+    block = Path(env["CB_TEST_LOG"]).parent / f"{name}.block"
+    block.write_text("")
+    path = Path(env["PATH"].split(os.pathsep)[0]) / name
+    path.write_text(
+        "#!/bin/sh\n"
+        f'echo "{name} $*" >> "$CB_TEST_LOG"\n'
+        f'if [ "$1" = "{trigger}" ] || [ "{trigger}" = "*" ]; then\n'
+        f'  touch "{block}.ready"\n'
+        f'  while [ -e "{block}" ]; do sleep 0.05; done\n'
+        "fi\nexit 0\n"
+    )
+    path.chmod(0o755)
+    return block
+
+
+@seam
+def test_restore_sh_interrupted_before_mutation_exits_130_cleans_staging_and_frees_the_lock(
+    tmp_path: Path,
+) -> None:
+    env = {k: v for k, v in _matrix._harness(tmp_path).items() if k != "CB_ASSUME_YES"}
+    proc = _spawn(["bash", str(RESTORE_SH), str(_matrix._snapshot(tmp_path))], env)
+    _await_stdout(proc, "STOP the Circuit Breaker service")
+    scratch = Path(env["TMPDIR"])
+    assert any(scratch.iterdir()), "restore.sh had not staged anything to clean up"
+    rc, output = _interrupt(proc, signal.SIGINT)
+    assert rc == 130, output
+    assert INTERRUPTED_AFTER not in output
+    assert not any(scratch.iterdir()), "restore.sh left its staging behind"
+    assert not [c for c in _matrix._calls(env) if c.startswith(("systemctl stop", "dropdb"))]
+    assert _lock_is_free(Path(env["CB_LIFECYCLE_ROOT"]))
+
+
+@seam
+def test_restore_sh_terminated_after_mutation_exits_143_and_keeps_the_lock_until_its_child_exits(
+    tmp_path: Path,
+) -> None:
+    env = _matrix._harness(tmp_path)
+    state = Path(env["CB_LIFECYCLE_ROOT"])
+    block = _blocking_stub(env, "systemctl", "stop")
+    proc = _spawn(["bash", str(RESTORE_SH), str(_matrix._snapshot(tmp_path))], env)
+    _await(lambda: Path(f"{block}.ready").exists(), "systemctl stop")
+    proc.send_signal(signal.SIGTERM)
+    select.select([], [], [], 0.5)
+    assert proc.poll() is None, "restore.sh exited while its child was still running"
+    assert not _lock_is_free(state), "the lock was released while a child was still mutating"
+    block.unlink()
+    out, err = proc.communicate(timeout=30)
+    assert proc.returncode == 143, out + err
+    assert INTERRUPTED_AFTER in err and "cb doctor" in err
+    assert _lock_is_free(state)
+
+
+@seam
+def test_cb_restore_interrupted_before_mutation_exits_130_removes_its_decrypt_staging_and_frees_the_lock(
+    tmp_path: Path, state: Path
+) -> None:
+    env = _cb_env(tmp_path, "docker", state)
+    env["TMPDIR"] = str(tmp_path / "scratch")
+    Path(env["TMPDIR"]).mkdir()
+    block = _blocking_stub(env, "age", "*")
+    archive = tmp_path / "snapshot.tar.gz.age"
+    archive.write_bytes(b"x")
+    identity = tmp_path / "identity.txt"
+    identity.write_text("placeholder\n")
+    proc = _spawn(["bash", str(CB), "restore", str(archive), "--identity", str(identity), "--yes"], env)
+    _await(lambda: Path(f"{block}.ready").exists(), "age")
+    assert any(Path(env["TMPDIR"]).iterdir()), "cb restore had not staged anything"
+    proc.send_signal(signal.SIGINT)
+    block.unlink()  # the trap waits for the running child, so let it finish
+    out, err = proc.communicate(timeout=30)
+    assert proc.returncode == 130, out + err
+    assert INTERRUPTED_AFTER not in out + err
+    assert not any(Path(env["TMPDIR"]).iterdir()), "cb restore left its decrypt staging behind"
+    assert _lock_is_free(state)
+
+
+@seam
+def test_cb_terminated_after_mutation_exits_143_and_keeps_the_lock_until_its_child_exits(
+    tmp_path: Path, state: Path
+) -> None:
+    env = _cb_env(tmp_path, "docker", state)
+    block = tmp_path / "block"
+    block.write_text("")
+    env["CB_TEST_BLOCK"] = str(block)
+    proc = _spawn(["bash", str(CB), "restart"], env)
+    _await(lambda: Path(f"{block}.ready").exists(), "docker restart")
+    proc.send_signal(signal.SIGTERM)
+    select.select([], [], [], 0.5)
+    assert proc.poll() is None, "cb exited while docker restart was still running"
+    assert not _lock_is_free(state)
+    block.unlink()
+    out, err = proc.communicate(timeout=30)
+    assert proc.returncode == 143, out + err
+    assert INTERRUPTED_AFTER in err and "cb doctor" in err
+    assert _lock_is_free(state)
+
+
+def _function_of(path: Path, name: str) -> str:
+    body = re.search(rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n", path.read_text(), re.DOTALL | re.MULTILINE)
+    assert body, f"{path.name} has no {name}()"
+    return body.group(0)
+
+
+@seam
+def test_install_sh_lock_function_interrupted_before_mutation_exits_130_and_frees_the_lock(
+    tmp_path: Path, state: Path
+) -> None:
+    """install.sh's own cb_take_lifecycle_lock, then a wait: INT before the first change."""
+    script = (
+        "set -Eeuo pipefail\n"
+        f'source "{LIB}"\n'
+        + _function_of(INSTALL_SH, "cb_take_lifecycle_lock")
+        + 'cb_take_lifecycle_lock "install.sh"\necho ready\nwhile :; do sleep 0.05; done\n'
+    )
+    proc = _spawn(["bash", "-c", script], {**_clean_env(), "CB_LIFECYCLE_ROOT": str(state)})
+    _await_stdout(proc, "ready")
+    assert not _lock_is_free(state)
+    rc, output = _interrupt(proc, signal.SIGINT)
+    assert rc == 130, output
+    assert INTERRUPTED_AFTER not in output
+    assert _lock_is_free(state)
+
+
+def test_every_installer_marks_its_first_change_after_the_lock() -> None:
+    """The mark sits at the entrypoint's first change, after the lock call and before it."""
+    expectations = {
+        INSTALL_SH: ['cb_take_lifecycle_lock "install.sh docker"', "cb_lifecycle_mark_mutation", "stage_docker_deploy"],
+    }
+    for path, order in expectations.items():
+        text = path.read_text()
+        main = text[text.index("\nmain() {"):]
+        positions = [main.index(marker) for marker in order]
+        assert positions == sorted(positions), f"{path.name}: {order} are out of order"
+    install = INSTALL_SH.read_text()
+    assert install.index("cb_lifecycle_mark_mutation", install.index("cb_phase_begin files")) < install.index(
+        "stage0_install_bundle", install.index("cb_phase_begin files")
+    )
+    uninstall = UNINSTALL_SH.read_text()
+    lock = uninstall.index('cb_lifecycle_lock_acquire "uninstall.sh"')
+    assert lock < uninstall.index("cb_lifecycle_mark_mutation", lock) < uninstall.index("docker stop", lock)
+    setup = SETUP_SH.read_text()
+    for stage in ("stage1_bootstrap() {", "run_upgrade() {"):
+        start = setup.index(stage)
+        assert "cb_lifecycle_mark_mutation" in setup[start:start + 400], stage
+
+
+@seam
+def test_an_orchestrated_operation_records_the_interruption_checkpoint(tmp_path: Path, state: Path) -> None:
+    plane = tmp_path / "plane"
+    plane.mkdir()
+    for source in (LIB, ROOT / "deploy" / "scripts" / "lifecycle-state.py", ROOT / "deploy" / "lib" / "bundle-signature.sh"):
+        shutil.copyfile(source, plane / source.name)
+        (plane / source.name).chmod(0o755 if source.suffix == ".py" else 0o644)
+    plane.chmod(0o755)
+
+    def run(mark: bool, sig: int) -> tuple[int, str, dict[str, object]]:
+        shutil.rmtree(state, ignore_errors=True)
+        script = (
+            "set -Eeuo pipefail\n"
+            f'source "{plane / "lifecycle.sh"}"\n'
+            f'CB_LIFECYCLE_SYSTEM_PYTHON="{_JOURNAL.SYSTEM_PYTHON}"\n'
+            'cb_lifecycle_lock_acquire "cb update" || exit $?\n'
+            f"{_JOURNAL.TRANSACTION}"
+            "cb_lifecycle_arm_interrupt\n"
+            + (
+                "cb_lifecycle_checkpoint state=staged || exit $?\n"
+                "cb_lifecycle_checkpoint state=verified || exit $?\n"
+                "cb_lifecycle_checkpoint state=recovery_saved recovery_operation_id=$CB_LIFECYCLE_OPERATION "
+                f"recovery_manifest_digest={_JOURNAL.MANIFEST} || exit $?\n"
+                "cb_lifecycle_checkpoint state=applying || exit $?\n"
+                "cb_lifecycle_mark_mutation\n"
+                if mark
+                else ""
+            )
+            + "echo ready\nwhile :; do sleep 0.05; done\n"
+        )
+        proc = _spawn(["bash", "-c", script], {**_clean_env(), "CB_LIFECYCLE_ROOT": str(state)})
+        _await_stdout(proc, "ready")
+        rc, output = _interrupt(proc, sig)
+        journals = list((state / "private" / "operations").glob("*/journal.json"))
+        assert len(journals) == 1, output
+        import json
+
+        return rc, output, json.loads(journals[0].read_text())
+
+    rc, output, journal = run(False, signal.SIGINT)
+    last = journal["checkpoints"][-1]
+    assert rc == 130, output
+    assert (last["state"], last["cause"], last["outcome"]) == ("interrupted", "interrupted", "interrupted"), journal
+
+    rc, output, journal = run(True, signal.SIGTERM)
+    last = journal["checkpoints"][-1]
+    assert rc == 143, output
+    assert INTERRUPTED_AFTER in output
+    assert (last["state"], last["cause"]) == ("recovery_required", "interrupted"), journal
+    assert _lock_is_free(state)

@@ -478,6 +478,9 @@ _cb_lock() {
   if [[ "$rc" -ne 0 ]]; then
     exit "$rc"
   fi
+  # INT/TERM from here on: each mutator marks its first change with
+  # cb_lifecycle_mark_mutation (deploy/lib/lifecycle.sh).
+  cb_lifecycle_arm_interrupt
 }
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -1314,6 +1317,7 @@ cmd_logs() {
 cmd_restart() {
   _require_identity_or_fail restart
   _cb_lock "cb restart"
+  cb_lifecycle_mark_mutation
   case "$CB_MODE" in
     docker)
       _require_docker
@@ -1387,6 +1391,7 @@ cmd_update() {
       ;;
     docker)
       _cb_lock "cb update"
+      cb_lifecycle_mark_mutation
       _require_docker
       _info "Pulling latest image: ${CB_IMAGE}"
       docker pull "$CB_IMAGE"
@@ -1485,6 +1490,7 @@ cmd_update() {
       ;;
     compose)
       _cb_lock "cb update"
+      cb_lifecycle_mark_mutation
       _require_docker
       local dir="${CB_INSTALL_DIR:-$HOME/.circuit-breaker}"
       local compose_file="${CB_COMPOSE_FILE:-$dir/docker-compose.prod.yml}"
@@ -1541,6 +1547,7 @@ cmd_backup() {
 
   # Under cb restore this nests on the lock the restore already holds.
   _cb_lock "cb backup"
+  cb_lifecycle_mark_mutation
   backup_dir="${CB_BACKUP_DIR:-$CB_CONFIG_DIR/backups}"
   # Only directories this run creates are handed back; an existing one, a
   # system directory above all, keeps its owner.
@@ -1691,6 +1698,9 @@ cmd_restore() {
   elif [[ -n "$identity" ]]; then
     _warn "--identity was ignored because this is a plaintext legacy snapshot."
   fi
+  # The decrypted copy is the only staging so far; the verify below stages on
+  # the data volume and the restore after it changes the host.
+  cb_lifecycle_mark_mutation
 
   # ── 1. Verify before touching anything ──────────────────────────────────
   # The verifier is services/backup/verify.py, reached through the same CLI in
@@ -1999,6 +2009,7 @@ _admin_cli() {
   # writes through the running backend, and take none (lifecycle contract §11).
   if [[ "${1:-}" == "migrate" && "${2:-}" == "upgrade" ]]; then
     _cb_lock "cb migrate upgrade"
+    cb_lifecycle_mark_mutation
   fi
   case "$CB_MODE" in
     docker|compose)
@@ -2090,6 +2101,7 @@ cmd_config() {
 # the data volume's .env file was accidentally deleted.
 cmd_vault_recover() {
   _cb_lock "cb vault-recover"
+  cb_lifecycle_mark_mutation
   echo ""
   echo -e "$LINE"
   echo -e " ${B}Vault Recovery${R}"
