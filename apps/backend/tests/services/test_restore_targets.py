@@ -260,6 +260,9 @@ def _run_restore(tmp_path: Path, *, unit_known: bool) -> tuple[subprocess.Comple
             "CB_DB_NAME": "circuitbreaker",
             "CB_DB_OWNER": "circuitbreaker",
             "CB_DB_SUPERUSER": "postgres",
+            # restore.sh takes the host lifecycle lock first: a disposable root
+            # unprivileged, the host's own lock as root (the seam is refused there).
+            **({} if os.geteuid() == 0 else {"CB_LIFECYCLE_ROOT": str(tmp_path / "lifecycle")}),
         },
     )
     return proc, env_file

@@ -97,6 +97,42 @@ case "$SNAPSHOT" in
     *)              RESTORE_KIND="snapshot" ;;
 esac
 
+# ── 1c. Take the host lifecycle lock ──────────────────────────────────────
+
+# A restore stops the service and replaces the database, the uploads and the vault
+# key, so it conflicts with every other lifecycle operation: an install or upgrade,
+# an uninstall, a `cb` mutation, the npm coordinator's native helper. It takes the
+# one host-wide lock (deploy/lib/lifecycle.sh) before anything below, and stops with
+# 10 while anything else holds it, 6 without root. `cb restore` holds the lock already
+# and hands it down (CB_LIFECYCLE_LOCK_FD), so this joins it rather than waiting on
+# its own parent. The library is the one shipped beside this script (the bundle's
+# deploy/lib), else the control plane setup.sh installs in /usr/local/lib/circuitbreaker.
+# Without either, nothing is restored: an unlocked restore could interleave with an
+# upgrade. Contract: specs/install/lifecycle-contract.md §11.
+_CB_LIFECYCLE_LIB=""
+for _cb_candidate in "$(dirname -- "${BASH_SOURCE[0]}")/../lib/lifecycle.sh" \
+    /usr/local/lib/circuitbreaker/lifecycle.sh; do
+    if [[ -f "$_cb_candidate" ]]; then
+        _CB_LIFECYCLE_LIB="$_cb_candidate"
+        break
+    fi
+done
+if [[ -z "$_CB_LIFECYCLE_LIB" ]]; then
+    echo "ERROR: the lifecycle library (lifecycle.sh) is not installed beside this script" >&2
+    echo "       or in /usr/local/lib/circuitbreaker, so the host lifecycle lock cannot" >&2
+    echo "       be taken. Re-run the installer, or run restore.sh from a release bundle." >&2
+    echo "       Nothing has been changed." >&2
+    exit 7
+fi
+# shellcheck source=../lib/lifecycle.sh
+source "$_CB_LIFECYCLE_LIB"
+_cb_lock_rc=0
+cb_lifecycle_lock_acquire "restore.sh" || _cb_lock_rc=$?
+if [[ "$_cb_lock_rc" -ne 0 ]]; then
+    echo "       Nothing has been changed." >&2
+    exit "$_cb_lock_rc"
+fi
+
 # ── 2. Validate required tools ─────────────────────────────────────────────
 
 # jq, rsync and sha256sum read the manifest, sync uploads and check the recorded

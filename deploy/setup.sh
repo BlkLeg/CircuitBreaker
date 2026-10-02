@@ -487,7 +487,37 @@ cb_resolve_service_binaries() {
   # answers than calling it before.
 }
 
+# Hold the host lifecycle lock (deploy/lib/lifecycle.sh) for the stages below,
+# every one of which changes the host. install.sh takes it before it sources
+# this file, so here it nests in the same shell (one more level, no second
+# lock); anything else that sources this file and runs a stage takes it
+# afresh, and stops with the library's code (10 while another lifecycle
+# operation holds it) before its first change. The library comes from the
+# bundle this file belongs to unless the caller already loaded it (install.sh
+# inlines it). Contract: specs/install/lifecycle-contract.md §11.
+cb_setup_take_lifecycle_lock() {
+  local rc=0 lib
+  if ! declare -F cb_lifecycle_lock_acquire >/dev/null 2>&1; then
+    lib="$(dirname -- "${BASH_SOURCE[0]}")/lib/lifecycle.sh"
+    if [[ ! -f "$lib" ]]; then
+      echo "deploy/setup.sh: the lifecycle library is missing ($lib); the bundle is incomplete" >&2
+      _CB_EXIT_REPORTED=true
+      exit 7
+    fi
+    # shellcheck source=lib/lifecycle.sh
+    source "$lib"
+  fi
+  cb_lifecycle_lock_acquire "setup.sh" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    # The library has said why; install.sh's exit report must not restate it
+    # as an unexpected failure, and the exit code is the contract's.
+    _CB_EXIT_REPORTED=true
+    exit "$rc"
+  fi
+}
+
 stage0_preflight() {
+  cb_setup_take_lifecycle_lock
   cb_header
   cb_section "Pre-flight Checks"
 
@@ -2336,6 +2366,7 @@ stage2_dependencies() {
 }
 
 run_upgrade() {
+  cb_setup_take_lifecycle_lock
   cb_phase_begin upgrade_check "Pre-flight checks"
 
   cb_header

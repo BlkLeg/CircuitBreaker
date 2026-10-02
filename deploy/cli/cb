@@ -410,6 +410,70 @@ _require_identity_or_fail() {
 # Commands allowed without identity.
 _CB_IDENTITY_OPTIONAL_CMDS="info help version doctor setup setup-token diag"
 
+# ── host lifecycle lock ───────────────────────────────────────────────────────
+# Every command that stops, replaces, restores or reconfigures this install
+# (restart, update, backup, restore, vault-recover, migrate upgrade) takes the
+# host-wide lifecycle lock (deploy/lib/lifecycle.sh) before its first change,
+# so it cannot interleave with an install, an upgrade, an uninstall, a restore
+# or the npm coordinator's native helper: while any of them holds it the
+# command stops with 10 and changes nothing. Commands that only read never
+# take it and never create its state. The lock is released when cb exits; a
+# child it runs (restore.sh) joins it through the handoff the library exports.
+# Inventory and conflict table: specs/install/lifecycle-contract.md §11.
+#
+# The library comes from this cb's own checkout or bundle first, then the
+# control plane install.sh, setup.sh and the package install in
+# /usr/local/lib/circuitbreaker, then the bundle tree. Without it a mutating
+# command refuses with 7 rather than run unlocked.
+_cb_lifecycle_library() {
+  local candidate
+  for candidate in \
+    "${_CB_HERE}/deploy/lib/lifecycle.sh" \
+    "${_CB_HERE%/deploy/cli}/deploy/lib/lifecycle.sh" \
+    /usr/local/lib/circuitbreaker/lifecycle.sh \
+    /opt/circuitbreaker/deploy/lib/lifecycle.sh
+  do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Take the lock for command label $1 ("cb restart"), or exit with the
+# library's code: 10 while another lifecycle operation holds it, 6 without
+# root, 7 when it cannot be taken at all. Nested calls in this shell (cb
+# restore's safety backup) take one more level of the same lock.
+#
+# The lock is root-only. A docker or compose install managed by a docker-group
+# operator as themselves cannot take it; such a command runs as it always has
+# and says so (the contract's docker interim). Every other mode needs root for
+# its changes anyway, and without it is refused with 6 before anything runs.
+_cb_lock() {
+  local label="$1" lib rc=0
+  if [[ "$EUID" -ne 0 && -z "${CB_LIFECYCLE_ROOT:-}" ]]; then
+    case "$CB_MODE" in
+      docker|compose)
+        _warn "Running without the host lifecycle lock: it is root-only, and this ${CB_MODE} install is managed as $(id -un)."
+        return 0
+        ;;
+    esac
+  fi
+  if ! declare -F cb_lifecycle_lock_acquire >/dev/null 2>&1; then
+    if ! lib="$(_cb_lifecycle_library)"; then
+      echo "cb: the lifecycle library (lifecycle.sh) is not installed in /usr/local/lib/circuitbreaker, so '${label}' cannot take the host lifecycle lock. Re-run the installer for this mode. Nothing was changed." >&2
+      exit 7
+    fi
+    # shellcheck source=deploy/lib/lifecycle.sh
+    source "$lib"
+  fi
+  cb_lifecycle_lock_acquire "$label" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    exit "$rc"
+  fi
+}
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 _require_docker() {
   command -v docker >/dev/null 2>&1 || _fail "Docker is not installed or not in PATH."
@@ -1218,6 +1282,7 @@ cmd_logs() {
 
 cmd_restart() {
   _require_identity_or_fail restart
+  _cb_lock "cb restart"
   case "$CB_MODE" in
     docker)
       _require_docker
@@ -1290,6 +1355,7 @@ cmd_update() {
         "curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | sudo bash -s -- --upgrade"
       ;;
     docker)
+      _cb_lock "cb update"
       _require_docker
       _info "Pulling latest image: ${CB_IMAGE}"
       docker pull "$CB_IMAGE"
@@ -1387,6 +1453,7 @@ cmd_update() {
       _ok "Updated and restarted."
       ;;
     compose)
+      _cb_lock "cb update"
       _require_docker
       local dir="${CB_INSTALL_DIR:-$HOME/.circuit-breaker}"
       local compose_file="${CB_COMPOSE_FILE:-$dir/docker-compose.prod.yml}"
@@ -1440,6 +1507,8 @@ cmd_backup() {
     esac
   done
 
+  # Under cb restore this nests on the lock the restore already holds.
+  _cb_lock "cb backup"
   backup_dir="${CB_BACKUP_DIR:-$CB_CONFIG_DIR/backups}"
   mkdir -p "$backup_dir" || _fail "Cannot create backup directory $backup_dir."
 
@@ -1565,6 +1634,9 @@ cmd_restore() {
   [[ -n "$archive" ]] \
     || _fail "Usage: cb restore [--identity age-identity.txt] <archive.tar.gz[.age]> [--yes] [--force] [--no-safety-snapshot]"
   [[ -f "$archive" ]] || _fail "Snapshot file not found: $archive"
+  # Held from here to exit: the verify step already stages the archive on the
+  # data volume, and the safety snapshot and restore.sh join this same lock.
+  _cb_lock "cb restore"
   local decrypt_dir=""
   if [[ "$archive" == *.age ]]; then
     [[ -n "$identity" && -f "$identity" ]] \
@@ -1884,6 +1956,12 @@ _restore_binary() {
 # stdin precisely so it never appears in argv, and without -i the pipe does not
 # reach the container.
 _admin_cli() {
+  # `migrate upgrade` changes the schema, so it takes the host lifecycle lock;
+  # `migrate status` and the token/user/agent groups are application reads and
+  # writes through the running backend, and take none (lifecycle contract §11).
+  if [[ "${1:-}" == "migrate" && "${2:-}" == "upgrade" ]]; then
+    _cb_lock "cb migrate upgrade"
+  fi
   case "$CB_MODE" in
     docker|compose)
       _require_docker
@@ -1973,6 +2051,7 @@ cmd_config() {
 # wizard — you should only need this after a crash, a headless deploy, or if
 # the data volume's .env file was accidentally deleted.
 cmd_vault_recover() {
+  _cb_lock "cb vault-recover"
   echo ""
   echo -e "$LINE"
   echo -e " ${B}Vault Recovery${R}"

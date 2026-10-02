@@ -211,6 +211,10 @@ def _harness(tmp_path: Path) -> dict[str, str]:
         "CB_DB_SUPERUSER": getpass.getuser(),
         "CB_ASSUME_YES": "1",
         "CB_TEST_LOG": str(tmp_path / "calls.log"),
+        # restore.sh takes the host lifecycle lock before anything else. Over a
+        # disposable root for an unprivileged run; as root the seam is refused
+        # (ruling R8) and the run takes the host's own lock, as production does.
+        **({} if os.geteuid() == 0 else {"CB_LIFECYCLE_ROOT": str(tmp_path / "lifecycle")}),
     }
 
 

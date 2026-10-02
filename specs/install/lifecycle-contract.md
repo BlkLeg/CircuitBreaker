@@ -611,3 +611,102 @@ unfinished operations and inspection entries ahead of finished ones (§8).
 illegal record or transition, an unknown operation, the seam as root), 3 (an unknown journal
 version), 6 (an unsafe tree), 7 (a record that cannot be made durable), 9 (stale writer, a record
 that requires inspection, an unfinished transaction blocking `begin`).
+
+## 11. Shell entrypoints and the host lock
+
+Sub-plan 03 Task 5. Every direct-shell entrypoint that changes services, data or the release tree
+takes the one host-wide lock (`deploy/lib/lifecycle.sh`, §10) before its first conflicting side
+effect. While anything else holds it, the entrypoint exits 10 and has changed nothing. The other
+holder may be another shell entrypoint, a nested call or the npm coordinator's native helper.
+`tests/build/test_lifecycle_shell_integration.py` runs each entrypoint against a held lock.
+Sub-plans 04–07 consume this table. A new mutator gets a row and a lock label before it ships.
+
+**Inventory.** The label is what the owner record shows (§10). It names the command, never its
+arguments.
+
+| Entrypoint | What it changes | Label | Taken |
+| --- | --- | --- | --- |
+| `install.sh` (native) | packages, users, units, `/opt/circuitbreaker`, config, data, control plane | `install.sh` | in `main`, right after root is confirmed, before the bootstrap log, the UI and preflight |
+| `install.sh --upgrade` | the same, plus the pre-upgrade dump, the service stop and migrations | `install.sh upgrade` | as above |
+| `install.sh --docker` | Docker packages, `cb-helperd`, the compose stack, host identity, host `cb` | `install.sh docker` | in `main`, before `stage_docker_deploy` |
+| `deploy/setup.sh` | every stage (sourced into install.sh's shell) | `setup.sh` | first line of `stage0_preflight` and `run_upgrade`; nests on install.sh's lock |
+| `uninstall.sh` | containers, volumes, images, units, `/opt/circuitbreaker`, config, data, the `breaker` user | `uninstall.sh` | after the read-only preflight, before the first container stop |
+| `deploy/scripts/restore.sh` | stops the unit, replaces database, uploads, vault key, nginx site | `restore.sh` | after the argument check, before the tool check, validation and stop |
+| `cb restart` | restarts the container, stack, unit or target | `cb restart` | after the identity check |
+| `cb update` | pulls and recreates the container or stack | `cb update` | in the docker and compose branches, before `docker pull`; native and binary refuse first |
+| `cb backup` | writes a full-state snapshot | `cb backup` | after argument parsing, before the backup directory is created |
+| `cb restore` | stages the archive on the data volume, safety snapshot, stop, replace, restart | `cb restore` | after argument parsing, before decryption and verification |
+| `cb vault-recover` | writes `CB_VAULT_KEY`, restarts | `cb vault-recover` | first, before the existing-key prompt |
+| `cb migrate upgrade` | migrates the schema | `cb migrate upgrade` | in `_admin_cli`, before the backend CLI runs |
+| `cb uninstall` | delegates to uninstall.sh (`exec`) | none | uninstall.sh takes `uninstall.sh` |
+
+**Read-only commands** never take the lock and never create its state root:
+`cb status`, `cb logs`, `cb info`, `cb version`, `cb doctor`, `cb diag`, `cb resources`,
+`cb setup`, `cb setup-token`, `cb config validate`, `cb migrate status` and `cb help`. `cb setup-token`
+tightens its token file to 0600 and may make the backend issue the token. Both are application
+reads, not lifecycle work.
+
+**Not locked here, recorded for 04–07:**
+
+- `cb token`, `cb user` and `cb agent` write application rows through the running backend's own
+  transactional CLI. They are the same class as a web UI write, which the lock does not
+  serialize either. During a lifecycle operation they fail against a stopped backend, or land
+  like any UI write.
+- The package manager's scriptlets (`packaging/preinstall.sh`, `postinstall.sh`, `preremove.sh`)
+  run under dpkg, rpm or apk. They are owned by the package manager (design: package-owned
+  installs stay with it). `circuit-breaker-rollback` reaches restore.sh, which is locked.
+- `cb-proxmox-deploy.sh` and `cb-proxmox-uninstall.sh` act on a container from the Proxmox host.
+  The CT's own lifecycle runs inside it, under that CT's lock.
+- The mono entrypoint, its migrations and `cb-helperd` repairs are the running service's own
+  work, not lifecycle operations.
+
+**Conflicts.** Each management action above conflicts with every lifecycle operation, and the
+operations conflict with each other: install, upgrade, update, downgrade, rollback, recover,
+uninstall and restore. The reason is the same in each case. Each one stops, replaces or reads as
+a whole the services, the database, the vault key or the release tree another one is changing.
+A backup during an update or a restore captures a half-applied state. The design puts backend
+backup and mutation under the same lock. A restart during an apply starts code that is half
+replaced, and a migration during a restore runs against a database being dropped. Reads never
+conflict.
+
+**Nesting.** A nested call joins the lock and never waits on its own parent.
+
+- install.sh sources setup.sh, and setup.sh's stage9 sources the library again. Both are in the
+  same shell, so each acquisition nests one level. Re-sourcing the library keeps the held state.
+- `cb restore` runs its safety backup (`cb backup`) in the same shell, and that nests too.
+- On a package host, `cb restore` runs restore.sh as a child. The child joins through the
+  handoff `CB_LIFECYCLE_LOCK_FD` and `CB_LIFECYCLE_OPERATION` (§10), which the library exports.
+- `cb uninstall` `exec`s uninstall.sh, which takes the lock itself.
+- None of these entrypoints starts a daemon or detached helper that would inherit the lock.
+  Services start through systemd or dockerd, which do not inherit the descriptor. A future one
+  goes through `cb_lifecycle_run_unlocked` or `cb_lifecycle_spawn_unlocked`.
+
+**Root, and the docker interim.** The lock is root-only (§10). Without root, an entrypoint whose
+changes need root anyway exits 6 before anything runs, and the library names `sudo`. That covers
+native, package and binary `cb`, restore.sh, setup.sh, and uninstall.sh on a host with a native or
+packaged install. The native installer re-executes itself under sudo first.
+
+A Docker install managed by a docker-group operator as themselves cannot take the lock. Its
+`cb` resolves the install through that operator's `$HOME`, which `sudo` may reset. This applies
+to `cb` in docker or compose mode, `install.sh --docker` and a Docker-only `uninstall.sh`. Until
+a ruling, such a run behaves as before and says on stderr that it runs without the host lifecycle
+lock. Run as root, the same commands take the lock.
+
+**Finding the library.** install.sh and uninstall.sh are curl-piped onto hosts that have no
+`deploy/lib` yet. They inline `deploy/lib/lifecycle.sh` byte for byte between markers.
+`scripts/ci/sync_installer_ui.py` writes the copies and
+`tests/build/test_installer_ui_inline_matches_library.py` fails when they drift.
+
+`cb` sources the library from its own checkout or bundle first (`deploy/lib`). Next it tries the
+control plane `/usr/local/lib/circuitbreaker`, which setup.sh, the Docker installer's host `cb`
+step and the distribution packages install. Last it tries `/opt/circuitbreaker/deploy/lib`.
+restore.sh uses the copy beside it (`../lib`), then the control plane.
+
+Without the library, a mutating `cb` command and restore.sh refuse with 7 rather than run
+unlocked. setup.sh, sourced alone, uses its bundle's copy and refuses with 7 when the bundle
+lacks it.
+
+**Journals.** Task 5a records no journal for these legacy commands: they hold the lock and nothing
+more. The legacy records of §4, closing `committed` or `recovery_required` on every exit path, come
+with the interruption handling of Task 5b. Until then no entrypoint here writes an `applying`
+record it cannot close.

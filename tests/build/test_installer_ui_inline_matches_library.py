@@ -111,6 +111,8 @@ def test_blocks_lists_exactly_the_inlined_libraries() -> None:
         ("install.sh", "deploy/lib/ui.sh"),
         ("install.sh", "deploy/lib/bundle-signature.sh"),
         ("cb-proxmox-deploy.sh", "deploy/lib/bundle-signature.sh"),
+        ("install.sh", "deploy/lib/lifecycle.sh"),
+        ("uninstall.sh", "deploy/lib/lifecycle.sh"),
     ]
 
 

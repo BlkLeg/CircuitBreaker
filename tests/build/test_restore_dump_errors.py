@@ -176,6 +176,9 @@ def _harness(tmp_path: Path) -> dict[str, str]:
         "CB_DATA_DIR": str(tmp_path / "data"),
         "CB_TEST_PSQL_LOG": str(tmp_path / "psql-argv.log"),
         "CB_TEST_PSQL_STDIN": str(tmp_path / "psql-stdin.sql"),
+        # restore.sh takes the host lifecycle lock first: a disposable root
+        # unprivileged, the host's own lock as root (the seam is refused there).
+        **({} if os.geteuid() == 0 else {"CB_LIFECYCLE_ROOT": str(tmp_path / "lifecycle")}),
     }
 
 

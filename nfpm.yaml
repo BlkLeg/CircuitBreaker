@@ -83,6 +83,24 @@ contents:
     file_info:
       mode: 0644
 
+  # The lifecycle control plane deploy/setup.sh installs on a native host
+  # (stage9_install_lifecycle_control_plane): the host lock library, the state
+  # utility and the release trust material. cb and restore.sh take the host
+  # lifecycle lock through lifecycle.sh before they change anything, and
+  # refuse rather than run unlocked without it (lifecycle contract §11).
+  - src: deploy/lib/lifecycle.sh
+    dst: /usr/local/lib/circuitbreaker/lifecycle.sh
+    file_info:
+      mode: 0644
+  - src: deploy/scripts/lifecycle-state.py
+    dst: /usr/local/lib/circuitbreaker/lifecycle-state.py
+    file_info:
+      mode: 0755
+  - src: deploy/lib/bundle-signature.sh
+    dst: /usr/local/lib/circuitbreaker/bundle-signature.sh
+    file_info:
+      mode: 0644
+
   # systemd unit
   - src: packaging/circuit-breaker.service
     dst: /lib/systemd/system/circuit-breaker.service

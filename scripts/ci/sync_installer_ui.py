@@ -9,7 +9,9 @@ copy between two marker comments instead, and `deploy/setup.sh`/`uninstall.sh`
 use the real library from the installed bundle. cb-proxmox-deploy.sh is run
 the same way (`bash -c "$(curl -fsSL .../main/cb-proxmox-deploy.sh)"`) and
 inlines deploy/lib/bundle-signature.sh so it can verify a release bundle on
-the Proxmox host. That is a pair pinned in two places, and CLAUDE.md's rule
+the Proxmox host. install.sh and uninstall.sh, both curl-piped, inline
+deploy/lib/lifecycle.sh so they take the host lifecycle lock before deploy/lib
+exists on the host. Each is a pair pinned in two places, and CLAUDE.md's rule
 for that shape is explicit: the guard belongs in the tree, not only the fix.
 
 This script is that guard's write side: for each entry in BLOCKS it replaces
@@ -33,6 +35,7 @@ from typing import NamedTuple
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = REPO_ROOT / "install.sh"
 PROXMOX_SH = REPO_ROOT / "cb-proxmox-deploy.sh"
+UNINSTALL_SH = REPO_ROOT / "uninstall.sh"
 
 
 class Block(NamedTuple):
@@ -51,6 +54,11 @@ _SIG_BEGIN = (
     "scripts/ci/sync_installer_ui.py ---"
 )
 _SIG_END = "# --- END INLINED deploy/lib/bundle-signature.sh ---"
+_LIFECYCLE_BEGIN = (
+    "# --- BEGIN INLINED deploy/lib/lifecycle.sh — regenerate with "
+    "scripts/ci/sync_installer_ui.py ---"
+)
+_LIFECYCLE_END = "# --- END INLINED deploy/lib/lifecycle.sh ---"
 
 BLOCKS: list[Block] = [
     Block(INSTALL_SH, REPO_ROOT / "deploy" / "lib" / "ui.sh", _UI_BEGIN, _UI_END),
@@ -65,6 +73,21 @@ BLOCKS: list[Block] = [
         REPO_ROOT / "deploy" / "lib" / "bundle-signature.sh",
         _SIG_BEGIN,
         _SIG_END,
+    ),
+    # The host-wide lifecycle lock. A downloaded installer or uninstaller has
+    # no deploy/lib/ yet, and must still take the same lock before it installs
+    # anything or touches a service (npm CLI sub-plan 03, Task 5).
+    Block(
+        INSTALL_SH,
+        REPO_ROOT / "deploy" / "lib" / "lifecycle.sh",
+        _LIFECYCLE_BEGIN,
+        _LIFECYCLE_END,
+    ),
+    Block(
+        UNINSTALL_SH,
+        REPO_ROOT / "deploy" / "lib" / "lifecycle.sh",
+        _LIFECYCLE_BEGIN,
+        _LIFECYCLE_END,
     ),
 ]
 
