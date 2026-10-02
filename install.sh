@@ -905,8 +905,8 @@ _cb_lifecycle_lstat() {
   mode=$(( 16#${f[0]} ))
   case $(( mode & 0170000 )) in
     $(( 0040000 ))) _CB_LC_TYPE=dir ;;
-    $(( 0100000 ))) _CB_LC_TYPE=file ;;
-    $(( 0120000 ))) _CB_LC_TYPE=link ;;
+    $(( 0100000 ))) _CB_LC_TYPE="file" ;;
+    $(( 0120000 ))) _CB_LC_TYPE="link" ;;
     *) _CB_LC_TYPE=other ;;
   esac
   _CB_LC_PERM=$(( mode & 07777 ))
@@ -930,7 +930,7 @@ _cb_lifecycle_check() {
     return "$CB_LIFECYCLE_EXIT_PERMISSION"
   fi
   if [[ "$role" == lock ]]; then
-    want=file
+    want="file"
     noun="regular file"
   fi
   if [[ "$_CB_LC_TYPE" != "$want" ]]; then
@@ -1600,7 +1600,7 @@ _cb_lifecycle_request() {
         return "$CB_LIFECYCLE_EXIT_USAGE"
       fi
       json+=",\"$key\":$value"
-    elif [[ "$key" == done || "$key" == total || "$key" == duration_ms ]]; then
+    elif [[ "$key" == "done" || "$key" == total || "$key" == duration_ms ]]; then
       if [[ ! "$value" =~ ^(0|[1-9][0-9]{0,15})$ ]]; then
         _cb_lifecycle_say "internal error: $key is a count"
         return "$CB_LIFECYCLE_EXIT_USAGE"
