@@ -763,6 +763,10 @@ cb_bundle_matches_unsigned_pin() {
 # helper that must not hold it (a daemon, anything detached) is started
 # through cb_lifecycle_run_unlocked or cb_lifecycle_spawn_unlocked.
 #
+# The lock is root-only, so an entrypoint that is not root first re-runs
+# itself through sudo (cb_lifecycle_elevate) and does the whole operation as
+# root under the lock, rather than escalating step by step past it.
+#
 # Within one shell, acquisitions nest: cb's restore runs its backup in the
 # same process and both take the lock, so each acquire counts a level and only
 # the release that matches the outermost acquire closes the descriptor. The
@@ -1174,6 +1178,47 @@ _cb_lifecycle_reenter() {
     return "$CB_LIFECYCLE_EXIT_LOCKED"
   fi
   _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "$id" $(( _CB_LIFECYCLE_LOCK_DEPTH + 1 ))
+}
+
+# Make sure this lifecycle entrypoint runs as root before it takes the lock:
+# the lock is root-only, and an entrypoint that escalated step by step through
+# sudo would make root changes without it. Not root, this re-runs script $1
+# with arguments $2... through `sudo -E`, so it never returns. HOME is passed
+# through explicitly: a Docker install is found through the operator's home,
+# which sudo may reset. CB_LIFECYCLE_ELEVATED marks the re-run. A re-run that
+# is still not root has met a sudo that does not elevate, and goes on only
+# over the CB_LIFECYCLE_ROOT test seam, whose lock is the disposable one (a real
+# sudo makes it root, where the seam is refused). Returns 0 as root, or 6
+# (with a message) when it cannot elevate: no script file to re-run (read
+# from a pipe), no sudo, or sudo refused. Call it before anything is changed.
+cb_lifecycle_elevate() {
+  local script="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  if [[ "$EUID" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "${CB_LIFECYCLE_ELEVATED:-}" == 1 ]]; then
+    if [[ -n "${CB_LIFECYCLE_ROOT:-}" ]]; then
+      return 0
+    fi
+    _cb_lifecycle_say "sudo did not run this as root; nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if [[ -z "$script" || ! -f "$script" ]]; then
+    _cb_lifecycle_say "this needs root and was read from a pipe, so it cannot re-run itself; pipe it to 'sudo bash' instead. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    _cb_lifecycle_say "this needs root and sudo is not installed; run it as root. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! sudo -v; then
+    _cb_lifecycle_say "sudo refused; run it again with sudo. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  exec sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME="${HOME:-}" bash "$script" "$@"
 }
 
 # Take the host lifecycle lock for the command named by label $1 (for
@@ -2182,18 +2227,31 @@ cb_render_template() {
   printf '%s\n' "$content" > "$dest"
 }
 
-cb_require_native_root() {
+# Re-run this installer through sudo when it is not root, before it takes the
+# host lifecycle lock or changes anything (cb_lifecycle_elevate, in the inlined
+# lifecycle library). Read from a pipe there is no file to re-run, so the
+# operator is told to pipe it to sudo instead. $1 names the install for the
+# message ("native installation"); the rest are the installer's arguments.
+# A refusal exits 6, the lifecycle contract's permission code.
+cb_require_root() {
+  local what="$1" rc=0
+  shift
   if [[ $EUID -eq 0 ]]; then
     return 0
   fi
-
-  if command -v sudo >/dev/null 2>&1 && [[ -f "${BASH_SOURCE[0]}" ]]; then
-    echo -e "  ${CYAN}▸${RESET} Elevating privileges with sudo for native installation..."
-    exec sudo -E bash "${BASH_SOURCE[0]}" "$@"
+  if [[ -f "${BASH_SOURCE[0]:-}" && "${CB_LIFECYCLE_ELEVATED:-}" != 1 ]]; then
+    echo -e "  ${CYAN}▸${RESET} Elevating privileges with sudo for ${what}..."
   fi
+  cb_lifecycle_elevate "${BASH_SOURCE[0]:-}" "$@" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    _CB_FAIL_STATUS="$rc"
+    cb_fail "Root privileges required for ${what}" \
+      "Run: curl -fsSL https://raw.githubusercontent.com/${CB_GITHUB_REPO}/main/install.sh | sudo bash${CB_INSTALL_PIPE_ARGS:-}"
+  fi
+}
 
-  cb_fail "Root privileges required for native installation" \
-    "Run: curl -fsSL https://raw.githubusercontent.com/${CB_GITHUB_REPO}/main/install.sh | sudo bash"
+cb_require_native_root() {
+  cb_require_root "native installation" "$@"
 }
 
 docker_target_user() {
@@ -2283,7 +2341,12 @@ cb_install_docker_if_missing() {
 
   "${root_prefix[@]}" systemctl enable --now docker >/dev/null 2>&1 || cb_fail "Failed to start Docker daemon" "Check: sudo systemctl status docker"
 
-  if [[ $EUID -eq 0 ]]; then
+  if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    # Re-run through sudo for the host lifecycle lock: the operator who ran
+    # it still manages the stack, so they join the docker group as before.
+    usermod -aG docker "${SUDO_USER}" >/dev/null 2>&1 || true
+    cb_warn "Added ${SUDO_USER} to docker group. Run 'newgrp docker' or re-login if compose fails with permission errors."
+  elif [[ $EUID -eq 0 ]]; then
     cb_warn "Docker installed as root; compose commands will run as root in this session"
   else
     local current_user
@@ -2496,6 +2559,11 @@ CB_DATA_DIR=/data
 CB_INSTALL_DIR=${install_dir}
 CB_COMPOSE_FILE=${install_dir}/docker-compose.yml
 EOF
+    # Written as root (the installer re-runs itself through sudo for the host
+    # lifecycle lock), read by the operator's own `cb`: hand the tree back.
+    if [[ "${target_user}" != "$(id -un)" ]]; then
+      chown -R "${target_user}:" "${host_identity_dir}" 2>/dev/null || true
+    fi
     # Install host cb from checkout when available.
     local repo_cb
     repo_cb="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/cb"
@@ -3256,14 +3324,14 @@ CB_BUNDLE_DIR=""
 
 main() {
   if [[ "${DOCKER_MODE}" == "true" ]]; then
-    # The lock is root-only. A docker-group operator installing the compose
-    # stack as themselves cannot take it, and is told so rather than refused
-    # (lifecycle contract §11, the docker interim).
-    if [[ $EUID -eq 0 || -n "${CB_LIFECYCLE_ROOT:-}" ]]; then
-      cb_take_lifecycle_lock "install.sh docker"
-    else
-      echo "  Running without the host lifecycle lock: it is root-only, and this Docker install runs as $(id -un)." >&2
-    fi
+    # The lock is root-only, so the Docker install re-runs itself through
+    # sudo first, as the native one does. It already installs cb-helperd, the
+    # host cb and the lifecycle control plane as root; now all of it runs under
+    # the host lock. docker_target_user still resolves the operator through
+    # SUDO_USER, so the stack and its files remain theirs.
+    CB_INSTALL_PIPE_ARGS=" -s -- --docker"
+    cb_require_root "the Docker install" "$@"
+    cb_take_lifecycle_lock "install.sh docker"
     stage_docker_deploy
     exit 0
   fi

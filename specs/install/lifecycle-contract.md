@@ -622,16 +622,17 @@ holder may be another shell entrypoint, a nested call or the npm coordinator's n
 Sub-plans 04–07 consume this table. A new mutator gets a row and a lock label before it ships.
 
 **Inventory.** The label is what the owner record shows (§10). It names the command, never its
-arguments.
+arguments. Each `cb` row re-runs through sudo at the point named, just before it takes the
+lock. See **Root first** below.
 
 | Entrypoint | What it changes | Label | Taken |
 | --- | --- | --- | --- |
 | `install.sh` (native) | packages, users, units, `/opt/circuitbreaker`, config, data, control plane | `install.sh` | in `main`, right after root is confirmed, before the bootstrap log, the UI and preflight |
 | `install.sh --upgrade` | the same, plus the pre-upgrade dump, the service stop and migrations | `install.sh upgrade` | as above |
-| `install.sh --docker` | Docker packages, `cb-helperd`, the compose stack, host identity, host `cb` | `install.sh docker` | in `main`, before `stage_docker_deploy` |
+| `install.sh --docker` | Docker packages, `cb-helperd`, the compose stack, host identity, host `cb`, control plane | `install.sh docker` | in `main`, after the re-run through sudo, before `stage_docker_deploy` |
 | `deploy/setup.sh` | every stage (sourced into install.sh's shell) | `setup.sh` | first line of `stage0_preflight` and `run_upgrade`; nests on install.sh's lock |
-| `uninstall.sh` | containers, volumes, images, units, `/opt/circuitbreaker`, config, data, the `breaker` user | `uninstall.sh` | after the read-only preflight, before the first container stop |
-| `deploy/scripts/restore.sh` | stops the unit, replaces database, uploads, vault key, nginx site | `restore.sh` | after the argument check, before the tool check, validation and stop |
+| `uninstall.sh` | containers, volumes, images, units, `/opt/circuitbreaker`, config, data, the `breaker` user | `uninstall.sh` | after the read-only preflight and the re-run through sudo, before the first container stop |
+| `deploy/scripts/restore.sh` | stops the unit, replaces database, uploads, vault key, nginx site | `restore.sh` | after the argument check and the re-run through sudo, before the tool check, validation and stop |
 | `cb restart` | restarts the container, stack, unit or target | `cb restart` | after the identity check |
 | `cb update` | pulls and recreates the container or stack | `cb update` | in the docker and compose branches, before `docker pull`; native and binary refuse first |
 | `cb backup` | writes a full-state snapshot | `cb backup` | after argument parsing, before the backup directory is created |
@@ -655,6 +656,8 @@ reads, not lifecycle work.
 - The package manager's scriptlets (`packaging/preinstall.sh`, `postinstall.sh`, `preremove.sh`)
   run under dpkg, rpm or apk. They are owned by the package manager (design: package-owned
   installs stay with it). `circuit-breaker-rollback` reaches restore.sh, which is locked.
+  **Open item, owned by sub-plan 05:** whether the preinstall and postinstall scriptlets (the
+  pre-upgrade dump, the migration) take the host lock.
 - `cb-proxmox-deploy.sh` and `cb-proxmox-uninstall.sh` act on a container from the Proxmox host.
   The CT's own lifecycle runs inside it, under that CT's lock.
 - The mono entrypoint, its migrations and `cb-helperd` repairs are the running service's own
@@ -681,16 +684,30 @@ conflict.
   Services start through systemd or dockerd, which do not inherit the descriptor. A future one
   goes through `cb_lifecycle_run_unlocked` or `cb_lifecycle_spawn_unlocked`.
 
-**Root, and the docker interim.** The lock is root-only (§10). Without root, an entrypoint whose
-changes need root anyway exits 6 before anything runs, and the library names `sudo`. That covers
-native, package and binary `cb`, restore.sh, setup.sh, and uninstall.sh on a host with a native or
-packaged install. The native installer re-executes itself under sudo first.
+**Root first.** The lock is root-only (§10). An entrypoint that would take it first makes sure it
+runs as root, through `cb_lifecycle_elevate` (`deploy/lib/lifecycle.sh`), before it changes
+anything. That covers every mode of `cb`, the native and Docker installers, uninstall.sh and
+restore.sh.
 
-A Docker install managed by a docker-group operator as themselves cannot take the lock. Its
-`cb` resolves the install through that operator's `$HOME`, which `sudo` may reset. This applies
-to `cb` in docker or compose mode, `install.sh --docker` and a Docker-only `uninstall.sh`. Until
-a ruling, such a run behaves as before and says on stderr that it runs without the host lifecycle
-lock. Run as root, the same commands take the lock.
+- **How it elevates.** Without root, the entrypoint re-runs itself through
+  `sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME=… bash <script> <args>`. The re-run does the whole
+  command as root under the real host lock, so none of its steps escalates past the lock on its
+  own.
+  - `cb` runs `systemctl` and the vault-key writes directly.
+  - uninstall.sh replaces its per-step `sudo` with a direct call once it holds the lock.
+- **HOME.** HOME is carried across, so a Docker install is still found through the operator's home.
+  Files the re-run writes there are handed back to `SUDO_UID`: the backup and backup directory,
+  the Docker installer's identity directory and its install tree. The Docker installer adds
+  `SUDO_USER` to the docker group, as it did for an unprivileged operator.
+- **Refusals (6, before anything changes):**
+  - A piped script has no file to re-run, so it names `curl … | sudo bash` instead.
+  - No sudo.
+  - sudo refuses (`sudo -v`).
+- **The test seam.** The seam cannot capture a real escalation. sudo resets the environment, and
+  a root process refuses `CB_LIFECYCLE_ROOT` with 2. A re-run (`CB_LIFECYCLE_ELEVATED=1`) that is
+  still unprivileged has met a sudo that does not elevate. It goes on only over the seam, where
+  the lock is a disposable one and no step escalates, and it is refused with 6 otherwise.
+- **setup.sh** is only ever sourced by a root installer, and its preflight refuses anything else.
 
 **Finding the library.** install.sh and uninstall.sh are curl-piped onto hosts that have no
 `deploy/lib` yet. They inline `deploy/lib/lifecycle.sh` byte for byte between markers.

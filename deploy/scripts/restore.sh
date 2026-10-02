@@ -103,9 +103,10 @@ esac
 # key, so it conflicts with every other lifecycle operation: an install or upgrade,
 # an uninstall, a `cb` mutation, the npm coordinator's native helper. It takes the
 # one host-wide lock (deploy/lib/lifecycle.sh) before anything below, and stops with
-# 10 while anything else holds it, 6 without root. `cb restore` holds the lock already
-# and hands it down (CB_LIFECYCLE_LOCK_FD), so this joins it rather than waiting on
-# its own parent. The library is the one shipped beside this script (the bundle's
+# 10 while anything else holds it. Without root it first re-runs itself through sudo,
+# and stops with 6 when it cannot. `cb restore` holds the lock already and hands it
+# down (CB_LIFECYCLE_LOCK_FD), so this joins it rather than waiting on its own
+# parent. The library is the one shipped beside this script (the bundle's
 # deploy/lib), else the control plane setup.sh installs in /usr/local/lib/circuitbreaker.
 # Without either, nothing is restored: an unlocked restore could interleave with an
 # upgrade. Contract: specs/install/lifecycle-contract.md §11.
@@ -126,7 +127,15 @@ if [[ -z "$_CB_LIFECYCLE_LIB" ]]; then
 fi
 # shellcheck source=../lib/lifecycle.sh
 source "$_CB_LIFECYCLE_LIB"
+# Root first: the lock is root-only, so run without it this re-runs itself
+# through sudo (and stops with 6 when it cannot) before anything else.
 _cb_lock_rc=0
+cb_lifecycle_elevate "${BASH_SOURCE[0]}" "$@" || _cb_lock_rc=$?
+if [[ "$_cb_lock_rc" -ne 0 ]]; then
+    echo "       restore.sh needs root for the host lifecycle lock. Run: sudo $0 $*" >&2
+    echo "       Nothing has been changed." >&2
+    exit "$_cb_lock_rc"
+fi
 cb_lifecycle_lock_acquire "restore.sh" || _cb_lock_rc=$?
 if [[ "$_cb_lock_rc" -ne 0 ]]; then
     echo "       Nothing has been changed." >&2

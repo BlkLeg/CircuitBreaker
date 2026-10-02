@@ -215,6 +215,29 @@ def _snapshot(tmp_path: Path) -> Path:
     return dest
 
 
+# restore.sh re-runs itself through sudo to take the root-only host lifecycle lock
+# (deploy/lib/lifecycle.sh, cb_lifecycle_elevate). This sudo never escalates: the
+# re-run executes as this same user, keeping the environment (and the seam) as
+# `sudo -E` would, `sudo -v` answers CB_TEST_SUDO_V_RC, and anything else is refused.
+_SUDO_STUB = """#!/bin/sh
+if [ "$1" = "-v" ]; then
+  exit "${CB_TEST_SUDO_V_RC:-0}"
+fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+case "$*" in
+  "env CB_LIFECYCLE_ELEVATED=1 "*) exec "$@" ;;
+esac
+echo "sudo (test stub) refuses to run: $*" >&2
+exit 1
+"""
+
+
 def _stub_bin(tmp_path: Path) -> Path:
     """Stand-ins for the host tools restore.sh drives, each logging its own argv."""
     bindir = tmp_path / "bin"
@@ -231,6 +254,9 @@ def _stub_bin(tmp_path: Path) -> Path:
         body += "exit 0\n"
         script.write_text(body, encoding="utf-8")
         script.chmod(0o755)
+    sudo = bindir / "sudo"
+    sudo.write_text(_SUDO_STUB, encoding="utf-8")
+    sudo.chmod(0o755)
     return bindir
 
 

@@ -5,7 +5,7 @@
 # GitHub : https://github.com/BlkLeg/circuitbreaker
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | sudo bash
 #   bash uninstall.sh
 #
 
@@ -26,6 +26,8 @@ set -e
 # exactly as it was.
 CB_UNATTENDED=false
 CB_PURGE_DATA=false
+# The arguments as given, for the re-run through sudo below.
+CB_UNINSTALL_ARGS=("$@")
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -59,252 +61,13 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-# Answers a y/N prompt from the flags when running non-interactively, and from
-# /dev/tty otherwise. Callers branch on the value exactly as they did when every
-# read was inline, so consent is still explicit at each site.
-cb_confirm_destructive() {
-  local prompt="$1"
-  if [ "$CB_UNATTENDED" = "true" ]; then
-    if [ "$CB_PURGE_DATA" = "true" ]; then
-      echo "  ${prompt} [--purge] yes"
-      REPLY="y"
-    else
-      echo "  ${prompt} [--keep-data] no"
-      REPLY="n"
-    fi
-    return 0
-  fi
-  printf "  %s [y/N] " "$prompt"
-  read -r REPLY < /dev/tty
-}
-
-# The other half: prompts whose subject is recoverable — a Docker image that
-# re-pulls, a local CA that re-issues — and which therefore default to yes. A
-# non-interactive run takes that default whichever data flag was given, because
-# neither flag is about images or certificates.
-cb_confirm_cleanup() {
-  local prompt="$1"
-  if [ "$CB_UNATTENDED" = "true" ]; then
-    echo "  ${prompt} [non-interactive] yes"
-    REPLY="y"
-    return 0
-  fi
-  printf "  %s [Y/n] " "$prompt"
-  read -r REPLY < /dev/tty
-}
-
-# ─── sudo on hosts that do not have it ───────────────────────────────────────
+# ─── The host lifecycle library ──────────────────────────────────────────────
 #
-# Every privileged step below calls `sudo`, which is the right shape for the
-# advertised invocation (a non-root operator running the script). It is absent
-# from the debian:12 and fedora base images the installer journey runs in, and
-# on those the script is already root — so `sudo rm -rf /opt/circuitbreaker`
-# died with "command not found" partway through a removal it had already
-# started. Only defined when it is both missing and unnecessary; where a real
-# sudo exists, that is what runs.
-if [ "$(id -u)" -eq 0 ] && ! command -v sudo >/dev/null 2>&1; then
-  sudo() { "$@"; }
-fi
-
-CB_CONTAINER="${CB_CONTAINER:-circuit-breaker}"
-CB_VOLUME="${CB_VOLUME:-circuit-breaker-data}"
-CB_IMAGE="${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:latest}"
-
-# ─── TLS / Caddy defaults (may be overridden by tls.conf) ────────────────────
-CB_CONFIG_DIR="${CB_CONFIG_DIR:-$HOME/.circuit-breaker}"
-CB_CADDY_CONTAINER="cb-caddy"
-CB_CADDY_DATA_VOLUME="cb-caddy-data"
-CB_CADDY_CONFIG_VOLUME="cb-caddy-config"
-CB_NETWORK="cb-network"
-CB_HOSTNAME="circuitbreaker.local"
-CB_CA_SYSTEM_NAME="circuit-breaker-caddy-ca"
-CB_CA_NSS_NAME="CircuitBreaker-Caddy-CA"
-
-# Load saved TLS config if present (written by install.sh)
-if [ -f "$CB_CONFIG_DIR/tls.conf" ]; then
-  while IFS='=' read -r key value; do
-    case "$key" in
-      CB_HOSTNAME)            CB_HOSTNAME="$value" ;;
-      CB_CADDY_CONTAINER)     CB_CADDY_CONTAINER="$value" ;;
-      CB_CADDY_DATA_VOLUME)   CB_CADDY_DATA_VOLUME="$value" ;;
-      CB_CADDY_CONFIG_VOLUME) CB_CADDY_CONFIG_VOLUME="$value" ;;
-      CB_NETWORK)             CB_NETWORK="$value" ;;
-      CB_CA_SYSTEM_NAME)      CB_CA_SYSTEM_NAME="$value" ;;
-      CB_CA_NSS_NAME)         CB_CA_NSS_NAME="$value" ;;
-    esac
-  done < "$CB_CONFIG_DIR/tls.conf"
-fi
-
-# ─── Colors ──────────────────────────────────────────────────────────────────
-COLOUR_RESET='\e[0m'
-aCOLOUR=(
-  '\e[38;5;154m'  # [0] green
-  '\e[1m'         # [1] bold
-  '\e[90m'        # [2] grey
-  '\e[91m'        # [3] red
-  '\e[33m'        # [4] yellow
-)
-
-# ─── Progress rendering ──────────────────────────────────────────────────────
-#
-# Same renderer as the installer. The bundle's copy at
-# /opt/circuitbreaker/deploy/lib/ui.sh is authoritative; a standalone
-# uninstall.sh downloaded on its own (this script is also served raw and
-# curl-piped — docs/installation/uninstalling.md:98) has no bundle to read, and
-# every call below goes through _cb_phase so that absence degrades to plain
-# Show() output rather than a missing-command error.
-if [[ -r /opt/circuitbreaker/deploy/lib/ui.sh ]]; then
-  # shellcheck source=deploy/lib/ui.sh
-  source /opt/circuitbreaker/deploy/lib/ui.sh
-  cb_ui_init
-  cb_ui_use_weights CB_PHASE_WEIGHTS_UNINSTALL
-fi
-
-# Calls a ui.sh function only if the library was sourced above. Keeps every
-# phase/teardown call site identical whether or not the bundle is present, so
-# a bare `curl ... | bash` uninstall (no /opt/circuitbreaker) still runs clean
-# with no renderer at all.
-_cb_phase() { declare -f "$1" >/dev/null 2>&1 && "$@"; return 0; }
-
-Show() {
-  case $1 in
-    0) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[0]} OK ${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
-    1) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[3]}FAILED${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2"; exit 1 ;;
-    2) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[0]} INFO ${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
-    3) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[4]}NOTICE${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
-  esac
-}
-
-echo ""
-echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
-echo -e " ${aCOLOUR[1]}Circuit Breaker Uninstaller${COLOUR_RESET}"
-echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
-echo ""
-
-_cb_phase cb_phase_begin preflight "Pre-flight checks"
-
-# ─── What is actually installed here ─────────────────────────────────────────
-#
-# Three layouts, and this script used to know about two of them.
-#
-#   docker   — the container, its volume and Caddy.
-#   package  — the deb/rpm layout: /usr/local/bin/circuit-breaker,
-#              circuit-breaker.service, /etc/circuit-breaker.
-#   native   — what install.sh creates: /opt/circuitbreaker, the
-#              circuitbreaker-* units, /etc/circuitbreaker, the breaker user.
-#
-# The third was invisible. Its paths differ from the packaged ones by a single
-# hyphen, and every test of the native section matched only the packaged
-# spelling — so `bash uninstall.sh` after `bash install.sh` skipped the whole
-# section and left a running deployment behind, reporting success. The
-# installer journey now uninstalls what it installed, which is what makes this
-# checkable rather than merely written down.
-# The identity file says which layout this is; the filesystem is only a
-# fallback for a host that never wrote one. Since 2026-09-22 both native
-# layouts install /opt/circuitbreaker, so its presence no longer distinguishes
-# them — the unit names still do.
-CB_IDENTITY_MODE_DETECTED=""
-for _lib in /usr/local/lib/circuitbreaker/install-identity.sh /opt/circuitbreaker/deploy/lib/install-identity.sh \
-            "$(dirname -- "$(readlink -f "$0")")/deploy/lib/install-identity.sh"; do
-  if [ -f "$_lib" ]; then
-    # shellcheck source=/dev/null
-    . "$_lib"
-    _identity="$(cb_find_install_identity 2>/dev/null || true)"
-    if [ -n "$_identity" ] && cb_validate_install_identity_file "$_identity"; then
-      CB_IDENTITY_MODE_DETECTED="$(sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' "$_identity" | head -n1)"
-    fi
-    break
-  fi
-done
-
-CB_HAS_NATIVE=false
-CB_HAS_PACKAGE=false
-case "$CB_IDENTITY_MODE_DETECTED" in
-  native|proxmox) CB_HAS_NATIVE=true ;;
-  package)        CB_HAS_PACKAGE=true ;;
-  *)
-    [ -f /etc/systemd/system/circuitbreaker-backend.service ] || [ -f /etc/circuitbreaker/.env ] && CB_HAS_NATIVE=true
-    [ -f /lib/systemd/system/circuit-breaker.service ] || [ -f /etc/systemd/system/circuit-breaker.service ] \
-      || [ -f /etc/circuit-breaker/circuit-breaker.env ] && CB_HAS_PACKAGE=true
-    ;;
-esac
-
-# Docker is a requirement of the docker layout, not of this script. A native
-# install does not need it — install.sh treats container telemetry as optional
-# and carries on when Docker cannot be installed — so refusing here made the
-# uninstaller unusable on exactly the hosts the native path targets.
-if ! command -v docker >/dev/null 2>&1; then
-  if [ "$CB_HAS_NATIVE" = "false" ] && [ "$CB_HAS_PACKAGE" = "false" ]; then
-    Show 1 "Docker is not installed and no native or packaged install was found. Nothing to uninstall."
-  fi
-  Show 2 "Docker is not installed — skipping container cleanup."
-  docker() { return 1; }
-fi
-
-# ─── Interactive terminal preflight ──────────────────────────────────────────
-#
-# Every prompt below reads from /dev/tty rather than from stdin, and that is
-# deliberate: the advertised invocation is `curl ... | bash`, where stdin is the
-# downloaded script itself, so a read from stdin would swallow the rest of the
-# source. But /dev/tty only resolves for a process that has a controlling
-# terminal. Under cron, a CI runner, `ssh host '...'` without -t, or a
-# `docker run` without -t, the open returns ENXIO, `read` returns non-zero, and
-# `set -e` ends the script on the spot.
-#
-# The spot it ended at was the *first* prompt — which is below the container
-# stop and the container removal. The operator got exit 1, one line of bash's
-# own stderr, and a host that still had the image, Caddy, the config directory
-# and /usr/local/bin/cb on it. Through a pipe with stderr discarded that is an
-# uninstaller which appears to do nothing and in fact half-uninstalled the
-# product. So ask "can this process be asked anything at all?" here, before the
-# first destructive step, rather than discovering it after.
-#
-# This does NOT relax the prompts themselves. An operator who has a terminal and
-# answers nothing — EOF on the read, a pipe that closes mid-run — must still
-# abort rather than fall through to a destructive default; no answer is not
-# consent. This preflight is only about the case where no answer was ever
-# possible.
-#
-# The test has to be a real open. `[ -r /dev/tty ]` is not one: /dev/tty is a
-# 0666 device node present on every host, so access(2) answers yes even when
-# there is no controlling terminal to attach it to and the open(2) that follows
-# returns ENXIO. `true < /dev/tty` performs the same open the reads will.
-# The 2>/dev/null must come *before* the redirection it is silencing — bash
-# applies redirections left to right, so with the order reversed the failure
-# message is written to a stderr that has not been redirected yet.
-# --purge / --keep-data answer every prompt up front, so there is nothing left
-# to ask and no terminal to need. The preflight still applies to every run that
-# did not say which answer it is giving.
-if [ "$CB_UNATTENDED" = "false" ] && ! true 2>/dev/null < /dev/tty; then
-  echo ""
-  Show 3 "No terminal is available to answer this uninstaller's prompts."
-  echo ""
-  echo "  Before removing anything, this script asks whether to delete your data"
-  echo "  volume, your Docker images and your CA certificates, and it reads those"
-  echo "  answers from /dev/tty. This process has no controlling terminal, so"
-  echo "  none of them can be answered — and nothing has been removed."
-  echo ""
-  echo "  Run it attached to a terminal instead:"
-  echo "    curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh -o uninstall.sh"
-  echo "    bash uninstall.sh"
-  echo ""
-  echo "  Over ssh, allocate one with -t. The operator who reaches this message"
-  echo "  got here through the piped form, so there is no uninstall.sh on the"
-  echo "  remote host to run -- fetch and run it in the same command:"
-  echo "    ssh -t <host> 'curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | bash'"
-  echo ""
-  Show 1 "Uninstall aborted. Nothing was removed."
-fi
-
-# ─── Host lifecycle lock ─────────────────────────────────────────────────────
-#
-# Removal conflicts with every other lifecycle operation — an install, an
-# upgrade, a restore, a `cb` mutation, the npm coordinator's native helper —
-# so it takes the one host-wide lock (deploy/lib/lifecycle.sh) before the
-# first container stop below, and stops with 10 while anything else holds it.
-# The library is inlined because this script is also curl-piped onto hosts
-# whose deploy/lib it is about to remove, or never had. Contract:
-# specs/install/lifecycle-contract.md §11.
+# Removal takes the host-wide lifecycle lock, which is root-only, so on Linux
+# this re-runs itself through sudo after the read-only preflight below, and
+# the whole removal then runs as root under the lock. The library is inlined
+# because this script is also curl-piped onto hosts whose deploy/lib it is
+# about to remove, or never had.
 # --- BEGIN INLINED deploy/lib/lifecycle.sh — regenerate with scripts/ci/sync_installer_ui.py ---
 # shellcheck shell=bash
 # Host-wide lifecycle lock and private state root.
@@ -345,6 +108,10 @@ fi
 # that dies leaves the lock held until each child it handed it to exits. A
 # helper that must not hold it (a daemon, anything detached) is started
 # through cb_lifecycle_run_unlocked or cb_lifecycle_spawn_unlocked.
+#
+# The lock is root-only, so an entrypoint that is not root first re-runs
+# itself through sudo (cb_lifecycle_elevate) and does the whole operation as
+# root under the lock, rather than escalating step by step past it.
 #
 # Within one shell, acquisitions nest: cb's restore runs its backup in the
 # same process and both take the lock, so each acquire counts a level and only
@@ -757,6 +524,47 @@ _cb_lifecycle_reenter() {
     return "$CB_LIFECYCLE_EXIT_LOCKED"
   fi
   _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "$id" $(( _CB_LIFECYCLE_LOCK_DEPTH + 1 ))
+}
+
+# Make sure this lifecycle entrypoint runs as root before it takes the lock:
+# the lock is root-only, and an entrypoint that escalated step by step through
+# sudo would make root changes without it. Not root, this re-runs script $1
+# with arguments $2... through `sudo -E`, so it never returns. HOME is passed
+# through explicitly: a Docker install is found through the operator's home,
+# which sudo may reset. CB_LIFECYCLE_ELEVATED marks the re-run. A re-run that
+# is still not root has met a sudo that does not elevate, and goes on only
+# over the CB_LIFECYCLE_ROOT test seam, whose lock is the disposable one (a real
+# sudo makes it root, where the seam is refused). Returns 0 as root, or 6
+# (with a message) when it cannot elevate: no script file to re-run (read
+# from a pipe), no sudo, or sudo refused. Call it before anything is changed.
+cb_lifecycle_elevate() {
+  local script="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  if [[ "$EUID" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "${CB_LIFECYCLE_ELEVATED:-}" == 1 ]]; then
+    if [[ -n "${CB_LIFECYCLE_ROOT:-}" ]]; then
+      return 0
+    fi
+    _cb_lifecycle_say "sudo did not run this as root; nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if [[ -z "$script" || ! -f "$script" ]]; then
+    _cb_lifecycle_say "this needs root and was read from a pipe, so it cannot re-run itself; pipe it to 'sudo bash' instead. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    _cb_lifecycle_say "this needs root and sudo is not installed; run it as root. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! sudo -v; then
+    _cb_lifecycle_say "sudo refused; run it again with sudo. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  exec sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME="${HOME:-}" bash "$script" "$@"
 }
 
 # Take the host lifecycle lock for the command named by label $1 (for
@@ -1296,22 +1104,296 @@ cb_lifecycle_install_control_plane() {
 }
 # --- END INLINED deploy/lib/lifecycle.sh ---
 
-# The lock is root-only. A native or packaged install is removed through root
-# anyway, so without root that removal is refused here (6) rather than run
-# half-unlocked through per-command sudo. A Docker-only host removed by a
-# docker-group operator as themselves cannot take it and is told so instead
-# (the contract's docker interim). Linux only: the lock needs flock(1).
-if [ "$(uname -s)" = "Linux" ]; then
-  if [ "$(id -u)" -eq 0 ] || [ -n "${CB_LIFECYCLE_ROOT:-}" ] \
-    || [ "$CB_HAS_NATIVE" = "true" ] || [ "$CB_HAS_PACKAGE" = "true" ]; then
-    _cb_lock_rc=0
-    cb_lifecycle_lock_acquire "uninstall.sh" || _cb_lock_rc=$?
-    if [ "$_cb_lock_rc" -ne 0 ]; then
-      exit "$_cb_lock_rc"
+
+# Answers a y/N prompt from the flags when running non-interactively, and from
+# /dev/tty otherwise. Callers branch on the value exactly as they did when every
+# read was inline, so consent is still explicit at each site.
+cb_confirm_destructive() {
+  local prompt="$1"
+  if [ "$CB_UNATTENDED" = "true" ]; then
+    if [ "$CB_PURGE_DATA" = "true" ]; then
+      echo "  ${prompt} [--purge] yes"
+      REPLY="y"
+    else
+      echo "  ${prompt} [--keep-data] no"
+      REPLY="n"
     fi
-  else
-    Show 3 "Running without the host lifecycle lock: it is root-only, and this Docker-only removal runs as $(id -un)."
+    return 0
   fi
+  printf "  %s [y/N] " "$prompt"
+  read -r REPLY < /dev/tty
+}
+
+# The other half: prompts whose subject is recoverable — a Docker image that
+# re-pulls, a local CA that re-issues — and which therefore default to yes. A
+# non-interactive run takes that default whichever data flag was given, because
+# neither flag is about images or certificates.
+cb_confirm_cleanup() {
+  local prompt="$1"
+  if [ "$CB_UNATTENDED" = "true" ]; then
+    echo "  ${prompt} [non-interactive] yes"
+    REPLY="y"
+    return 0
+  fi
+  printf "  %s [Y/n] " "$prompt"
+  read -r REPLY < /dev/tty
+}
+
+# ─── sudo on hosts that do not have it ───────────────────────────────────────
+#
+# Every privileged step below calls `sudo`, which is the right shape for the
+# advertised invocation (a non-root operator running the script). It is absent
+# from the debian:12 and fedora base images the installer journey runs in, and
+# on those the script is already root — so `sudo rm -rf /opt/circuitbreaker`
+# died with "command not found" partway through a removal it had already
+# started. Only defined when it is both missing and unnecessary; where a real
+# sudo exists, that is what runs.
+if [ "$(id -u)" -eq 0 ] && ! command -v sudo >/dev/null 2>&1; then
+  sudo() { "$@"; }
+fi
+
+CB_CONTAINER="${CB_CONTAINER:-circuit-breaker}"
+CB_VOLUME="${CB_VOLUME:-circuit-breaker-data}"
+CB_IMAGE="${CB_IMAGE:-ghcr.io/blkleg/circuitbreaker:latest}"
+
+# ─── TLS / Caddy defaults (may be overridden by tls.conf) ────────────────────
+# The Docker layout's config lives in the operator's home. Run as
+# `curl ... | sudo bash`, sudo may have set HOME to root's, so the operator who
+# invoked sudo decides where it is.
+_cb_operator_home="${HOME:-}"
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+  _cb_sudo_home="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6 || true)"
+  if [ -n "$_cb_sudo_home" ]; then
+    _cb_operator_home="$_cb_sudo_home"
+  fi
+fi
+CB_CONFIG_DIR="${CB_CONFIG_DIR:-$_cb_operator_home/.circuit-breaker}"
+CB_CADDY_CONTAINER="cb-caddy"
+CB_CADDY_DATA_VOLUME="cb-caddy-data"
+CB_CADDY_CONFIG_VOLUME="cb-caddy-config"
+CB_NETWORK="cb-network"
+CB_HOSTNAME="circuitbreaker.local"
+CB_CA_SYSTEM_NAME="circuit-breaker-caddy-ca"
+CB_CA_NSS_NAME="CircuitBreaker-Caddy-CA"
+
+# Load saved TLS config if present (written by install.sh)
+if [ -f "$CB_CONFIG_DIR/tls.conf" ]; then
+  while IFS='=' read -r key value; do
+    case "$key" in
+      CB_HOSTNAME)            CB_HOSTNAME="$value" ;;
+      CB_CADDY_CONTAINER)     CB_CADDY_CONTAINER="$value" ;;
+      CB_CADDY_DATA_VOLUME)   CB_CADDY_DATA_VOLUME="$value" ;;
+      CB_CADDY_CONFIG_VOLUME) CB_CADDY_CONFIG_VOLUME="$value" ;;
+      CB_NETWORK)             CB_NETWORK="$value" ;;
+      CB_CA_SYSTEM_NAME)      CB_CA_SYSTEM_NAME="$value" ;;
+      CB_CA_NSS_NAME)         CB_CA_NSS_NAME="$value" ;;
+    esac
+  done < "$CB_CONFIG_DIR/tls.conf"
+fi
+
+# ─── Colors ──────────────────────────────────────────────────────────────────
+COLOUR_RESET='\e[0m'
+aCOLOUR=(
+  '\e[38;5;154m'  # [0] green
+  '\e[1m'         # [1] bold
+  '\e[90m'        # [2] grey
+  '\e[91m'        # [3] red
+  '\e[33m'        # [4] yellow
+)
+
+# ─── Progress rendering ──────────────────────────────────────────────────────
+#
+# Same renderer as the installer. The bundle's copy at
+# /opt/circuitbreaker/deploy/lib/ui.sh is authoritative; a standalone
+# uninstall.sh downloaded on its own (this script is also served raw and
+# curl-piped — docs/installation/uninstalling.md:98) has no bundle to read, and
+# every call below goes through _cb_phase so that absence degrades to plain
+# Show() output rather than a missing-command error.
+if [[ -r /opt/circuitbreaker/deploy/lib/ui.sh ]]; then
+  # shellcheck source=deploy/lib/ui.sh
+  source /opt/circuitbreaker/deploy/lib/ui.sh
+  cb_ui_init
+  cb_ui_use_weights CB_PHASE_WEIGHTS_UNINSTALL
+fi
+
+# Calls a ui.sh function only if the library was sourced above. Keeps every
+# phase/teardown call site identical whether or not the bundle is present, so
+# a bare `curl ... | bash` uninstall (no /opt/circuitbreaker) still runs clean
+# with no renderer at all.
+_cb_phase() { declare -f "$1" >/dev/null 2>&1 && "$@"; return 0; }
+
+Show() {
+  case $1 in
+    0) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[0]} OK ${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
+    1) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[3]}FAILED${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2"; exit 1 ;;
+    2) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[0]} INFO ${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
+    3) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[4]}NOTICE${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
+  esac
+}
+
+# The re-run through sudo (below) has already shown this.
+if [ "${CB_LIFECYCLE_ELEVATED:-}" != "1" ]; then
+  echo ""
+  echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
+  echo -e " ${aCOLOUR[1]}Circuit Breaker Uninstaller${COLOUR_RESET}"
+  echo -e "${aCOLOUR[0]}─────────────────────────────────────────────────────${COLOUR_RESET}"
+  echo ""
+fi
+
+_cb_phase cb_phase_begin preflight "Pre-flight checks"
+
+# ─── What is actually installed here ─────────────────────────────────────────
+#
+# Three layouts, and this script used to know about two of them.
+#
+#   docker   — the container, its volume and Caddy.
+#   package  — the deb/rpm layout: /usr/local/bin/circuit-breaker,
+#              circuit-breaker.service, /etc/circuit-breaker.
+#   native   — what install.sh creates: /opt/circuitbreaker, the
+#              circuitbreaker-* units, /etc/circuitbreaker, the breaker user.
+#
+# The third was invisible. Its paths differ from the packaged ones by a single
+# hyphen, and every test of the native section matched only the packaged
+# spelling — so `bash uninstall.sh` after `bash install.sh` skipped the whole
+# section and left a running deployment behind, reporting success. The
+# installer journey now uninstalls what it installed, which is what makes this
+# checkable rather than merely written down.
+# The identity file says which layout this is; the filesystem is only a
+# fallback for a host that never wrote one. Since 2026-09-22 both native
+# layouts install /opt/circuitbreaker, so its presence no longer distinguishes
+# them — the unit names still do.
+CB_IDENTITY_MODE_DETECTED=""
+for _lib in /usr/local/lib/circuitbreaker/install-identity.sh /opt/circuitbreaker/deploy/lib/install-identity.sh \
+            "$(dirname -- "$(readlink -f "$0")")/deploy/lib/install-identity.sh"; do
+  if [ -f "$_lib" ]; then
+    # shellcheck source=/dev/null
+    . "$_lib"
+    _identity="$(cb_find_install_identity 2>/dev/null || true)"
+    if [ -n "$_identity" ] && cb_validate_install_identity_file "$_identity"; then
+      CB_IDENTITY_MODE_DETECTED="$(sed -n 's/.*"mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' "$_identity" | head -n1)"
+    fi
+    break
+  fi
+done
+
+CB_HAS_NATIVE=false
+CB_HAS_PACKAGE=false
+case "$CB_IDENTITY_MODE_DETECTED" in
+  native|proxmox) CB_HAS_NATIVE=true ;;
+  package)        CB_HAS_PACKAGE=true ;;
+  *)
+    [ -f /etc/systemd/system/circuitbreaker-backend.service ] || [ -f /etc/circuitbreaker/.env ] && CB_HAS_NATIVE=true
+    [ -f /lib/systemd/system/circuit-breaker.service ] || [ -f /etc/systemd/system/circuit-breaker.service ] \
+      || [ -f /etc/circuit-breaker/circuit-breaker.env ] && CB_HAS_PACKAGE=true
+    ;;
+esac
+
+# Docker is a requirement of the docker layout, not of this script. A native
+# install does not need it — install.sh treats container telemetry as optional
+# and carries on when Docker cannot be installed — so refusing here made the
+# uninstaller unusable on exactly the hosts the native path targets.
+if ! command -v docker >/dev/null 2>&1; then
+  if [ "$CB_HAS_NATIVE" = "false" ] && [ "$CB_HAS_PACKAGE" = "false" ]; then
+    Show 1 "Docker is not installed and no native or packaged install was found. Nothing to uninstall."
+  fi
+  Show 2 "Docker is not installed — skipping container cleanup."
+  docker() { return 1; }
+fi
+
+# ─── Interactive terminal preflight ──────────────────────────────────────────
+#
+# Every prompt below reads from /dev/tty rather than from stdin, and that is
+# deliberate: the advertised invocation is `curl ... | bash`, where stdin is the
+# downloaded script itself, so a read from stdin would swallow the rest of the
+# source. But /dev/tty only resolves for a process that has a controlling
+# terminal. Under cron, a CI runner, `ssh host '...'` without -t, or a
+# `docker run` without -t, the open returns ENXIO, `read` returns non-zero, and
+# `set -e` ends the script on the spot.
+#
+# The spot it ended at was the *first* prompt — which is below the container
+# stop and the container removal. The operator got exit 1, one line of bash's
+# own stderr, and a host that still had the image, Caddy, the config directory
+# and /usr/local/bin/cb on it. Through a pipe with stderr discarded that is an
+# uninstaller which appears to do nothing and in fact half-uninstalled the
+# product. So ask "can this process be asked anything at all?" here, before the
+# first destructive step, rather than discovering it after.
+#
+# This does NOT relax the prompts themselves. An operator who has a terminal and
+# answers nothing — EOF on the read, a pipe that closes mid-run — must still
+# abort rather than fall through to a destructive default; no answer is not
+# consent. This preflight is only about the case where no answer was ever
+# possible.
+#
+# The test has to be a real open. `[ -r /dev/tty ]` is not one: /dev/tty is a
+# 0666 device node present on every host, so access(2) answers yes even when
+# there is no controlling terminal to attach it to and the open(2) that follows
+# returns ENXIO. `true < /dev/tty` performs the same open the reads will.
+# The 2>/dev/null must come *before* the redirection it is silencing — bash
+# applies redirections left to right, so with the order reversed the failure
+# message is written to a stderr that has not been redirected yet.
+# --purge / --keep-data answer every prompt up front, so there is nothing left
+# to ask and no terminal to need. The preflight still applies to every run that
+# did not say which answer it is giving.
+if [ "$CB_UNATTENDED" = "false" ] && ! true 2>/dev/null < /dev/tty; then
+  echo ""
+  Show 3 "No terminal is available to answer this uninstaller's prompts."
+  echo ""
+  echo "  Before removing anything, this script asks whether to delete your data"
+  echo "  volume, your Docker images and your CA certificates, and it reads those"
+  echo "  answers from /dev/tty. This process has no controlling terminal, so"
+  echo "  none of them can be answered — and nothing has been removed."
+  echo ""
+  echo "  Run it attached to a terminal instead:"
+  echo "    curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh -o uninstall.sh"
+  echo "    bash uninstall.sh"
+  echo ""
+  echo "  Over ssh, allocate one with -t. The operator who reaches this message"
+  echo "  got here through the piped form, so there is no uninstall.sh on the"
+  echo "  remote host to run -- fetch and run it in the same command:"
+  echo "    ssh -t <host> 'curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | sudo bash'"
+  echo ""
+  Show 1 "Uninstall aborted. Nothing was removed."
+fi
+
+# Root before anything is removed: the host lifecycle lock below is root-only,
+# so on Linux this re-runs itself through sudo here — after the terminal check,
+# since sudo may need the same terminal to ask for a password — and the re-run
+# does the whole removal as root under the lock. Read from a pipe there is no
+# file to re-run, and the operator is told to pipe it to sudo instead.
+if [ "$(uname -s)" = "Linux" ]; then
+  _cb_elevate_rc=0
+  cb_lifecycle_elevate "${BASH_SOURCE[0]:-}" ${CB_UNINSTALL_ARGS[@]+"${CB_UNINSTALL_ARGS[@]}"} || _cb_elevate_rc=$?
+  if [ "$_cb_elevate_rc" -ne 0 ]; then
+    echo "uninstall.sh needs root for the host lifecycle lock. Run: sudo bash uninstall.sh ${CB_UNINSTALL_ARGS[*]:-}" >&2
+    echo "  or: curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | sudo bash -s -- ${CB_UNINSTALL_ARGS[*]:-}" >&2
+    exit "$_cb_elevate_rc"
+  fi
+fi
+
+
+# ─── Host lifecycle lock ─────────────────────────────────────────────────────
+#
+# Removal conflicts with every other lifecycle operation — an install, an
+# upgrade, a restore, a `cb` mutation, the npm coordinator's native helper —
+# so it takes the one host-wide lock before the first container stop below,
+# and stops with 10 while anything else holds it. This script is root by now
+# (it re-ran itself through sudo above). Linux only: the lock needs flock(1).
+# Contract: specs/install/lifecycle-contract.md §11.
+if [ "$(uname -s)" = "Linux" ]; then
+  _cb_lock_rc=0
+  cb_lifecycle_lock_acquire "uninstall.sh" || _cb_lock_rc=$?
+  if [ "$_cb_lock_rc" -ne 0 ]; then
+    exit "$_cb_lock_rc"
+  fi
+  # Every privileged step below was written as `sudo ...` for an operator
+  # running this as themselves. The whole script is root now, under the lock,
+  # so those steps run directly: nothing escalates past the lock on its own.
+  sudo() {
+    if [ "${1:-}" = "-v" ]; then
+      return 0
+    fi
+    "$@"
+  }
 fi
 
 _cb_phase cb_phase_end preflight

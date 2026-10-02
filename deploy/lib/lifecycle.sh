@@ -38,6 +38,10 @@
 # helper that must not hold it (a daemon, anything detached) is started
 # through cb_lifecycle_run_unlocked or cb_lifecycle_spawn_unlocked.
 #
+# The lock is root-only, so an entrypoint that is not root first re-runs
+# itself through sudo (cb_lifecycle_elevate) and does the whole operation as
+# root under the lock, rather than escalating step by step past it.
+#
 # Within one shell, acquisitions nest: cb's restore runs its backup in the
 # same process and both take the lock, so each acquire counts a level and only
 # the release that matches the outermost acquire closes the descriptor. The
@@ -449,6 +453,47 @@ _cb_lifecycle_reenter() {
     return "$CB_LIFECYCLE_EXIT_LOCKED"
   fi
   _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "$id" $(( _CB_LIFECYCLE_LOCK_DEPTH + 1 ))
+}
+
+# Make sure this lifecycle entrypoint runs as root before it takes the lock:
+# the lock is root-only, and an entrypoint that escalated step by step through
+# sudo would make root changes without it. Not root, this re-runs script $1
+# with arguments $2... through `sudo -E`, so it never returns. HOME is passed
+# through explicitly: a Docker install is found through the operator's home,
+# which sudo may reset. CB_LIFECYCLE_ELEVATED marks the re-run. A re-run that
+# is still not root has met a sudo that does not elevate, and goes on only
+# over the CB_LIFECYCLE_ROOT test seam, whose lock is the disposable one (a real
+# sudo makes it root, where the seam is refused). Returns 0 as root, or 6
+# (with a message) when it cannot elevate: no script file to re-run (read
+# from a pipe), no sudo, or sudo refused. Call it before anything is changed.
+cb_lifecycle_elevate() {
+  local script="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  if [[ "$EUID" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "${CB_LIFECYCLE_ELEVATED:-}" == 1 ]]; then
+    if [[ -n "${CB_LIFECYCLE_ROOT:-}" ]]; then
+      return 0
+    fi
+    _cb_lifecycle_say "sudo did not run this as root; nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if [[ -z "$script" || ! -f "$script" ]]; then
+    _cb_lifecycle_say "this needs root and was read from a pipe, so it cannot re-run itself; pipe it to 'sudo bash' instead. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    _cb_lifecycle_say "this needs root and sudo is not installed; run it as root. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! sudo -v; then
+    _cb_lifecycle_say "sudo refused; run it again with sudo. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  exec sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME="${HOME:-}" bash "$script" "$@"
 }
 
 # Take the host lifecycle lock for the command named by label $1 (for

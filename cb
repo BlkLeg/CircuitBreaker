@@ -39,6 +39,10 @@ set -eo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _CB_HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+# This script and its arguments, for a mutating command that re-runs itself
+# through sudo to take the root-only host lifecycle lock (_cb_lock).
+_CB_SELF="${_CB_HERE}/$(basename -- "${BASH_SOURCE[0]}")"
+_CB_ARGV=("$@")
 for _id_lib in \
   "${_CB_HERE}/deploy/lib/install-identity.sh" \
   /usr/local/lib/circuitbreaker/install-identity.sh \
@@ -446,20 +450,14 @@ _cb_lifecycle_library() {
 # root, 7 when it cannot be taken at all. Nested calls in this shell (cb
 # restore's safety backup) take one more level of the same lock.
 #
-# The lock is root-only. A docker or compose install managed by a docker-group
-# operator as themselves cannot take it; such a command runs as it always has
-# and says so (the contract's docker interim). Every other mode needs root for
-# its changes anyway, and without it is refused with 6 before anything runs.
+# The lock is root-only, so a command run without root first re-runs itself
+# through sudo (cb_lifecycle_elevate), in every mode: the whole command then
+# runs as root under the real host lock, and none of its steps escalates on
+# its own. HOME is carried across, so a Docker install is still found through
+# the operator's home. Without sudo, or when sudo refuses, it stops with 6
+# before anything runs.
 _cb_lock() {
   local label="$1" lib rc=0
-  if [[ "$EUID" -ne 0 && -z "${CB_LIFECYCLE_ROOT:-}" ]]; then
-    case "$CB_MODE" in
-      docker|compose)
-        _warn "Running without the host lifecycle lock: it is root-only, and this ${CB_MODE} install is managed as $(id -un)."
-        return 0
-        ;;
-    esac
-  fi
   if ! declare -F cb_lifecycle_lock_acquire >/dev/null 2>&1; then
     if ! lib="$(_cb_lifecycle_library)"; then
       echo "cb: the lifecycle library (lifecycle.sh) is not installed in /usr/local/lib/circuitbreaker, so '${label}' cannot take the host lifecycle lock. Re-run the installer for this mode. Nothing was changed." >&2
@@ -468,6 +466,11 @@ _cb_lock() {
     # shellcheck source=deploy/lib/lifecycle.sh
     source "$lib"
   fi
+  cb_lifecycle_elevate "$_CB_SELF" ${_CB_ARGV[@]+"${_CB_ARGV[@]}"} || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    echo "cb: '${label}' needs root for the host lifecycle lock. Run: sudo cb ${_CB_ARGV[*]}" >&2
+    exit "$rc"
+  fi
   cb_lifecycle_lock_acquire "$label" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     exit "$rc"
@@ -475,6 +478,18 @@ _cb_lock() {
 }
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+# A docker or compose install belongs to the operator who manages it, and a
+# mutating command reaches root only by re-running itself through sudo
+# (_cb_lock). What it writes into that operator's tree (a backup, the backup
+# directory) is handed back to them, as it was theirs before the command
+# needed root. Other modes are root's already.
+_cb_hand_back() {
+  [[ "$EUID" -eq 0 && "${SUDO_UID:-}" =~ ^[1-9][0-9]*$ && "${SUDO_GID:-}" =~ ^[0-9]+$ ]] || return 0
+  case "$CB_MODE" in
+    docker|compose) chown "${SUDO_UID}:${SUDO_GID}" -- "$@" 2>/dev/null || true ;;
+  esac
+}
+
 _require_docker() {
   command -v docker >/dev/null 2>&1 || _fail "Docker is not installed or not in PATH."
   docker info >/dev/null 2>&1       || _fail "Docker daemon is not running."
@@ -1305,12 +1320,12 @@ cmd_restart() {
       ;;
     binary)
       _info "Restarting circuit-breaker.service..."
-      sudo systemctl restart circuit-breaker
+      systemctl restart circuit-breaker
       _ok "Restarted."
       ;;
     native)
       _info "Restarting circuitbreaker.target..."
-      sudo systemctl restart circuitbreaker.target
+      systemctl restart circuitbreaker.target
       _ok "Restarted."
       ;;
     *)
@@ -1592,6 +1607,7 @@ cmd_backup() {
 
   [[ -s "$out" ]] || _fail "Expected a snapshot at ${out}, but nothing usable is there."
   chmod 600 "$out" 2>/dev/null || true
+  _cb_hand_back "$backup_dir" "$out" ${encrypted:+"$encrypted"}
 
   _ok "Backup written to ${out}"
   echo -e "  ${GR}Contains the database, uploads, config and the vault key.${R}"
@@ -2139,18 +2155,18 @@ cmd_vault_recover() {
 
       if [[ -f "$env_file" ]]; then
         if grep -q "^CB_VAULT_KEY=" "$env_file"; then
-          sudo sed -i "s|^CB_VAULT_KEY=.*|CB_VAULT_KEY=${key}|" "$env_file"
+          sed -i "s|^CB_VAULT_KEY=.*|CB_VAULT_KEY=${key}|" "$env_file"
         else
-          printf "\nCB_VAULT_KEY=%s\n" "$key" | sudo tee -a "$env_file" >/dev/null
+          printf "\nCB_VAULT_KEY=%s\n" "$key" | tee -a "$env_file" >/dev/null
         fi
       else
-        printf "CB_VAULT_KEY=%s\n" "$key" | sudo tee "$env_file" >/dev/null
+        printf "CB_VAULT_KEY=%s\n" "$key" | tee "$env_file" >/dev/null
       fi
-      sudo chmod 640 "$env_file"
+      chmod 640 "$env_file"
 
       _ok "Vault key written to ${env_file}."
       _info "Restarting service to apply the key..."
-      sudo systemctl restart circuit-breaker
+      systemctl restart circuit-breaker
       _ok "Vault recovered."
       ;;
   esac

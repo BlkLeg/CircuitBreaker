@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+import secrets
 import select
 import shutil
 import signal
@@ -105,13 +106,43 @@ esac
 exit 0
 """
 _LOGGER = '#!/bin/sh\necho "{name} $*" >> "$CB_TEST_LOG"\nexit 0\n'
+# A sudo that never escalates. Each entrypoint re-runs itself through
+# `sudo -E -- env CB_LIFECYCLE_ELEVATED=1 ...` (cb_lifecycle_elevate): that
+# re-run is executed as this same unprivileged user, keeping the environment
+# and so the CB_LIFECYCLE_ROOT seam, as `sudo -E` would. With CB_TEST_SUDO_CLEAR
+# it clears the environment first, as sudo does without -E. `sudo -v` answers
+# CB_TEST_SUDO_V_RC. Any other command is logged as a side effect, never run.
+# Its own invocations go to a separate log so "no side effect" stays checkable.
+_SUDO = r"""#!/bin/sh
+echo "sudo $*" >> "$CB_TEST_LOG.sudo"
+if [ "$1" = "-v" ]; then
+  exit "${CB_TEST_SUDO_V_RC:-0}"
+fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+case "$*" in
+  "env CB_LIFECYCLE_ELEVATED=1 "*)
+    if [ -n "${CB_TEST_SUDO_CLEAR:-}" ]; then
+      exec env -i PATH="$PATH" CB_TEST_LOG="$CB_TEST_LOG" "$@"
+    fi
+    exec "$@" ;;
+esac
+echo "sudo $*" >> "$CB_TEST_LOG"
+exit 0
+"""
 
 
 def _stubs(tmp_path: Path) -> Path:
     stubs = tmp_path / "stubs"
     stubs.mkdir(exist_ok=True)
     (stubs / "docker").write_text(_DOCKER)
-    for name in ("systemctl", "sudo", "curl", "journalctl", "pg_dump", "nginx", "userdel", "update-ca-certificates"):
+    (stubs / "sudo").write_text(_SUDO)
+    for name in ("systemctl", "curl", "journalctl", "pg_dump", "nginx", "userdel", "update-ca-certificates"):
         (stubs / name).write_text(_LOGGER.format(name=name))
     for stub in stubs.iterdir():
         stub.chmod(0o755)
@@ -120,6 +151,14 @@ def _stubs(tmp_path: Path) -> Path:
 
 def _calls(log: Path) -> list[str]:
     return log.read_text().splitlines() if log.exists() else []
+
+
+def _sudo_calls(env: dict[str, str]) -> list[str]:
+    return _calls(Path(env["CB_TEST_LOG"] + ".sudo"))
+
+
+def _reran_through_sudo(env: dict[str, str]) -> bool:
+    return any("CB_LIFECYCLE_ELEVATED=1" in call for call in _sudo_calls(env))
 
 
 # --- a lock holder, through the library (the npm coordinator's native helper's shape) -------
@@ -195,7 +234,7 @@ def _cb_env(tmp_path: Path, mode: str, state: Path | None) -> dict[str, str]:
         f"CB_MODE={mode}\nCB_CONTAINER=cbtest\nCB_PORT=8080\nCB_VOLUME=cbtest-data\n"
         f"CB_IMAGE=ghcr.io/blkleg/circuitbreaker:latest\nCB_BACKUP_DIR={tmp_path / 'backups'}\n"
     )
-    (conf / "env").write_text("CB_JWT_SECRET=" + "a" * 64 + "\n")
+    (conf / "env").write_text(f"CB_JWT_SECRET={secrets.token_hex(32)}\n")
     env = {
         **_clean_env(),
         "HOME": str(tmp_path),
@@ -241,6 +280,10 @@ CB_READERS = {
     "config validate": ["config", "validate"],
     "migrate status": ["migrate", "status"],
     "help": ["help"],
+    "doctor": ["doctor"],
+    "diag": ["diag"],
+    "resources": ["resources", "--json"],
+    "setup-token": ["setup-token"],
 }
 
 
@@ -257,8 +300,33 @@ def test_a_cb_mutator_refuses_with_10_and_changes_nothing_while_the_lock_is_held
     r = _cb(env, *_argv(CB_MUTATORS[name], tmp_path))
     assert r.returncode == LOCKED, r.stdout + r.stderr
     assert HELD in r.stderr
+    assert _reran_through_sudo(env), "cb took the lock without first becoming root"
     assert _calls(Path(env["CB_TEST_LOG"])) == [], "cb reached docker before it had the lock"
     assert not (tmp_path / "backups").exists(), "cb created its backup directory without the lock"
+
+
+# Every mode's branch of each mutator: `cb update` locks inside the docker and compose
+# branches, and native and binary refuse it before any change, so they take no lock.
+CB_MODE_CASES = [
+    ("compose", ["update"], LOCKED),
+    ("native", ["restart"], LOCKED),
+    ("binary", ["restart"], LOCKED),
+    ("binary", ["vault-recover"], LOCKED),
+    ("native", ["update"], 1),
+    ("binary", ["update"], 1),
+]
+
+
+@pytest.mark.parametrize(("mode", "argv", "code"), CB_MODE_CASES, ids=[f"{m}-{' '.join(a)}" for m, a, _ in CB_MODE_CASES])
+@seam
+def test_each_mode_of_a_cb_mutator_refuses_or_locks_before_any_change(
+    tmp_path: Path, state: Path, held: Holder, mode: str, argv: list[str], code: int
+) -> None:
+    env = _cb_env(tmp_path, mode, state)
+    r = _cb(env, *argv)
+    assert r.returncode == code, r.stdout + r.stderr
+    assert (HELD in r.stderr) == (code == LOCKED), r.stderr
+    assert _calls(Path(env["CB_TEST_LOG"])) == [], "cb changed something before it had the lock"
 
 
 @pytest.mark.parametrize("name", sorted(CB_READERS))
@@ -269,6 +337,7 @@ def test_a_read_only_cb_command_takes_no_lock(tmp_path: Path, state: Path, held:
     assert r.returncode != LOCKED, r.stderr
     assert HELD not in r.stderr
     assert "lifecycle lock" not in r.stderr
+    assert not _reran_through_sudo(env), f"cb {name} re-ran itself through sudo"
 
 
 @pytest.mark.parametrize("name", sorted(CB_READERS))
@@ -285,8 +354,20 @@ def test_a_cb_mutator_takes_the_lock_when_it_is_free_and_lets_it_go_at_exit(tmp_
     r = _cb(env, "restart")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "docker restart cbtest" in _calls(Path(env["CB_TEST_LOG"]))
+    assert _reran_through_sudo(env)
+    assert "lifecycle lock" not in r.stderr, "the docker-mode warning is gone: the command is locked"
     assert _owner_label(state) == "cb restart"
     assert _lock_is_free(state)
+
+
+@seam
+def test_a_native_cb_mutator_makes_its_root_changes_directly_under_the_lock(tmp_path: Path, state: Path) -> None:
+    """No step escalates on its own past the lock: systemctl runs in the elevated cb itself."""
+    env = _cb_env(tmp_path, "native", state)
+    r = _cb(env, "restart")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert _calls(Path(env["CB_TEST_LOG"])) == ["systemctl restart circuitbreaker.target"]
+    assert _owner_label(state) == "cb restart"
 
 
 @seam
@@ -295,6 +376,7 @@ def test_cb_restore_nests_its_safety_backup_in_the_same_lock(tmp_path: Path, sta
     env = _cb_env(tmp_path, "docker", state)
     r = _cb(env, "restore", str(_archive(tmp_path)), "--yes")
     assert r.returncode == 0, r.stdout + r.stderr
+    assert "lifecycle lock" not in r.stderr
     calls = _calls(Path(env["CB_TEST_LOG"]))
     assert any("snapshot create" in c for c in calls), calls
     assert any(c.startswith("docker restart") for c in calls), calls
@@ -330,22 +412,26 @@ def test_cb_restore_hands_the_lock_to_restore_sh(tmp_path: Path, state: Path) ->
 
 
 @seam
-def test_a_native_cb_mutator_without_root_is_refused_with_6_before_anything(tmp_path: Path) -> None:
-    env = _cb_env(tmp_path, "native", None)
+def test_a_cb_mutator_that_sudo_refuses_stops_with_6_before_anything(tmp_path: Path, state: Path) -> None:
+    env = {**_cb_env(tmp_path, "docker", state), "CB_TEST_SUDO_V_RC": "1"}
     r = _cb(env, "restart")
     assert r.returncode == PERMISSION, r.stdout + r.stderr
-    assert "sudo" in r.stderr
+    assert "sudo cb restart" in r.stderr
     assert _calls(Path(env["CB_TEST_LOG"])) == []
+    assert not state.exists()
 
 
 @seam
-def test_a_docker_cb_mutator_without_root_runs_and_says_it_has_no_lock(tmp_path: Path) -> None:
-    """The interim for a docker-group operator (contract §11): unchanged behaviour, stated."""
-    env = _cb_env(tmp_path, "docker", None)
+def test_a_real_escalation_never_lands_on_the_test_seam(tmp_path: Path, state: Path) -> None:
+    """sudo drops CB_LIFECYCLE_ROOT; root refuses it anyway. Either way the seam is not the lock."""
+    env = {**_cb_env(tmp_path, "native", state), "CB_TEST_SUDO_CLEAR": "1"}
+    # Where cb finds the install without its environment: under HOME, which the re-run carries.
+    shutil.copytree(env["CB_CONFIG_DIR"], tmp_path / ".circuit-breaker")
     r = _cb(env, "restart")
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert "without the host lifecycle lock" in r.stderr
-    assert "docker restart cbtest" in _calls(Path(env["CB_TEST_LOG"]))
+    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    assert _reran_through_sudo(env)
+    assert not state.exists(), "an escalated run took the disposable lock"
+    assert _calls(Path(env["CB_TEST_LOG"])) == []
 
 
 @seam
@@ -381,9 +467,8 @@ def test_restore_sh_refuses_with_10_before_it_stops_anything(tmp_path: Path, sta
 
 
 @seam
-def test_restore_sh_without_root_is_refused_with_6(tmp_path: Path) -> None:
-    env = _matrix._harness(tmp_path)
-    env.pop("CB_LIFECYCLE_ROOT", None)
+def test_restore_sh_that_sudo_refuses_stops_with_6(tmp_path: Path) -> None:
+    env = {**_matrix._harness(tmp_path), "CB_TEST_SUDO_V_RC": "1"}
     r = _matrix._run(_matrix._snapshot(tmp_path), env)
     assert r.returncode == PERMISSION, r.stdout + r.stderr
     assert _matrix._calls(env) == []
@@ -392,7 +477,7 @@ def test_restore_sh_without_root_is_refused_with_6(tmp_path: Path) -> None:
 # --- uninstall.sh and install.sh, run the way they are downloaded -------------------------
 
 
-def _installer_env(tmp_path: Path, state: Path | None) -> dict[str, str]:
+def _installer_env(tmp_path: Path, state: Path | None, *, piped_sudo: bool = True) -> dict[str, str]:
     stubs = _stubs(tmp_path)
     home = tmp_path / "home"
     (home / ".circuit-breaker").mkdir(parents=True, exist_ok=True)
@@ -408,6 +493,10 @@ def _installer_env(tmp_path: Path, state: Path | None) -> dict[str, str]:
     }
     if state is not None:
         env["CB_LIFECYCLE_ROOT"] = str(state)
+    if piped_sudo:
+        # A piped script has no file to re-run, so it is run as `curl ... | sudo bash`:
+        # over the seam that is the elevated, still unprivileged, process.
+        env["CB_LIFECYCLE_ELEVATED"] = "1"
     return env
 
 
@@ -439,26 +528,67 @@ def test_a_piped_uninstall_sh_takes_the_lock_when_it_is_free(tmp_path: Path, sta
 
 
 @seam
-def test_uninstall_sh_of_a_native_install_without_root_is_refused_with_6(tmp_path: Path) -> None:
+def test_uninstall_sh_of_a_native_install_re_runs_through_sudo_and_refuses_with_10(
+    tmp_path: Path, state: Path, held: Holder
+) -> None:
     identity = tmp_path / "install-identity.json"
     identity.write_text(
         '{"schema_version": 1, "mode": "native", "version": "0.4.7", "installed_at": "2026-10-01T00:00:00Z"}\n'
     )
-    env = {**_installer_env(tmp_path, None), "CB_IDENTITY_PATH": str(identity)}
+    env = {**_installer_env(tmp_path, state, piped_sudo=False), "CB_IDENTITY_PATH": str(identity)}
     r = subprocess.run(
         ["bash", str(UNINSTALL_SH), "--keep-data"], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=120, check=False,
     )
-    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    assert r.returncode == LOCKED, r.stdout + r.stderr
+    assert _reran_through_sudo(env)
     assert _calls(Path(env["CB_TEST_LOG"])) == []
 
 
+@pytest.mark.parametrize(("script", "args"), [(UNINSTALL_SH, ["--keep-data"]), (INSTALL_SH, ["--docker"])],
+                         ids=["uninstall.sh", "install.sh"])
 @seam
-def test_a_docker_only_uninstall_without_root_runs_and_says_it_has_no_lock(tmp_path: Path) -> None:
-    env = _installer_env(tmp_path, None)
-    r = _piped(UNINSTALL_SH, env, tmp_path, "--keep-data")
+def test_a_piped_script_run_without_sudo_stops_with_6_and_names_sudo(
+    tmp_path: Path, state: Path, script: Path, args: list[str]
+) -> None:
+    env = _installer_env(tmp_path, state, piped_sudo=False)
+    r = _piped(script, env, tmp_path, *args)
+    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    assert "sudo bash" in r.stdout + r.stderr
+    assert _calls(Path(env["CB_TEST_LOG"])) == []
+    assert not state.exists()
+    assert (Path(env["CB_CONFIG_DIR"]) / "keep").exists()
+
+
+@seam
+def test_uninstall_sh_from_a_file_re_runs_itself_through_sudo(tmp_path: Path, state: Path) -> None:
+    env = _installer_env(tmp_path, state, piped_sudo=False)
+    r = subprocess.run(
+        ["bash", str(UNINSTALL_SH), "--keep-data"], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=120, check=False,
+    )
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "without the host lifecycle lock" in r.stdout + r.stderr
+    assert _reran_through_sudo(env)
+    assert _owner_label(state) == "uninstall.sh"
+    assert "without the host lifecycle lock" not in r.stdout + r.stderr
+
+
+@seam
+def test_the_native_install_sh_re_runs_through_sudo_and_refuses_with_10_before_anything(
+    tmp_path: Path, state: Path, held: Holder
+) -> None:
+    env = _installer_env(tmp_path, state, piped_sudo=False)
+    log = Path("/tmp/cb-bootstrap.log")
+    before = log.stat().st_mtime_ns if log.exists() else None
+    r = subprocess.run(
+        ["bash", str(INSTALL_SH), "--unattended"], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    assert r.returncode == LOCKED, r.stdout + r.stderr
+    assert HELD in r.stderr
+    assert _reran_through_sudo(env)
+    assert _calls(Path(env["CB_TEST_LOG"])) == []
+    assert (log.stat().st_mtime_ns if log.exists() else None) == before, "the bootstrap log was written"
 
 
 @seam

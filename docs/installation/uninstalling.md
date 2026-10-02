@@ -119,6 +119,10 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstal
 bash uninstall.sh
 ```
 
+Run without root, it re-runs itself through `sudo` before it removes anything. Removal takes the
+host-wide lifecycle lock, which is root-only. While another install, upgrade, restore or `cb`
+command holds the lock, it stops with exit code 10 and removes nothing.
+
 Download it and run it, rather than piping it straight into `bash`. Every prompt in the script reads
 from `/dev/tty`, so the piped form has nothing to answer with: it used to remove the container and
 then abort at the first prompt with one line of bash's own stderr, leaving the image, the config
@@ -127,7 +131,7 @@ it removes anything and, when there is none, explains what is missing and exits 
 host. Over ssh, allocate one with `-t`:
 
 ```bash
-ssh -t <host> 'curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstall.sh | bash'
+ssh -t <host> 'curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstall.sh | sudo bash'
 ```
 
 It stops and removes the `circuit-breaker` and `cb-caddy` containers, their network and volumes (with confirmation), the Caddy CA certificate from the system trust store and Firefox NSS databases, and the `~/.circuit-breaker` config directory.

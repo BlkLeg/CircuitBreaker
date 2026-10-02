@@ -17,6 +17,24 @@ next round.
 
 ## [0.4.7] — unreleased
 
+### Changed
+
+- Installs, upgrades, removals and the mutating `cb` commands now take one
+  host-wide lifecycle lock, so two of them can no longer run over each other.
+  The mutating commands are `restart`, `update`, `backup`, `restore`,
+  `vault-recover` and `migrate upgrade`. A second one stops with exit code 10
+  and changes nothing; read-only commands are unaffected.
+- The lock is root-only, so the Docker installer (`install.sh --docker`),
+  `uninstall.sh` and the mutating `cb` commands in Docker mode now escalate
+  through `sudo`, as the native installer already did. Run from a file, they
+  re-run themselves through `sudo`.
+- Piped, there is no file to re-run, so use
+  `curl ... | sudo bash -s -- --docker` and `curl ... uninstall.sh | sudo bash`.
+- Backups and install files written into the operator's home are still owned
+  by that operator.
+- Without `sudo`, or when `sudo` refuses, these commands stop with exit code 6
+  before changing anything.
+
 ## [0.4.6] — 2026-09-30
 
 A security fix for session tokens, and a topology map patch: panels and menus

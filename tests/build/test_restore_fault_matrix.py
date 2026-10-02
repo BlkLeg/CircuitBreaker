@@ -176,12 +176,36 @@ def _snapshot(
     return archive
 
 
+# restore.sh re-runs itself through sudo to take the root-only host lifecycle lock
+# (deploy/lib/lifecycle.sh, cb_lifecycle_elevate). This sudo never escalates: the
+# re-run executes as this same user, keeping the environment (and the seam) as
+# `sudo -E` would, `sudo -v` answers CB_TEST_SUDO_V_RC, and anything else is refused.
+_SUDO_STUB = """#!/bin/sh
+if [ "$1" = "-v" ]; then
+  exit "${CB_TEST_SUDO_V_RC:-0}"
+fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+case "$*" in
+  "env CB_LIFECYCLE_ELEVATED=1 "*) exec "$@" ;;
+esac
+echo "sudo (test stub) refuses to run: $*" >&2
+exit 1
+"""
+
+
 def _harness(tmp_path: Path) -> dict[str, str]:
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     for name in ("systemctl", "dropdb", "createdb", "nginx"):
         (stubs / name).write_text(_LOGGING_STUB.format(extra=""))
     (stubs / "psql").write_text(_LOGGING_STUB.format(extra="cat > /dev/null\n"))
+    (stubs / "sudo").write_text(_SUDO_STUB)
     if shutil.which("rsync") is None:
         (stubs / "rsync").write_text(_RSYNC_STUB)
     if shutil.which("jq") is None:
