@@ -90,3 +90,20 @@ test('rollback cancellation never invokes the native adapter; explicit data cons
   assert.equal(await run(['rollback', '--yes', '--restore-data', '--json'], f.deps), 0, f.io.err);
   assert.ok(f.io.steps[0].args.includes('--restore-data'));
 });
+
+test('every option forwarded to the native installer is one install.sh accepts', async () => {
+  const installer = await readFile(new URL('../../../install.sh', import.meta.url), 'utf8');
+  const accepted = new Set([...installer.matchAll(/^\s*(--[a-z-]+)\)/gm)].map((m) => m[1]));
+  const f = await fixture();
+  const argv = ['install', '--yes', '--json', '--airgap', '--local-bundle', f.bundle, '--port', '8443', '--fqdn', 'cb.lan', '--email', 'a@b.c', '--cert-type', 'self-signed', '--data-dir', '/srv/cb', '--no-tls', '--force-deps'];
+  assert.equal(await run(argv, f.deps), 0, f.io.err);
+  const forwarded = f.io.steps[0].args.filter((arg) => arg.startsWith('--') && arg !== '--');
+  assert.ok(forwarded.length > 8);
+  for (const flag of forwarded) assert.ok(accepted.has(flag), `install.sh does not accept ${flag}`);
+});
+
+test('an option install.sh rejects is refused before any native work', async () => {
+  const f = await fixture();
+  assert.notEqual(await run(['install', '--yes', '--airgap', '--local-bundle', f.bundle, '--no-docker'], f.deps), 0);
+  assert.equal(f.io.steps.length, 0);
+});

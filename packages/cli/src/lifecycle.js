@@ -19,7 +19,7 @@ const OPTIONS = {
   version: { type: 'string' }, channel: { type: 'string' }, 'local-bundle': { type: 'string' },
   port: { type: 'string' }, fqdn: { type: 'string' }, email: { type: 'string' },
   'cert-type': { type: 'string' }, 'data-dir': { type: 'string' },
-  'no-tls': { type: 'boolean' }, 'no-docker': { type: 'boolean' }, 'force-deps': { type: 'boolean' },
+  'no-tls': { type: 'boolean' }, 'force-deps': { type: 'boolean' },
 };
 
 export async function trustedIdentity(deps, { optional = false } = {}) {
@@ -84,7 +84,7 @@ export async function runLifecycle(action, args, deps) {
         const nativeArgs = ['--local-bundle', plan.tarballPath, '--unattended', '--npm-result'];
         if (identity) nativeArgs.push('--upgrade');
         if (opts.airgap || /^(true|1|yes|on)$/i.test(deps.env.CB_AIRGAP ?? '')) nativeArgs.push('--airgap');
-        for (const key of ['port', 'fqdn', 'email', 'cert-type', 'data-dir', 'no-tls', 'no-docker', 'force-deps']) {
+        for (const key of ['port', 'fqdn', 'email', 'cert-type', 'data-dir', 'no-tls', 'force-deps']) {
           if (opts[key] !== undefined) nativeArgs.push(`--${key}`, ...(typeof opts[key] === 'string' ? [opts[key]] : []));
         }
         deps.events?.phase('apply', 'started');

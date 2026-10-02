@@ -5,7 +5,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def run(tmp_path, commands, *, backup_fails=False, health_version="0.4.7"):
+def run(tmp_path, commands, *, backup_fails=False, health_version="0.4.7", bundle=None):
     current = tmp_path / "current"
     (current / "share").mkdir(parents=True)
     (current / "share/VERSION").write_text("0.4.7")
@@ -17,14 +17,17 @@ def run(tmp_path, commands, *, backup_fails=False, health_version="0.4.7"):
     library = library.replace("/opt/circuitbreaker.retained", str(tmp_path / "retained"))
     library = library.replace("/opt/circuitbreaker.failed", str(tmp_path / "failed"))
     library = library.replace("/opt/circuitbreaker", str(current))
-    library = library.replace("/usr/local/bin/cb backup", "fake_backup")
+    library = library.replace("/var/backups/circuitbreaker", str(tmp_path / "snapshots"))
+    library = library.replace('bash "$cli" backup', 'fake_backup "$cli"')
     harness = f'''set -euo pipefail
 _cb_lifecycle_trusted_program() {{ [[ -f "$1" && ! -L "$1" ]]; }}
 systemctl() {{ printf '%s\\n' "$*" >> '{tmp_path}/units'; }}
 sleep() {{ :; }}
 curl() {{ if [[ "${{@: -1}}" == */health ]]; then printf '%s' '{{"version":"{health_version}"}}'; fi; }}
-fake_backup() {{ {'return 1' if backup_fails else f"printf snapshot > '{backup}'; printf '%s\\n' '{backup}' >&4"}; }}
+fake_backup() {{ printf '%s|%s\\n' "$1" "$CB_BACKUP_DIR" >> '{tmp_path}/backup-calls'; {'return 1' if backup_fails else f"printf snapshot > '{backup}'; printf '%s\\n' '{backup}' >&4"}; }}
 UPGRADE_MODE=true
+CB_EXPECTED_VERSION=0.4.8
+CB_BUNDLE_DIR='{bundle or ""}'
 {library}
 {commands}
 '''
@@ -79,3 +82,45 @@ def test_release_recovery_restores_the_previous_install_identity(tmp_path):
     assert result.returncode == 8, result.stderr
     assert identity.read_text() == '{"version":"0.4.7","mode":"native"}'
     assert identity.stat().st_mode & 0o777 == 0o644
+
+
+def test_pre_update_backup_uses_the_bundle_cli_and_a_root_owned_snapshot_dir(tmp_path):
+    # An installed cb older than 0.4.7 cannot take a native snapshot or report its path.
+    bundle = tmp_path / "bundle"
+    (bundle / "deploy/cli").mkdir(parents=True)
+    (bundle / "deploy/cli/cb").write_text("#!/bin/bash\n")
+    result = run(tmp_path, "cb_release_prepare", bundle=bundle)
+    assert result.returncode == 0, result.stderr
+    call = (tmp_path / "backup-calls").read_text().strip()
+    assert call == f"{bundle}/deploy/cli/cb|{tmp_path}/snapshots"
+    assert (tmp_path / "snapshots").stat().st_mode & 0o777 == 0o700
+    assert (tmp_path / "previous/.cb-replaced-by").read_text().strip() == "0.4.8"
+
+
+def test_pre_update_backup_falls_back_to_the_installed_cli_without_a_bundle(tmp_path):
+    result = run(tmp_path, "cb_release_prepare")
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "backup-calls").read_text().startswith("/usr/local/bin/cb|")
+
+
+def test_each_update_keeps_one_previous_release(tmp_path):
+    previous = tmp_path / "previous"
+    (previous / "share").mkdir(parents=True)
+    (previous / "older-marker").write_text("older")
+    result = run(tmp_path, "cb_release_prepare")
+    assert result.returncode == 0, result.stderr
+    assert (previous / "old-marker").exists()
+    assert not (previous / "older-marker").exists()
+    assert not list(tmp_path.glob("retained*"))
+
+
+def test_failed_activation_keeps_only_the_latest_failed_tree(tmp_path):
+    (tmp_path / "failed.OLDTREE1").mkdir()
+    result = run(tmp_path, '''cb_release_prepare
+mkdir -p "''' + str(tmp_path / "current/share") + '''"
+printf 0.4.8 > "''' + str(tmp_path / "current/share/VERSION") + '''"
+cb_release_revert_failed
+''')
+    assert result.returncode == 8, result.stderr
+    failed = list(tmp_path.glob("failed.*"))
+    assert len(failed) == 1 and failed[0].name != "failed.OLDTREE1"

@@ -1883,6 +1883,9 @@ cb_lifecycle_install_control_plane() {
 # Native release retention. Caller holds the lifecycle lock through health.
 # Data recovery remains an explicit cb restore; no migration reversal is inferred.
 CB_PREVIOUS_RELEASE=/opt/circuitbreaker.previous
+# Root-owned, so rollback can trust the snapshot it restores; a HOME-relative
+# default could land under a user's home when sudo keeps HOME.
+CB_UPDATE_SNAPSHOT_DIR=/var/backups/circuitbreaker
 _CB_RELEASE_MOVED=false
 _CB_RELEASE_STOPPED=false
 _CB_RELEASE_BACKUP=""
@@ -1895,14 +1898,28 @@ cb_release_stop_writers() {
   systemctl stop circuitbreaker-backend || return 7
 }
 
+# Remove earlier trees under one path prefix (the previous, retained or failed
+# release) so each update keeps one of each instead of a full release per run.
+_cb_release_prune() {
+  local tree
+  for tree in "$1"*; do
+    [[ -e "$tree" || -L "$tree" ]] || continue
+    rm -rf -- "$tree" || return 7
+  done
+}
+
 cb_release_prepare() {
   [[ "${UPGRADE_MODE:-false}" == true ]] || return 0
   [[ -d /opt/circuitbreaker && ! -L /opt/circuitbreaker ]] || return 7
-  # Capture using the OLD builder and schema, before stage0 installs new files.
-  local reference
+  # Capture with the OLD runtime and schema, before stage0 installs new files.
+  # The staged bundle's cb drives it: an installed cb older than 0.4.7 has no
+  # native snapshot route and never reports the path on fd 4.
+  local reference cli=/usr/local/bin/cb
+  [[ -n "${CB_BUNDLE_DIR:-}" && -f "$CB_BUNDLE_DIR/deploy/cli/cb" ]] && cli="$CB_BUNDLE_DIR/deploy/cli/cb"
   reference="$(mktemp)" || return 7
   chmod 600 "$reference"
-  if ! /usr/local/bin/cb backup 4>"$reference"; then
+  mkdir -p "$CB_UPDATE_SNAPSHOT_DIR" && chmod 700 "$CB_UPDATE_SNAPSHOT_DIR" || return 7
+  if ! CB_BACKUP_DIR="$CB_UPDATE_SNAPSHOT_DIR" bash "$cli" backup 4>"$reference"; then
     rm -f -- "$reference"
     echo 'Pre-update snapshot failed; release was not replaced.' >&2
     return 7
@@ -1913,14 +1930,9 @@ cb_release_prepare() {
   printf 'Backup: %s\nRestore manually: sudo cb restore %q\n' "$_CB_RELEASE_BACKUP" "$_CB_RELEASE_BACKUP"
   _CB_RELEASE_STOPPED=true
   cb_release_stop_writers || return $?
-  if [[ -e "$CB_PREVIOUS_RELEASE" || -L "$CB_PREVIOUS_RELEASE" ]]; then
-    [[ -d "$CB_PREVIOUS_RELEASE" && ! -L "$CB_PREVIOUS_RELEASE" ]] || return 7
-    # Keep earlier recovery artifacts; never erase a sole recovery point.
-    local archived
-    archived="$(mktemp -d /opt/circuitbreaker.retained.XXXXXXXX)" || return 7
-    rmdir "$archived" || return 7
-    mv -T -- "$CB_PREVIOUS_RELEASE" "$archived" || return 7
-  fi
+  # The release about to move aside supersedes the older one; the older
+  # snapshot itself stays in the snapshot directory.
+  _cb_release_prune "$CB_PREVIOUS_RELEASE" || return 7
   mv -T -- /opt/circuitbreaker "$CB_PREVIOUS_RELEASE" || return 7
   _CB_RELEASE_MOVED=true
   if [[ -f /etc/circuitbreaker/install-identity.json ]]; then
@@ -1929,6 +1941,8 @@ cb_release_prepare() {
     chmod 644 "$CB_PREVIOUS_RELEASE/.cb-install-identity.json" || return 7
   fi
   (umask 077; printf '%s\n' "$_CB_RELEASE_BACKUP" > "$CB_PREVIOUS_RELEASE/.cb-backup-reference") || return 7
+  # Rollback applies only while the release this one was replaced by is installed.
+  (umask 077; printf '%s\n' "${CB_EXPECTED_VERSION:-}" > "$CB_PREVIOUS_RELEASE/.cb-replaced-by") || return 7
 }
 
 cb_release_restore_identity() {
@@ -1967,6 +1981,7 @@ cb_release_revert_failed() {
   fi
   # Retain the failed tree for diagnosis instead of deleting changed state.
   cb_release_stop_writers || return 9
+  _cb_release_prune /opt/circuitbreaker.failed. || return 9
   local failed
   failed="$(mktemp -d /opt/circuitbreaker.failed.XXXXXXXX)" || return 9
   rmdir "$failed" || return 9

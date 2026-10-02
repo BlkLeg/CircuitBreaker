@@ -58,6 +58,10 @@ UNREACHABLE_IN_AIRGAP = {
             "every fetch here is inside the `else` of the --local-bundle check, "
             "and --airgap requires --local-bundle"
         ),
+        "cb_release_health": (
+            "both curls poll http://127.0.0.1:8000 (readyz, health) — loopback "
+            "never leaves the host"
+        ),
     },
     "deploy/setup.sh": {
         "stage8_start_services": (

@@ -1879,6 +1879,14 @@ if [ "$CB_HAS_NATIVE" = "true" ]; then
     Show 0 "Application directory removed (/opt/circuitbreaker)."
   fi
 
+  # Release trees an update or rollback kept aside; application code only.
+  for _tree in /opt/circuitbreaker.previous /opt/circuitbreaker.retained.* /opt/circuitbreaker.failed.*; do
+    if [ -d "$_tree" ] && [ ! -L "$_tree" ]; then
+      sudo rm -rf -- "$_tree"
+      Show 0 "Retained release removed ($_tree)."
+    fi
+  done
+
   if [ -f /usr/local/bin/cb ]; then
     sudo rm -f /usr/local/bin/cb
     Show 0 "cb CLI removed."
@@ -1915,10 +1923,10 @@ if [ "$CB_HAS_NATIVE" = "true" ]; then
   if [ -d /etc/circuitbreaker ] || [ -d /var/lib/circuitbreaker ]; then
     echo ""
     _cb_phase cb_ui_teardown
-    cb_confirm_destructive "Remove Circuit Breaker configuration and data (/etc/circuitbreaker, /var/lib/circuitbreaker)? This deletes the database and the vault key, and cannot be undone."
+    cb_confirm_destructive "Remove Circuit Breaker configuration and data (/etc/circuitbreaker, /var/lib/circuitbreaker, /var/backups/circuitbreaker)? This deletes the database and the vault key, and cannot be undone."
     case "$REPLY" in
       [yY]*)
-        sudo rm -rf /etc/circuitbreaker /var/lib/circuitbreaker
+        sudo rm -rf /etc/circuitbreaker /var/lib/circuitbreaker /var/backups/circuitbreaker
         Show 0 "Configuration and data removed."
         # The account is only removed alongside the data it owns. Deleting it
         # while /var/lib/circuitbreaker survives would orphan every file in

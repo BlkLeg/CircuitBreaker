@@ -24,7 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "install.sh"
 UI = REPO_ROOT / "deploy" / "lib" / "ui.sh"
 
-_EXIT_HOOKS = ("cb_run_diagnostics", "cb_fail", "_cb_note_err", "_cb_on_exit", "cb_arm_exit_report")
+_EXIT_HOOKS = ("cb_run_diagnostics", "cb_fail", "_cb_note_err", "cb_install_result", "_cb_on_exit", "cb_arm_exit_report")
 
 _STAGE = """\
 apt_like() {{ return 100; }}

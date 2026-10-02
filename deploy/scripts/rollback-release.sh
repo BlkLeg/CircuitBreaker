@@ -27,6 +27,8 @@ backup="$(cat "$CB_PREVIOUS_RELEASE/.cb-backup-reference")"
 [[ "$backup" == /* && -s "$backup" && ! -L "$backup" ]] || exit 7
 _cb_lifecycle_trusted_program "$backup" || exit 5
 current="$(cat /opt/circuitbreaker/share/VERSION)"
+_cb_lifecycle_trusted_program "$CB_PREVIOUS_RELEASE/.cb-replaced-by" || { echo 'The retained release does not record which update replaced it. Nothing was changed.' >&2; exit 3; }
+[[ "$(cat "$CB_PREVIOUS_RELEASE/.cb-replaced-by")" == "$current" ]] || { echo "The retained release was not replaced by the installed $current (the last update may have stopped before replacing it). Nothing was changed; run sudo cb doctor." >&2; exit 3; }
 cb_lifecycle_begin kind=legacy action=rollback adapter=native "source_version=$current" "target_version=$previous" || exit $?
 cb_lifecycle_mark_mutation
 finish() {
@@ -53,13 +55,15 @@ print("CIRCUITBREAKER_RESULT="+json.dumps(r))' "$CB_LIFECYCLE_OPERATION" "$outco
 }
 trap finish EXIT
 # Snapshot current state using the CURRENT builder before restoring old data.
-/usr/local/bin/cb backup || exit 7
+mkdir -p "$CB_UPDATE_SNAPSHOT_DIR" && chmod 700 "$CB_UPDATE_SNAPSHOT_DIR" || exit 7
+CB_BACKUP_DIR="$CB_UPDATE_SNAPSHOT_DIR" /usr/local/bin/cb backup || exit 7
 if [[ "$restore_data" == true ]]; then
   /usr/local/bin/cb restore --yes "$backup" || exit 9
 else
   printf 'Retaining current data. To restore the pre-update snapshot explicitly: sudo cb restore %q\n' "$backup"
 fi
 cb_release_stop_writers || exit 9
+_cb_release_prune /opt/circuitbreaker.retained. || exit 9
 retained="$(mktemp -d /opt/circuitbreaker.retained.XXXXXXXX)"
 rmdir "$retained"
 mv -T -- /opt/circuitbreaker "$retained"
