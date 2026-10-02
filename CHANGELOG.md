@@ -35,6 +35,20 @@ next round.
 - Without `sudo`, or when `sudo` refuses, these commands stop with exit code 6
   before changing anything.
 
+### Security
+
+- Fixed: run without root from a pipe (`curl ... install.sh | bash`), the
+  native installer re-ran a file named `bash` from the current directory as
+  root. Inside a function, bash names a piped script `bash`, and the installer
+  passed that name to `sudo -E bash <name>`. So when the current directory
+  held a file called `bash`, it ran that file as root, with the operator's
+  environment, once the operator typed their sudo password. v0.3.1 through
+  v0.4.6 are affected, as are v1.0.0-rc.1 to rc.4; `curl ... | sudo bash` and
+  installs run from a downloaded file are not. The installer now records its
+  own path at the top level, where bash leaves it empty for a piped script.
+  The shared re-run (`cb_lifecycle_elevate`) re-runs only the canonical path
+  of the file bash is executing, and refuses anything else with exit code 6.
+
 ## [0.4.6] — 2026-09-30
 
 A security fix for session tokens, and a topology map patch: panels and menus

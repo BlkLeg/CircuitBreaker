@@ -1180,19 +1180,66 @@ _cb_lifecycle_reenter() {
   _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "$id" $(( _CB_LIFECYCLE_LOCK_DEPTH + 1 ))
 }
 
+# Print the canonical path of $1 when it names a regular file outside /dev and
+# /proc: absolute, with every symlink resolved. Returns 1 for anything else,
+# including an empty or missing path.
+_cb_lifecycle_canonical_file() {
+  local path="${1:-}" resolved=""
+  [[ -n "$path" ]] || return 1
+  if command -v realpath >/dev/null 2>&1; then
+    resolved="$(realpath -- "$path" 2>/dev/null)" || resolved=""
+  fi
+  if [[ -z "$resolved" ]] && command -v readlink >/dev/null 2>&1; then
+    resolved="$(readlink -f -- "$path" 2>/dev/null)" || resolved=""
+  fi
+  case "$resolved" in
+    /dev/* | /proc/*) return 1 ;;
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [[ -f "$resolved" ]] || return 1
+  printf '%s\n' "$resolved"
+}
+
+# Return 0 when canonical path $1 is a file this shell ($$, the script's own
+# process even from a subshell) holds open. Bash keeps the script it runs open
+# for as long as it runs (on fd 255, or lower under a small descriptor limit),
+# so this is how a path is proven to be the script being executed; a script
+# read from a pipe holds no such file. The kernel reports each open file by its
+# resolved path, as _cb_lifecycle_canonical_file prints it.
+_cb_lifecycle_shell_has_open() {
+  local want="$1" fd target
+  for fd in "/proc/$$/fd/"*; do
+    target="$(readlink -- "$fd" 2>/dev/null)" || continue
+    if [[ "$target" == "$want" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Make sure this lifecycle entrypoint runs as root before it takes the lock:
 # the lock is root-only, and an entrypoint that escalated step by step through
 # sudo would make root changes without it. Not root, this re-runs script $1
-# with arguments $2... through `sudo -E`, so it never returns. HOME is passed
-# through explicitly: a Docker install is found through the operator's home,
-# which sudo may reset. CB_LIFECYCLE_ELEVATED marks the re-run. A re-run that
-# is still not root has met a sudo that does not elevate, and goes on only
-# over the CB_LIFECYCLE_ROOT test seam, whose lock is the disposable one (a real
-# sudo makes it root, where the seam is refused). Returns 0 as root, or 6
-# (with a message) when it cannot elevate: no script file to re-run (read
-# from a pipe), no sudo, or sudo refused. Call it before anything is changed.
+# with arguments $2... through `sudo -E`, so it never returns.
+#
+# $1 must be the script bash is running, captured at its top level, where
+# BASH_SOURCE is empty when bash reads the script from a pipe (inside a
+# function it is the word "bash", which names whatever ./bash sits in the
+# working directory). It is re-run, by its canonical path, only when it
+# resolves to an absolute regular file that this shell holds open as the
+# script it executes; otherwise nothing is re-run and it returns 6.
+#
+# HOME is passed through explicitly: a Docker install is found through the
+# operator's home, which sudo may reset. CB_LIFECYCLE_ELEVATED marks the
+# re-run. A re-run that is still not root has met a sudo that does not
+# elevate, and goes on only over the CB_LIFECYCLE_ROOT test seam, whose lock is
+# the disposable one (a real sudo makes it root, where the seam is refused).
+# Returns 0 as root, or 6 (with a message) when it cannot elevate: no script
+# file to re-run (read from a pipe), a path that is not the running script, no
+# sudo, or sudo refused. Call it before anything is changed.
 cb_lifecycle_elevate() {
-  local script="${1:-}"
+  local script="${1:-}" self=""
   if [[ $# -gt 0 ]]; then
     shift
   fi
@@ -1206,8 +1253,13 @@ cb_lifecycle_elevate() {
     _cb_lifecycle_say "sudo did not run this as root; nothing was changed"
     return "$CB_LIFECYCLE_EXIT_PERMISSION"
   fi
-  if [[ -z "$script" || ! -f "$script" ]]; then
+  if [[ -z "$script" ]]; then
     _cb_lifecycle_say "this needs root and was read from a pipe, so it cannot re-run itself; pipe it to 'sudo bash' instead. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  self="$(_cb_lifecycle_canonical_file "$script")" || self=""
+  if [[ -z "$self" ]] || ! _cb_lifecycle_shell_has_open "$self"; then
+    _cb_lifecycle_say "refusing to re-run a file that is not the script being run (a script read from a pipe cannot re-run itself); run it with sudo instead. Nothing was changed"
     return "$CB_LIFECYCLE_EXIT_PERMISSION"
   fi
   if ! command -v sudo >/dev/null 2>&1; then
@@ -1218,7 +1270,7 @@ cb_lifecycle_elevate() {
     _cb_lifecycle_say "sudo refused; run it again with sudo. Nothing was changed"
     return "$CB_LIFECYCLE_EXIT_PERMISSION"
   fi
-  exec sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME="${HOME:-}" bash "$script" "$@"
+  exec sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME="${HOME:-}" bash "$self" "$@"
 }
 
 # Take the host lifecycle lock for the command named by label $1 (for
@@ -2229,7 +2281,8 @@ cb_render_template() {
 
 # Re-run this installer through sudo when it is not root, before it takes the
 # host lifecycle lock or changes anything (cb_lifecycle_elevate, in the inlined
-# lifecycle library). Read from a pipe there is no file to re-run, so the
+# lifecycle library), from the file captured at the top level in
+# CB_INSTALL_SELF. Read from a pipe there is no file to re-run, so the
 # operator is told to pipe it to sudo instead. $1 names the install for the
 # message ("native installation"); the rest are the installer's arguments.
 # A refusal exits 6, the lifecycle contract's permission code.
@@ -2239,10 +2292,10 @@ cb_require_root() {
   if [[ $EUID -eq 0 ]]; then
     return 0
   fi
-  if [[ -f "${BASH_SOURCE[0]:-}" && "${CB_LIFECYCLE_ELEVATED:-}" != 1 ]]; then
+  if [[ -n "${CB_INSTALL_SELF:-}" && "${CB_LIFECYCLE_ELEVATED:-}" != 1 ]]; then
     echo -e "  ${CYAN}▸${RESET} Elevating privileges with sudo for ${what}..."
   fi
-  cb_lifecycle_elevate "${BASH_SOURCE[0]:-}" "$@" || rc=$?
+  cb_lifecycle_elevate "${CB_INSTALL_SELF:-}" "$@" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     _CB_FAIL_STATUS="$rc"
     cb_fail "Root privileges required for ${what}" \
@@ -3187,6 +3240,11 @@ show_help() {
 # Preserve original args: the parser below consumes $@, but
 # cb_require_native_root must re-exec with the full flag set under sudo.
 CB_ORIG_ARGS=("$@")
+# The file this installer runs from, for that re-exec. Captured here at the top
+# level, where BASH_SOURCE is empty when the script is read from a pipe
+# (`curl ... | bash`). Inside a function it would be the word "bash" instead,
+# which names whatever ./bash sits in the working directory.
+CB_INSTALL_SELF="${BASH_SOURCE[0]:-}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in

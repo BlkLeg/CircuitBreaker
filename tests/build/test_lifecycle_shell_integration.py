@@ -560,6 +560,129 @@ def test_a_piped_script_run_without_sudo_stops_with_6_and_names_sudo(
     assert (Path(env["CB_CONFIG_DIR"]) / "keep").exists()
 
 
+PIPED_CASES = [(INSTALL_SH, ["--docker"]), (INSTALL_SH, ["--unattended"]), (UNINSTALL_SH, ["--keep-data"])]
+
+
+def _plant_bash(directory: Path) -> Path:
+    """An executable ./bash that records it ran: what an attacker leaves in a shared directory."""
+    marker = directory / "planted-ran"
+    planted = directory / "bash"
+    planted.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+    planted.chmod(0o755)
+    return marker
+
+
+@pytest.mark.parametrize(("script", "args"), PIPED_CASES, ids=["install.sh-docker", "install.sh-native", "uninstall.sh"])
+@seam
+def test_a_piped_script_never_re_runs_a_file_from_the_working_directory(
+    tmp_path: Path, state: Path, script: Path, args: list[str]
+) -> None:
+    """Piped, bash names the script "bash" inside a function; a ./bash in the working directory must never run.
+
+    v0.4.6's install.sh passed that in-function BASH_SOURCE[0] to sudo, so `curl ... | bash`
+    from a directory holding ./bash ran the planted file as root.
+    """
+    marker = _plant_bash(tmp_path)
+    env = _installer_env(tmp_path, state, piped_sudo=False)
+    r = _piped(script, env, tmp_path, *args)
+    assert not marker.exists(), "the planted ./bash ran"
+    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    assert "read from a pipe" in r.stdout + r.stderr
+    assert "sudo bash" in r.stdout + r.stderr
+    assert not any("CB_LIFECYCLE_ELEVATED" in call for call in _sudo_calls(env)), _sudo_calls(env)
+    assert _calls(Path(env["CB_TEST_LOG"])) == []
+    assert not state.exists()
+
+
+# A script that sources the library and asks it to re-run $1: the shape of every caller.
+_ELEVATE_CALLER = 'source "{lib}"\ncb_lifecycle_elevate "$1" a "b c" || exit $?\necho "elevate returned 0"\n'
+
+
+def _elevate_env(tmp_path: Path) -> dict[str, str]:
+    return {
+        **{k: v for k, v in _clean_env().items() if k != "NO_COLOR"},
+        "HOME": str(tmp_path),
+        "TERM": "dumb",
+        "PATH": f"{_stubs(tmp_path)}:/usr/bin:/bin",
+        "CB_TEST_LOG": str(tmp_path / "calls.log"),
+    }
+
+
+@seam
+@pytest.mark.parametrize("target", ["bash", "other.sh", "missing.sh", ""])
+def test_elevate_re_runs_nothing_but_the_running_script(tmp_path: Path, target: str) -> None:
+    """A path that is not the file bash is executing, even an existing one, is never handed to sudo."""
+    marker = _plant_bash(tmp_path)
+    (tmp_path / "other.sh").write_text("#!/bin/sh\nexit 0\n")
+    caller = tmp_path / "caller.sh"
+    caller.write_text(_ELEVATE_CALLER.format(lib=LIB))
+    env = _elevate_env(tmp_path)
+    r = subprocess.run(
+        ["/usr/bin/bash", str(caller), target], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    assert "Nothing was changed" in r.stderr
+    assert not marker.exists()
+    assert not _reran_through_sudo(env), _sudo_calls(env)
+
+
+@seam
+def test_elevate_refuses_a_real_file_when_bash_reads_the_script_from_a_pipe(tmp_path: Path) -> None:
+    """Piped, the shell holds no script file open, so even an existing path is not re-run as root."""
+    caller = tmp_path / "caller.sh"
+    caller.write_text(_ELEVATE_CALLER.format(lib=LIB))
+    env = _elevate_env(tmp_path)
+    r = subprocess.run(
+        ["bash", "-s", "--", str(caller)], input=caller.read_text(), cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    assert "not the script being run" in r.stderr
+    assert not _reran_through_sudo(env), _sudo_calls(env)
+
+
+@seam
+def test_elevate_refuses_the_v0_4_6_shape_of_a_piped_caller(tmp_path: Path) -> None:
+    """The released defect, against the library alone: a piped script passing its in-function BASH_SOURCE[0]."""
+    marker = _plant_bash(tmp_path)
+    script = (
+        LIB.read_text()
+        + '\nrequire_root() { cb_lifecycle_elevate "${BASH_SOURCE[0]:-}" "$@"; }\n'
+        + 'require_root --docker || exit $?\necho "elevate returned 0"\n'
+    )
+    env = _elevate_env(tmp_path)
+    r = subprocess.run(
+        ["bash", "-s"], input=script, cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    assert not marker.exists(), "the planted ./bash ran"
+    assert not _reran_through_sudo(env), _sudo_calls(env)
+
+
+@seam
+def test_elevate_re_runs_the_canonical_path_of_the_running_script(tmp_path: Path) -> None:
+    """Named relatively, or through a symlink, the script is re-run by its absolute, resolved path."""
+    real = tmp_path / "real"
+    real.mkdir()
+    caller = real / "caller.sh"
+    caller.write_text(_ELEVATE_CALLER.format(lib=LIB))
+    link = tmp_path / "linked.sh"
+    link.symlink_to(caller)
+    env = _elevate_env(tmp_path)
+    r = subprocess.run(
+        ["bash", "linked.sh", "./linked.sh"], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    # The stub re-run is still unprivileged and has no seam, so it stops with 6.
+    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    reruns = [call for call in _sudo_calls(env) if "CB_LIFECYCLE_ELEVATED=1" in call]
+    assert reruns == [
+        f"sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME={tmp_path} bash {caller.resolve()} a b c"
+    ], reruns
+
+
 @seam
 def test_uninstall_sh_from_a_file_re_runs_itself_through_sudo(tmp_path: Path, state: Path) -> None:
     env = _installer_env(tmp_path, state, piped_sudo=False)
