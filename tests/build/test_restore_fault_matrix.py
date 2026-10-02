@@ -178,8 +178,9 @@ def _snapshot(
 
 # restore.sh re-runs itself through sudo to take the root-only host lifecycle lock
 # (deploy/lib/lifecycle.sh, cb_lifecycle_elevate). This sudo never escalates: the
-# re-run executes as this same user, keeping the environment (and the seam) as
-# `sudo -E` would, `sudo -v` answers CB_TEST_SUDO_V_RC, and anything else is refused.
+# re-run executes as this same user, keeping the test's whole environment (and the
+# seam), which a real sudo would reset to the elevation's allowlist; `sudo -v`
+# answers CB_TEST_SUDO_V_RC, and anything else is refused.
 _SUDO_STUB = """#!/bin/sh
 if [ "$1" = "-v" ]; then
   exit "${CB_TEST_SUDO_V_RC:-0}"

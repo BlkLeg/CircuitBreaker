@@ -34,6 +34,17 @@ next round.
   by that operator.
 - Without `sudo`, or when `sudo` refuses, these commands stop with exit code 6
   before changing anything.
+- A docker-group user's crontab entry for `cb backup` now needs root: move it
+  to root's crontab, or run it as `sudo cb backup`. Run from an unprivileged
+  cron job, `cb backup` has no terminal for `sudo` to ask on and stops with 6.
+- A sudoers rule that allows only the `cb` command, such as
+  `NOPASSWD: /usr/local/bin/cb`, must be used as `sudo cb …`. A plain `cb …`
+  re-runs itself as `sudo env … bash cb …`, which such a rule does not allow.
+- The re-run through `sudo` no longer carries the whole environment
+  (`sudo -E`). It passes `HOME`, `TERM`, `NO_COLOR`, `CB_AIRGAP`,
+  `CB_VERBOSE` and `CB_ASSUME_YES`, and nothing else, so a variable such as
+  `CB_BINARY` or `CB_CONFIG_DIR` left in a shell no longer steers a root run.
+  This also works under a sudoers rule without `SETENV`.
 
 ### Security
 

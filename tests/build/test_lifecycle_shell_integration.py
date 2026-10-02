@@ -107,10 +107,12 @@ exit 0
 """
 _LOGGER = '#!/bin/sh\necho "{name} $*" >> "$CB_TEST_LOG"\nexit 0\n'
 # A sudo that never escalates. Each entrypoint re-runs itself through
-# `sudo -E -- env CB_LIFECYCLE_ELEVATED=1 ...` (cb_lifecycle_elevate): that
-# re-run is executed as this same unprivileged user, keeping the environment
-# and so the CB_LIFECYCLE_ROOT seam, as `sudo -E` would. With CB_TEST_SUDO_CLEAR
-# it clears the environment first, as sudo does without -E. `sudo -v` answers
+# `sudo -- env CB_LIFECYCLE_ELEVATED=1 HOME=... <allowlist> bash <script> ...`
+# (cb_lifecycle_elevate): that re-run is executed as this same unprivileged
+# user. By default it keeps the test's environment, and so the CB_LIFECYCLE_ROOT
+# seam and the stubs' configuration, which a real sudo would not; with
+# CB_TEST_SUDO_CLEAR it clears the environment first, as sudo's env_reset does,
+# so only what the re-run passes through env(1) arrives. `sudo -v` answers
 # CB_TEST_SUDO_V_RC. Any other command is logged as a side effect, never run.
 # Its own invocations go to a separate log so "no side effect" stays checkable.
 _SUDO = r"""#!/bin/sh
@@ -368,6 +370,40 @@ def test_a_native_cb_mutator_makes_its_root_changes_directly_under_the_lock(tmp_
     assert r.returncode == 0, r.stdout + r.stderr
     assert _calls(Path(env["CB_TEST_LOG"])) == ["systemctl restart circuitbreaker.target"]
     assert _owner_label(state) == "cb restart"
+
+
+def _cb_function(name: str) -> str:
+    body = re.search(rf"^{re.escape(name)}\(\) \{{\n.*?^\}}\n", CB.read_text(), re.DOTALL | re.MULTILINE)
+    assert body, f"cb has no {name}()"
+    return body.group(0)
+
+
+def test_cb_backup_hands_back_only_what_it_created() -> None:
+    """Root re-run of a Docker-mode backup: never chown an existing directory, a system one above all."""
+    backup = re.search(r"^cmd_backup\(\) \{\n(.*?)^\}", CB.read_text(), re.DOTALL | re.MULTILINE)
+    assert backup, "cb has no cmd_backup()"
+    text = backup.group(1)
+    hand_back = [line.strip() for line in text.splitlines() if line.strip().startswith("_cb_hand_back")]
+    assert hand_back == ['_cb_hand_back ${created_dirs[@]+"${created_dirs[@]}"} "$out" ${encrypted:+"$encrypted"}']
+    assert text.index("_cb_missing_dirs") < text.index('mkdir -p "$backup_dir"')
+    assert "chown -h " in _cb_function("_cb_hand_back")
+
+
+def test_cb_lists_only_the_backup_directories_it_will_create(tmp_path: Path) -> None:
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    script = _cb_function("_cb_missing_dirs") + 'for d in "$@"; do echo "== $d"; _cb_missing_dirs "$d"; done\n'
+    r = subprocess.run(
+        ["bash", "-c", script, "bash", str(existing), str(existing / "a" / "b"), "/etc"],
+        capture_output=True, text=True, timeout=30, check=True,
+    )
+    assert r.stdout.splitlines() == [
+        f"== {existing}",
+        f"== {existing / 'a' / 'b'}",
+        str(existing / "a" / "b"),
+        str(existing / "a"),
+        "== /etc",
+    ]
 
 
 @seam
@@ -679,8 +715,54 @@ def test_elevate_re_runs_the_canonical_path_of_the_running_script(tmp_path: Path
     assert r.returncode == PERMISSION, r.stdout + r.stderr
     reruns = [call for call in _sudo_calls(env) if "CB_LIFECYCLE_ELEVATED=1" in call]
     assert reruns == [
-        f"sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME={tmp_path} bash {caller.resolve()} a b c"
+        f"sudo -- env CB_LIFECYCLE_ELEVATED=1 HOME={tmp_path} TERM=dumb bash {caller.resolve()} a b c"
     ], reruns
+
+
+# The steering variables cb, the installers and restore.sh read: none of them may follow
+# the operator into the root re-run.
+STEERING = (
+    "CB_BINARY", "CB_NATIVE_BIN", "CB_BINARY_ENV_FILE", "CB_IDENTITY_PATH", "CB_CONFIG_DIR",
+    "CB_BACKUP_DIR", "CB_ROOT_PREFIX", "CB_LIFECYCLE_ROOT", "CB_LIFECYCLE_LOCK_FD", "CB_ADMIN_TOKEN",
+)
+
+
+@seam
+def test_the_root_re_run_carries_only_the_allowlist(tmp_path: Path, state: Path) -> None:
+    """sudo gets no -E: the re-run receives HOME, the marker and the documented switches, nothing else.
+
+    Run through a sudo that resets the environment as a real one does, the seam does not arrive,
+    and the unprivileged re-run refuses with 6 instead of taking the disposable lock.
+    """
+    env = {**_cb_env(tmp_path, "docker", state), "CB_TEST_SUDO_CLEAR": "1", "TERM": "dumb",
+           "CB_AIRGAP": "true", "CB_VERBOSE": "true", "CB_ASSUME_YES": "1", "NO_COLOR": "1"}
+    for name in STEERING:
+        env.setdefault(name, str(tmp_path / "steer" / name))
+    shutil.copytree(env["CB_CONFIG_DIR"], tmp_path / ".circuit-breaker")
+    r = _cb(env, "restart")
+    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    assert "sudo did not run this as root" in r.stderr
+    assert not state.exists(), "the seam reached the re-run"
+    reruns = [call for call in _sudo_calls(env) if "CB_LIFECYCLE_ELEVATED=1" in call]
+    assert len(reruns) == 1, _sudo_calls(env)
+    words = reruns[0].split()
+    assert words[:3] == ["sudo", "--", "env"], reruns
+    assert "-E" not in words and not any(w.startswith("--preserve-env") for w in words)
+    carried = {w.split("=", 1)[0] for w in words[3 : words.index("bash")]}
+    assert carried == {"CB_LIFECYCLE_ELEVATED", "HOME", "TERM", "NO_COLOR", "CB_AIRGAP", "CB_VERBOSE", "CB_ASSUME_YES"}
+    assert not carried & set(STEERING)
+    assert _calls(Path(env["CB_TEST_LOG"])) == []
+
+
+@seam
+def test_a_piped_install_sh_refusal_echoes_the_real_arguments_and_no_rerun_footer(tmp_path: Path, state: Path) -> None:
+    env = _installer_env(tmp_path, state, piped_sudo=False)
+    r = _piped(INSTALL_SH, env, tmp_path, "--docker", "--fqdn", "lab host's.example")
+    assert r.returncode == PERMISSION, r.stdout + r.stderr
+    assert "install.sh | sudo bash -s -- --docker --fqdn lab\\ host\\'s.example" in r.stdout, r.stdout
+    assert "Re-run with full output" not in r.stdout + r.stderr
+    assert "Full log" not in r.stdout + r.stderr
+    assert _calls(Path(env["CB_TEST_LOG"])) == []
 
 
 @seam

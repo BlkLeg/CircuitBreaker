@@ -132,7 +132,11 @@ source "$_CB_LIFECYCLE_LIB"
 _cb_lock_rc=0
 cb_lifecycle_elevate "${BASH_SOURCE[0]}" "$@" || _cb_lock_rc=$?
 if [[ "$_cb_lock_rc" -ne 0 ]]; then
-    echo "       restore.sh needs root for the host lifecycle lock. Run: sudo $0 $*" >&2
+    _cb_quoted_args=""
+    if [[ $# -gt 0 ]]; then
+        printf -v _cb_quoted_args ' %q' "$@"
+    fi
+    echo "       restore.sh needs root for the host lifecycle lock. Run: sudo $(printf '%q' "$0")${_cb_quoted_args}" >&2
     echo "       Nothing has been changed." >&2
     exit "$_cb_lock_rc"
 fi

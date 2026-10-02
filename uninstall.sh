@@ -526,6 +526,17 @@ _cb_lifecycle_reenter() {
   _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "$id" $(( _CB_LIFECYCLE_LOCK_DEPTH + 1 ))
 }
 
+# The variables a re-run through sudo carries from the operator's environment,
+# besides HOME and the CB_LIFECYCLE_ELEVATED marker: terminal display, and the
+# documented operator switches that must survive the re-run. CB_AIRGAP keeps
+# `CB_AIRGAP=true bash install.sh` from making any outbound call as root;
+# CB_VERBOSE is install.sh's documented environment form of --verbose;
+# CB_ASSUME_YES is restore.sh's documented consent given in advance. Nothing
+# else is carried: the paths, binaries and identity files that steer cb, the
+# installers and restore.sh, secrets, and the CB_LIFECYCLE_ROOT test seam all
+# stay behind, and as root they come only from root's own configuration.
+CB_LIFECYCLE_ELEVATE_CARRY=(TERM NO_COLOR CB_AIRGAP CB_VERBOSE CB_ASSUME_YES)
+
 # Print the canonical path of $1 when it names a regular file outside /dev and
 # /proc: absolute, with every symlink resolved. Returns 1 for anything else,
 # including an empty or missing path.
@@ -567,7 +578,7 @@ _cb_lifecycle_shell_has_open() {
 # Make sure this lifecycle entrypoint runs as root before it takes the lock:
 # the lock is root-only, and an entrypoint that escalated step by step through
 # sudo would make root changes without it. Not root, this re-runs script $1
-# with arguments $2... through `sudo -E`, so it never returns.
+# with arguments $2... through sudo, so it never returns.
 #
 # $1 must be the script bash is running, captured at its top level, where
 # BASH_SOURCE is empty when bash reads the script from a pipe (inside a
@@ -576,16 +587,19 @@ _cb_lifecycle_shell_has_open() {
 # resolves to an absolute regular file that this shell holds open as the
 # script it executes; otherwise nothing is re-run and it returns 6.
 #
-# HOME is passed through explicitly: a Docker install is found through the
-# operator's home, which sudo may reset. CB_LIFECYCLE_ELEVATED marks the
-# re-run. A re-run that is still not root has met a sudo that does not
-# elevate, and goes on only over the CB_LIFECYCLE_ROOT test seam, whose lock is
-# the disposable one (a real sudo makes it root, where the seam is refused).
-# Returns 0 as root, or 6 (with a message) when it cannot elevate: no script
-# file to re-run (read from a pipe), a path that is not the running script, no
-# sudo, or sudo refused. Call it before anything is changed.
+# The re-run gets sudo's own reset environment plus, through env(1), the
+# CB_LIFECYCLE_ELEVATED marker, HOME (a Docker install is found through the
+# operator's home, which sudo may reset) and the CB_LIFECYCLE_ELEVATE_CARRY
+# allowlist. They are arguments to env, not sudo settings, so a sudoers rule
+# without SETENV does not refuse them. A re-run that is still not root has met
+# a sudo that does not elevate, and goes on only over the CB_LIFECYCLE_ROOT
+# test seam, whose lock is the disposable one (a real sudo makes it root, where
+# the seam is refused). Returns 0 as root, or 6 (with a message) when it cannot
+# elevate: no script file to re-run (read from a pipe), a path that is not the
+# running script, no sudo, or sudo refused. Call it before anything is changed.
 cb_lifecycle_elevate() {
-  local script="${1:-}" self=""
+  local script="${1:-}" self="" name
+  local -a carry=()
   if [[ $# -gt 0 ]]; then
     shift
   fi
@@ -616,7 +630,13 @@ cb_lifecycle_elevate() {
     _cb_lifecycle_say "sudo refused; run it again with sudo. Nothing was changed"
     return "$CB_LIFECYCLE_EXIT_PERMISSION"
   fi
-  exec sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME="${HOME:-}" bash "$self" "$@"
+  carry=("CB_LIFECYCLE_ELEVATED=1" "HOME=${HOME:-}")
+  for name in "${CB_LIFECYCLE_ELEVATE_CARRY[@]}"; do
+    if [[ -n "${!name:-}" ]]; then
+      carry+=("${name}=${!name}")
+    fi
+  done
+  exec sudo -- env "${carry[@]}" bash "$self" "$@"
 }
 
 # Take the host lifecycle lock for the command named by label $1 (for
@@ -1416,8 +1436,12 @@ if [ "$(uname -s)" = "Linux" ]; then
   _cb_elevate_rc=0
   cb_lifecycle_elevate "${BASH_SOURCE[0]:-}" ${CB_UNINSTALL_ARGS[@]+"${CB_UNINSTALL_ARGS[@]}"} || _cb_elevate_rc=$?
   if [ "$_cb_elevate_rc" -ne 0 ]; then
-    echo "uninstall.sh needs root for the host lifecycle lock. Run: sudo bash uninstall.sh ${CB_UNINSTALL_ARGS[*]:-}" >&2
-    echo "  or: curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | sudo bash -s -- ${CB_UNINSTALL_ARGS[*]:-}" >&2
+    _cb_quoted_args=""
+    if [ "${#CB_UNINSTALL_ARGS[@]}" -gt 0 ]; then
+      printf -v _cb_quoted_args ' %q' "${CB_UNINSTALL_ARGS[@]}"
+    fi
+    echo "uninstall.sh needs root for the host lifecycle lock. Run: sudo bash uninstall.sh${_cb_quoted_args}" >&2
+    echo "  or: curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/uninstall.sh | sudo bash${_cb_quoted_args:+ -s --${_cb_quoted_args}}" >&2
     exit "$_cb_elevate_rc"
   fi
 fi

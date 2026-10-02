@@ -457,7 +457,7 @@ _cb_lifecycle_library() {
 # the operator's home. Without sudo, or when sudo refuses, it stops with 6
 # before anything runs.
 _cb_lock() {
-  local label="$1" lib rc=0
+  local label="$1" lib rc=0 quoted=""
   if ! declare -F cb_lifecycle_lock_acquire >/dev/null 2>&1; then
     if ! lib="$(_cb_lifecycle_library)"; then
       echo "cb: the lifecycle library (lifecycle.sh) is not installed in /usr/local/lib/circuitbreaker, so '${label}' cannot take the host lifecycle lock. Re-run the installer for this mode. Nothing was changed." >&2
@@ -468,7 +468,10 @@ _cb_lock() {
   fi
   cb_lifecycle_elevate "$_CB_SELF" ${_CB_ARGV[@]+"${_CB_ARGV[@]}"} || rc=$?
   if [[ "$rc" -ne 0 ]]; then
-    echo "cb: '${label}' needs root for the host lifecycle lock. Run: sudo cb ${_CB_ARGV[*]}" >&2
+    if [[ ${#_CB_ARGV[@]} -gt 0 ]]; then
+      printf -v quoted ' %q' "${_CB_ARGV[@]}"
+    fi
+    echo "cb: '${label}' needs root for the host lifecycle lock. Run: sudo cb${quoted}" >&2
     exit "$rc"
   fi
   cb_lifecycle_lock_acquire "$label" || rc=$?
@@ -480,14 +483,27 @@ _cb_lock() {
 # ── Internal helpers ──────────────────────────────────────────────────────────
 # A docker or compose install belongs to the operator who manages it, and a
 # mutating command reaches root only by re-running itself through sudo
-# (_cb_lock). What it writes into that operator's tree (a backup, the backup
-# directory) is handed back to them, as it was theirs before the command
-# needed root. Other modes are root's already.
+# (_cb_lock). What this run wrote into that operator's tree (a backup, a
+# backup directory it had to create) is handed back to them, as it would have
+# been theirs had the command not needed root. The caller passes only paths
+# this run created; a link is changed itself, never what it points to. Other
+# modes are root's already.
 _cb_hand_back() {
   [[ "$EUID" -eq 0 && "${SUDO_UID:-}" =~ ^[1-9][0-9]*$ && "${SUDO_GID:-}" =~ ^[0-9]+$ ]] || return 0
+  [[ $# -gt 0 ]] || return 0
   case "$CB_MODE" in
-    docker|compose) chown "${SUDO_UID}:${SUDO_GID}" -- "$@" 2>/dev/null || true ;;
+    docker|compose) chown -h "${SUDO_UID}:${SUDO_GID}" -- "$@" 2>/dev/null || true ;;
   esac
+}
+
+# Print each directory that `mkdir -p $1` would create, deepest first: the
+# path itself and every missing ancestor. Prints nothing when it exists.
+_cb_missing_dirs() {
+  local dir="$1"
+  while [[ -n "$dir" && "$dir" != "/" && "$dir" != "." && ! -e "$dir" && ! -L "$dir" ]]; do
+    printf '%s\n' "$dir"
+    dir="$(dirname -- "$dir")"
+  done
 }
 
 _require_docker() {
@@ -1513,7 +1529,8 @@ cmd_update() {
 # local copy should stop existing, and a flag that quietly replaced one artifact
 # with another the host cannot read would be a surprising way to lose a restore.
 cmd_backup() {
-  local backup_dir out recipient="" encrypted=""
+  local backup_dir out recipient="" encrypted="" created
+  local -a created_dirs=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --encrypt-to) [[ $# -ge 2 ]] || _fail "--encrypt-to requires an age recipient (age1…)"; recipient="$2"; shift 2 ;;
@@ -1525,6 +1542,11 @@ cmd_backup() {
   # Under cb restore this nests on the lock the restore already holds.
   _cb_lock "cb backup"
   backup_dir="${CB_BACKUP_DIR:-$CB_CONFIG_DIR/backups}"
+  # Only directories this run creates are handed back; an existing one, a
+  # system directory above all, keeps its owner.
+  while IFS= read -r created; do
+    created_dirs+=("$created")
+  done < <(_cb_missing_dirs "$backup_dir")
   mkdir -p "$backup_dir" || _fail "Cannot create backup directory $backup_dir."
 
   case "$CB_MODE" in
@@ -1607,7 +1629,7 @@ cmd_backup() {
 
   [[ -s "$out" ]] || _fail "Expected a snapshot at ${out}, but nothing usable is there."
   chmod 600 "$out" 2>/dev/null || true
-  _cb_hand_back "$backup_dir" "$out" ${encrypted:+"$encrypted"}
+  _cb_hand_back ${created_dirs[@]+"${created_dirs[@]}"} "$out" ${encrypted:+"$encrypted"}
 
   _ok "Backup written to ${out}"
   echo -e "  ${GR}Contains the database, uploads, config and the vault key.${R}"

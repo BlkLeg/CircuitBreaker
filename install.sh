@@ -1180,6 +1180,17 @@ _cb_lifecycle_reenter() {
   _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "$id" $(( _CB_LIFECYCLE_LOCK_DEPTH + 1 ))
 }
 
+# The variables a re-run through sudo carries from the operator's environment,
+# besides HOME and the CB_LIFECYCLE_ELEVATED marker: terminal display, and the
+# documented operator switches that must survive the re-run. CB_AIRGAP keeps
+# `CB_AIRGAP=true bash install.sh` from making any outbound call as root;
+# CB_VERBOSE is install.sh's documented environment form of --verbose;
+# CB_ASSUME_YES is restore.sh's documented consent given in advance. Nothing
+# else is carried: the paths, binaries and identity files that steer cb, the
+# installers and restore.sh, secrets, and the CB_LIFECYCLE_ROOT test seam all
+# stay behind, and as root they come only from root's own configuration.
+CB_LIFECYCLE_ELEVATE_CARRY=(TERM NO_COLOR CB_AIRGAP CB_VERBOSE CB_ASSUME_YES)
+
 # Print the canonical path of $1 when it names a regular file outside /dev and
 # /proc: absolute, with every symlink resolved. Returns 1 for anything else,
 # including an empty or missing path.
@@ -1221,7 +1232,7 @@ _cb_lifecycle_shell_has_open() {
 # Make sure this lifecycle entrypoint runs as root before it takes the lock:
 # the lock is root-only, and an entrypoint that escalated step by step through
 # sudo would make root changes without it. Not root, this re-runs script $1
-# with arguments $2... through `sudo -E`, so it never returns.
+# with arguments $2... through sudo, so it never returns.
 #
 # $1 must be the script bash is running, captured at its top level, where
 # BASH_SOURCE is empty when bash reads the script from a pipe (inside a
@@ -1230,16 +1241,19 @@ _cb_lifecycle_shell_has_open() {
 # resolves to an absolute regular file that this shell holds open as the
 # script it executes; otherwise nothing is re-run and it returns 6.
 #
-# HOME is passed through explicitly: a Docker install is found through the
-# operator's home, which sudo may reset. CB_LIFECYCLE_ELEVATED marks the
-# re-run. A re-run that is still not root has met a sudo that does not
-# elevate, and goes on only over the CB_LIFECYCLE_ROOT test seam, whose lock is
-# the disposable one (a real sudo makes it root, where the seam is refused).
-# Returns 0 as root, or 6 (with a message) when it cannot elevate: no script
-# file to re-run (read from a pipe), a path that is not the running script, no
-# sudo, or sudo refused. Call it before anything is changed.
+# The re-run gets sudo's own reset environment plus, through env(1), the
+# CB_LIFECYCLE_ELEVATED marker, HOME (a Docker install is found through the
+# operator's home, which sudo may reset) and the CB_LIFECYCLE_ELEVATE_CARRY
+# allowlist. They are arguments to env, not sudo settings, so a sudoers rule
+# without SETENV does not refuse them. A re-run that is still not root has met
+# a sudo that does not elevate, and goes on only over the CB_LIFECYCLE_ROOT
+# test seam, whose lock is the disposable one (a real sudo makes it root, where
+# the seam is refused). Returns 0 as root, or 6 (with a message) when it cannot
+# elevate: no script file to re-run (read from a pipe), a path that is not the
+# running script, no sudo, or sudo refused. Call it before anything is changed.
 cb_lifecycle_elevate() {
-  local script="${1:-}" self=""
+  local script="${1:-}" self="" name
+  local -a carry=()
   if [[ $# -gt 0 ]]; then
     shift
   fi
@@ -1270,7 +1284,13 @@ cb_lifecycle_elevate() {
     _cb_lifecycle_say "sudo refused; run it again with sudo. Nothing was changed"
     return "$CB_LIFECYCLE_EXIT_PERMISSION"
   fi
-  exec sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME="${HOME:-}" bash "$self" "$@"
+  carry=("CB_LIFECYCLE_ELEVATED=1" "HOME=${HOME:-}")
+  for name in "${CB_LIFECYCLE_ELEVATE_CARRY[@]}"; do
+    if [[ -n "${!name:-}" ]]; then
+      carry+=("${name}=${!name}")
+    fi
+  done
+  exec sudo -- env "${carry[@]}" bash "$self" "$@"
 }
 
 # Take the host lifecycle lock for the command named by label $1 (for
@@ -2077,6 +2097,13 @@ cb_fail() {
     echo -e "  ${YELLOW}→  $2${RESET}"
   fi
 
+  # A refusal before anything ran (cb_require_root) has no progress, no log
+  # and nothing to re-run verbosely: its own message is the whole answer.
+  if [[ "${_CB_FAIL_BEFORE_START:-false}" == true ]]; then
+    echo ""
+    exit "${_CB_FAIL_STATUS:-1}"
+  fi
+
   # The context the quiet screen withheld, at the only moment it matters.
   if declare -f cb_ui_ledger >/dev/null 2>&1; then
     cb_ui_ledger
@@ -2282,12 +2309,14 @@ cb_render_template() {
 # Re-run this installer through sudo when it is not root, before it takes the
 # host lifecycle lock or changes anything (cb_lifecycle_elevate, in the inlined
 # lifecycle library), from the file captured at the top level in
-# CB_INSTALL_SELF. Read from a pipe there is no file to re-run, so the
-# operator is told to pipe it to sudo instead. $1 names the install for the
-# message ("native installation"); the rest are the installer's arguments.
-# A refusal exits 6, the lifecycle contract's permission code.
+# CB_INSTALL_SELF. Read from a pipe there is no file to re-run, so the operator
+# is told to pipe it to sudo instead, with their own arguments. $1 names the
+# install for the message ("native installation"); the rest are the
+# installer's arguments. A refusal exits 6, the lifecycle contract's
+# permission code, reported without the progress ledger, log or re-run footer:
+# nothing ran.
 cb_require_root() {
-  local what="$1" rc=0
+  local what="$1" rc=0 quoted="" hint
   shift
   if [[ $EUID -eq 0 ]]; then
     return 0
@@ -2297,9 +2326,19 @@ cb_require_root() {
   fi
   cb_lifecycle_elevate "${CB_INSTALL_SELF:-}" "$@" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
+    if [[ $# -gt 0 ]]; then
+      printf -v quoted ' %q' "$@"
+    fi
+    if [[ -n "${CB_INSTALL_SELF:-}" ]]; then
+      hint="Run: sudo bash $(printf '%q' "${CB_INSTALL_SELF}")${quoted}"
+    else
+      printf -v hint 'Run: %s' \
+        "curl -fsSL https://raw.githubusercontent.com/${CB_GITHUB_REPO}/main/install.sh | sudo bash${quoted:+ -s --${quoted}}"
+    fi
+    # cb_fail prints with echo -e; doubled, a backslash from %q survives it.
     _CB_FAIL_STATUS="$rc"
-    cb_fail "Root privileges required for ${what}" \
-      "Run: curl -fsSL https://raw.githubusercontent.com/${CB_GITHUB_REPO}/main/install.sh | sudo bash${CB_INSTALL_PIPE_ARGS:-}"
+    _CB_FAIL_BEFORE_START=true
+    cb_fail "Root privileges required for ${what}" "${hint//\\/\\\\}"
   fi
 }
 
@@ -3387,7 +3426,6 @@ main() {
     # host cb and the lifecycle control plane as root; now all of it runs under
     # the host lock. docker_target_user still resolves the operator through
     # SUDO_USER, so the stack and its files remain theirs.
-    CB_INSTALL_PIPE_ARGS=" -s -- --docker"
     cb_require_root "the Docker install" "$@"
     cb_take_lifecycle_lock "install.sh docker"
     stage_docker_deploy

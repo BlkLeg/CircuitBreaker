@@ -690,23 +690,45 @@ anything. That covers every mode of `cb`, the native and Docker installers, unin
 restore.sh.
 
 - **How it elevates.** Without root, the entrypoint re-runs itself through
-  `sudo -E -- env CB_LIFECYCLE_ELEVATED=1 HOME=… bash <script> <args>`. The re-run does the whole
-  command as root under the real host lock, so none of its steps escalates past the lock on its
-  own.
+  `sudo -- env CB_LIFECYCLE_ELEVATED=1 HOME=… <allowlist> bash <script> <args>`. The re-run does
+  the whole command as root under the real host lock, so none of its steps escalates past the lock
+  on its own.
+  - `<script>` is the canonical path of the file bash is executing. Each entrypoint captures it at
+    its top level, where it is empty when the script was read from a pipe, and the library re-runs
+    it only when it resolves to an absolute regular file that the running shell holds open as its
+    script. A path that names anything else, such as a `./bash` in the working directory, is never
+    run.
+  - The allowlist is passed as arguments to `env`, not through `sudo -E` or `--preserve-env`, so a
+    sudoers rule without `SETENV` does not refuse it. It is `TERM`, `NO_COLOR` and three documented
+    operator switches: `CB_AIRGAP` (so `CB_AIRGAP=true bash install.sh` makes no outbound call as
+    root), `CB_VERBOSE` (install.sh's environment form of `--verbose`) and `CB_ASSUME_YES`
+    (restore.sh's consent given in advance). Nothing else is carried. The variables that steer the
+    scripts (`CB_BINARY`, `CB_NATIVE_BIN`, `CB_BINARY_ENV_FILE`, `CB_IDENTITY_PATH`,
+    `CB_CONFIG_DIR`, `CB_BACKUP_DIR`, `CB_ROOT_PREFIX` and the like), secrets and the test seam stay
+    behind.
+  - A sudoers rule that allows only a named command, such as `NOPASSWD: /usr/local/bin/cb`, does
+    not allow this re-run. Run that command as `sudo cb …`, which starts as root and needs no re-run.
   - `cb` runs `systemctl` and the vault-key writes directly.
   - uninstall.sh replaces its per-step `sudo` with a direct call once it holds the lock.
 - **HOME.** HOME is carried across, so a Docker install is still found through the operator's home.
-  Files the re-run writes there are handed back to `SUDO_UID`: the backup and backup directory,
-  the Docker installer's identity directory and its install tree. The Docker installer adds
+  Files the re-run writes there are handed back to `SUDO_UID`: the backup, any backup directory
+  the run had to create (an existing directory keeps its owner), the Docker installer's identity
+  directory and its install tree. The Docker installer adds
   `SUDO_USER` to the docker group, as it did for an unprivileged operator.
 - **Refusals (6, before anything changes):**
-  - A piped script has no file to re-run, so it names `curl … | sudo bash` instead.
+  - A piped script has no file to re-run, so it names `curl … | sudo bash` instead, with the
+    operator's own arguments quoted.
+  - A script path that is not the file being executed.
   - No sudo.
   - sudo refuses (`sudo -v`).
-- **The test seam.** The seam cannot capture a real escalation. sudo resets the environment, and
-  a root process refuses `CB_LIFECYCLE_ROOT` with 2. A re-run (`CB_LIFECYCLE_ELEVATED=1`) that is
-  still unprivileged has met a sudo that does not elevate. It goes on only over the seam, where
-  the lock is a disposable one and no step escalates, and it is refused with 6 otherwise.
+- **The test seam.** The seam cannot capture a real escalation. The guarantee is two-fold: a root
+  process refuses `CB_LIFECYCLE_ROOT` with 2, and the elevation itself adds only the allowlist
+  above, which never includes the seam. Whether anything else of the operator's environment reaches
+  root is sudo's policy, not this library's: with sudo's default `env_reset` nothing does, and a
+  host whose sudoers keeps `CB_LIFECYCLE_ROOT` anyway still meets the refusal as root. A re-run
+  (`CB_LIFECYCLE_ELEVATED=1`) that is still unprivileged has met a sudo that does not elevate. It
+  goes on only over the seam, where the lock is a disposable one and no step escalates, and it is
+  refused with 6 otherwise.
 - **setup.sh** is only ever sourced by a root installer, and its preflight refuses anything else.
 
 **Finding the library.** install.sh and uninstall.sh are curl-piped onto hosts that have no
