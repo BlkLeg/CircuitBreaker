@@ -1840,7 +1840,8 @@ cb_lifecycle_interrupted() {
 cb_lifecycle_install_control_plane() {
   local src="${1:-}" dest="${2:-$CB_LIFECYCLE_CONTROL_PLANE}" item from name perm tmp
   local -a items=("lib/lifecycle.sh lifecycle.sh 644" "scripts/lifecycle-state.py lifecycle-state.py 755" \
-    "lib/bundle-signature.sh bundle-signature.sh 644")
+    "lib/bundle-signature.sh bundle-signature.sh 644" \
+    "lib/release-retention.sh release-retention.sh 644" "scripts/rollback-release.sh rollback-release.sh 755")
   for item in "${items[@]}"; do
     read -r from name perm <<<"$item"
     if [[ ! -f "$src/$from" || -L "$src/$from" ]]; then
@@ -1883,6 +1884,7 @@ cb_lifecycle_install_control_plane() {
 # Data recovery remains an explicit cb restore; no migration reversal is inferred.
 CB_PREVIOUS_RELEASE=/opt/circuitbreaker.previous
 _CB_RELEASE_MOVED=false
+_CB_RELEASE_STOPPED=false
 _CB_RELEASE_BACKUP=""
 
 cb_release_stop_writers() {
@@ -1909,6 +1911,7 @@ cb_release_prepare() {
   rm -f -- "$reference"
   [[ -n "$_CB_RELEASE_BACKUP" && -s "$_CB_RELEASE_BACKUP" ]] || return 7
   printf 'Backup: %s\nRestore manually: sudo cb restore %q\n' "$_CB_RELEASE_BACKUP" "$_CB_RELEASE_BACKUP"
+  _CB_RELEASE_STOPPED=true
   cb_release_stop_writers || return $?
   if [[ -e "$CB_PREVIOUS_RELEASE" || -L "$CB_PREVIOUS_RELEASE" ]]; then
     [[ -d "$CB_PREVIOUS_RELEASE" && ! -L "$CB_PREVIOUS_RELEASE" ]] || return 7
@@ -1920,7 +1923,23 @@ cb_release_prepare() {
   fi
   mv -T -- /opt/circuitbreaker "$CB_PREVIOUS_RELEASE" || return 7
   _CB_RELEASE_MOVED=true
+  if [[ -f /etc/circuitbreaker/install-identity.json ]]; then
+    _cb_lifecycle_trusted_program /etc/circuitbreaker/install-identity.json || return 7
+    cp -- /etc/circuitbreaker/install-identity.json "$CB_PREVIOUS_RELEASE/.cb-install-identity.json" || return 7
+    chmod 644 "$CB_PREVIOUS_RELEASE/.cb-install-identity.json" || return 7
+  fi
   (umask 077; printf '%s\n' "$_CB_RELEASE_BACKUP" > "$CB_PREVIOUS_RELEASE/.cb-backup-reference") || return 7
+}
+
+cb_release_restore_identity() {
+  local saved=/opt/circuitbreaker/.cb-install-identity.json tmp
+  [[ -f "$saved" ]] || return 0
+  _cb_lifecycle_trusted_program "$saved" || return 9
+  tmp="$(mktemp /etc/circuitbreaker/.install-identity.XXXXXXXX)" || return 9
+  if ! cp -- "$saved" "$tmp" || ! chmod 644 "$tmp" || ! mv -T -- "$tmp" /etc/circuitbreaker/install-identity.json; then
+    rm -f -- "$tmp"
+    return 9
+  fi
 }
 
 cb_release_health() {
@@ -1940,7 +1959,12 @@ cb_release_health() {
 }
 
 cb_release_revert_failed() {
-  [[ "$_CB_RELEASE_MOVED" == true ]] || return 0
+  if [[ "$_CB_RELEASE_MOVED" != true ]]; then
+    [[ "$_CB_RELEASE_STOPPED" == true ]] || return 0
+    systemctl restart circuitbreaker.target circuitbreaker-backend || return 9
+    cb_release_health "$(cat /opt/circuitbreaker/share/VERSION)" || return 9
+    return 8
+  fi
   # Retain the failed tree for diagnosis instead of deleting changed state.
   cb_release_stop_writers || return 9
   local failed
@@ -1952,6 +1976,7 @@ cb_release_revert_failed() {
   fi
   mv -T -- "$CB_PREVIOUS_RELEASE" /opt/circuitbreaker || return 9
   _CB_RELEASE_MOVED=false
+  cb_release_restore_identity || return 9
   systemctl daemon-reload || return 9
   systemctl restart circuitbreaker.target circuitbreaker-backend || return 9
   printf 'Previous release restored. Database restoration is manual: sudo cb restore %q\n' "$_CB_RELEASE_BACKUP" >&2
@@ -2314,7 +2339,7 @@ r=dict(schema_version=1,operation_id=op,action=action,outcome=outcome,current_ve
 if outcome != "committed": r["error"]=dict(code=code or "MANUAL",reason="Inspect history and the printed backup/restore instructions.")
 print("CIRCUITBREAKER_RESULT="+json.dumps(r))' "$CB_LIFECYCLE_OPERATION" "${CB_LIFECYCLE_ACTION:-install}" "$outcome" "$current" "${CB_EXPECTED_VERSION:-}" "$recovery" "$error_code"
   fi
-  return 0
+  return "$status"
 }
 
 _cb_on_exit() {
@@ -2326,17 +2351,17 @@ _cb_on_exit() {
   if [[ "$status" -eq 0 && -n "${CB_EXPECTED_VERSION:-}" ]]; then
     cb_release_health "$CB_EXPECTED_VERSION" || status=$?
   fi
-  if [[ "$status" -ne 0 && "${_CB_RELEASE_MOVED:-false}" == true ]]; then
+  if [[ "$status" -ne 0 && "${_CB_RELEASE_STOPPED:-false}" == true ]]; then
     local recovery_status=0
     cb_lifecycle_checkpoint state=recovering || true
     cb_release_revert_failed || recovery_status=$?
     status="$recovery_status"
     _CB_EXIT_REPORTED=true
-    cb_install_result "$status"
+    cb_install_result "$status" || status=$?
     cb_ui_teardown
     exit "$status"
   fi
-  cb_install_result "$status"
+  cb_install_result "$status" || { status=$?; _CB_EXIT_REPORTED=true; }
   # Private download and extraction directory (see stage0_download_bundle).
   if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
     rm -rf -- "$CB_PRIVATE_TMP"
@@ -2347,6 +2372,7 @@ _cb_on_exit() {
     if declare -f cb_ui_teardown >/dev/null 2>&1; then
       cb_ui_teardown
     fi
+    if [[ "$status" -ne 0 ]]; then exit "$status"; fi
     return 0
   fi
   _CB_EXIT_REPORTED=true
@@ -2849,7 +2875,7 @@ EOF
       # installs for native hosts. Not best-effort like the helpers above.
       local plane_src="${repo_cb%/cb}/deploy" plane_item plane_dest
       if [[ -f "${plane_src}/lib/lifecycle.sh" ]]; then
-        for plane_item in lib/lifecycle.sh:644 scripts/lifecycle-state.py:755 lib/bundle-signature.sh:644; do
+        for plane_item in lib/lifecycle.sh:644 scripts/lifecycle-state.py:755 lib/bundle-signature.sh:644 lib/release-retention.sh:644 scripts/rollback-release.sh:755; do
           plane_dest="/usr/local/lib/circuitbreaker/$(basename "${plane_item%%:*}")"
           install -Dm"${plane_item##*:}" "${plane_src}/${plane_item%%:*}" "$plane_dest" 2>/dev/null \
             || sudo install -Dm"${plane_item##*:}" "${plane_src}/${plane_item%%:*}" "$plane_dest" 2>/dev/null \

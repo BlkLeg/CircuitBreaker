@@ -75,7 +75,7 @@ def test_the_final_sums_exclude_the_signature_files() -> None:
 
 def test_attestation_covers_the_bundle_tarballs() -> None:
     step = _steps("release")[_index("release", lambda s: str(s.get("uses", "")).startswith("actions/attest-build-provenance@"))]
-    assert step["with"]["subject-path"] == "dist/release/circuit-breaker_*_linux_*.tar.gz"
+    assert step["with"]["subject-path"].splitlines() == ["dist/release/circuit-breaker_*_linux_*.tar.gz", "dist/release/blkleg-circuitbreaker-*.tgz"]
 
 
 def test_new_steps_never_soften_failure() -> None:

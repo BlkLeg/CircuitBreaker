@@ -101,6 +101,15 @@ contents:
     file_info:
       mode: 0644
 
+  - src: deploy/lib/release-retention.sh
+    dst: /usr/local/lib/circuitbreaker/release-retention.sh
+    file_info:
+      mode: 0644
+  - src: deploy/scripts/rollback-release.sh
+    dst: /usr/local/lib/circuitbreaker/rollback-release.sh
+    file_info:
+      mode: 0755
+
   # systemd unit
   - src: packaging/circuit-breaker.service
     dst: /lib/systemd/system/circuit-breaker.service

@@ -26,6 +26,7 @@ export async function trustedIdentity(deps, { optional = false } = {}) {
   const lookup = await loadIdentityFor(deps);
   if (lookup.status === 'missing' && optional) return null;
   if (lookup.status !== 'found') throw Object.assign(new Error(`install identity is ${lookup.status}; run cb doctor before changing this host`), { code: lookup.status === 'untrusted' ? EXIT.TRUST : EXIT.UNSUPPORTED });
+  if (lookup.identity.mode !== 'native') return lookup.identity;
   // Mutations may elevate, so check even for an unprivileged coordinator.
   const trust = await checkTrustedFile(lookup.path, { ...deps, trustedUids: deps.trustedUids ?? [0] });
   if (!trust.ok) throw Object.assign(new Error(`untrusted install identity: ${trust.reason}`), { code: EXIT.TRUST });
@@ -51,6 +52,7 @@ export async function runLifecycle(action, args, deps) {
     if (opts.check) {
       if (opts['local-bundle'] || opts.airgap || /^(true|1|yes|on)$/i.test(deps.env.CB_AIRGAP ?? '')) return refuse(EXIT.USAGE, 'offline update checks use update --plan --local-bundle PATH --airgap');
       const target = await resolveTarget({ version: opts.version, channel: opts.channel, cliVersion: deps.cliVersion, arch: deps.arch, fetchJson: (url) => fetchJson(url, { fetchImpl: deps.fetchImpl }) });
+      if (compareVersions(target.version, identity.version) < 0) return refuse(EXIT.UNSUPPORTED, 'selected release is older than the installed server; downgrade is deferred');
       const outcome = target.version === identity.version ? 'no_change' : 'available';
       if (json) deps.result.write({ schema_version: 1, action, outcome, operation_id: null, recovery_available: false, current_version: identity.version, target_version: target.version });
       else deps.out(`${outcome === 'no_change' ? 'Already installed' : 'Release available'}: ${target.version}\n`);

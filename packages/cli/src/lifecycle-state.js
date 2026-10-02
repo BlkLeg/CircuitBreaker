@@ -173,7 +173,7 @@ function renderHistory(index) {
     for (const [label, value] of rows) text += `  ${label.padEnd(10)}${value}\n`;
     if (['interrupted', 'recovery_required'].includes(entry.state)) {
       text += `  Inspect     sudo cb doctor\n`;
-      if (entry.action === 'update') text += '  Recovery    sudo bash /opt/circuitbreaker/deploy/scripts/rollback-release.sh --restore-data\n';
+      if (entry.action === 'update') text += '  Recovery    sudo bash /usr/local/lib/circuitbreaker/rollback-release.sh --restore-data\n';
     }
   }
   return text;

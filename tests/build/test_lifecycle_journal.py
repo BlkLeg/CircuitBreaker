@@ -1594,6 +1594,8 @@ def test_the_control_plane_is_installed_whole_and_replaced_atomically(tmp_path: 
         "lifecycle.sh": (ROOT / "deploy" / "lib" / "lifecycle.sh", 0o644),
         "lifecycle-state.py": (UTILITY, 0o755),
         "bundle-signature.sh": (ROOT / "deploy" / "lib" / "bundle-signature.sh", 0o644),
+        "release-retention.sh": (ROOT / "deploy/lib/release-retention.sh", 0o644),
+        "rollback-release.sh": (ROOT / "deploy/scripts/rollback-release.sh", 0o755),
     }
     assert sorted(p.name for p in plane.iterdir()) == sorted(expected)
     for name, (source, want) in expected.items():
@@ -1721,3 +1723,26 @@ def test_as_root_every_case_runs_unprivileged(dropped_base: Path) -> None:
     assert r.returncode == 0, r.stdout + r.stderr
     reasons = re.findall(r"^SKIPPED \[\d+\] \S+: (.*)$", r.stdout, re.MULTILINE)
     assert all(reason.startswith("needs root to drop privileges") for reason in reasons), reasons
+
+
+@seam
+@pytest.mark.parametrize("status", [0, 8, 9])
+def test_native_installer_final_result_matches_durable_legacy_outcome(tmp_path: Path, status: int) -> None:
+    installer = (ROOT / "install.sh").read_text()
+    function = "cb_install_result() {" + installer.split("cb_install_result() {", 1)[1].split("_cb_on_exit() {", 1)[0]
+    before = "cb_lifecycle_checkpoint state=checking\n" if status == 0 else "cb_lifecycle_checkpoint state=recovering\n" if status == 8 else ""
+    result = sh(ACQUIRE + LEGACY + function + "\n" + before + f'''CB_NPM_RESULT=true
+CB_LIFECYCLE_ACTION=update
+CB_EXPECTED_VERSION=0.4.7
+CB_LIFECYCLE_SOURCE_VERSION=0.4.6
+_CB_RELEASE_BACKUP=/tmp/snapshot.tar.gz
+cb_install_result {status} || code=$?
+echo "op=$CB_LIFECYCLE_OPERATION"
+''', tmp_path / "state")
+    assert result.returncode == 0, result.stderr
+    encoded = next(line.removeprefix("CIRCUITBREAKER_RESULT=") for line in result.stdout.splitlines() if line.startswith("CIRCUITBREAKER_RESULT="))
+    document = LS.parse_document("result", encoded.encode())
+    expected = {0: "committed", 8: "recovered", 9: "recovery_required"}[status]
+    assert document["outcome"] == expected
+    journal = journal_of(tmp_path / "state", op_from(result))
+    assert journal["checkpoints"][-1]["state"] == expected

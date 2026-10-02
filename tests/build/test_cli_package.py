@@ -3,7 +3,8 @@
 Pins what `npm pack` would put in front of users: only the allowlisted runtime
 files, under a size budget, with no install-time scripts, and with copies of the
 identity schema, licence and native command list that match their sources. The
-manifest stays private here; sub-plan 09 lifts that together with
+dedicated manifest is publishable through the protected release flow;
+root/frontend privacy and public documentation gating stay enforced by
 test_npm_is_not_a_distribution_channel.py.
 """
 
@@ -63,10 +64,11 @@ REQUIRED_PACKED = {
 # 168 KiB takes that task's review fixes (measured 170,126 B): the native step
 # runner's bounded drain after exit, and exitResult building a stopped step's
 # result from its journal instead of its status.
-UNPACKED_SIZE_BUDGET = 168 * 1024
+# Plans 04–09 add the native lifecycle adapters and static renderer.
+UNPACKED_SIZE_BUDGET = 192 * 1024
 SHRINKWRAP_SIZE_BUDGET = 40 * 1024
 SHRINKWRAP = PKG / "npm-shrinkwrap.json"
-ENTRY_BUDGET = 40
+ENTRY_BUDGET = 45
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -94,9 +96,9 @@ def test_manifest_identity() -> None:
     assert MANIFEST["license"] == "MIT"
     assert MANIFEST["repository"]["directory"] == "packages/cli"
     assert MANIFEST["files"] == ["bin/", "src/", "schemas/", "compat/", "trust/", "npm-shrinkwrap.json"]
-    assert MANIFEST["private"] is True and "publishConfig" not in MANIFEST, (
-        "the CLI is published only by sub-plan 09, together with the ADR 0006 guard revision"
-    )
+    assert MANIFEST["private"] is False
+    assert MANIFEST["publishConfig"] == {"access": "public", "registry": "https://registry.npmjs.org/"}
+
 
 
 def test_only_sigstore_and_no_install_time_scripts() -> None:

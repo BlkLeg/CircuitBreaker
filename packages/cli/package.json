@@ -1,7 +1,7 @@
 {
   "name": "@blkleg/circuitbreaker",
   "version": "0.4.7",
-  "private": true,
+  "private": false,
   "description": "Linux management CLI for a self-hosted Circuit Breaker install.",
   "type": "module",
   "bin": {
@@ -46,5 +46,9 @@
   },
   "dependencies": {
     "sigstore": "5.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

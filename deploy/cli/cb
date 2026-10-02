@@ -528,8 +528,16 @@ _require_binary() {
 }
 
 _require_postgres_client() {
-  command -v pg_dump >/dev/null 2>&1 \
-    || _fail "pg_dump is not installed on this host — install the PostgreSQL client package (postgresql-client) and retry."
+  command -v pg_dump >/dev/null 2>&1 && return 0
+  # PGDG's supported native client is outside PATH on Fedora/RHEL.
+  local client
+  for client in /usr/pgsql-15/bin/pg_dump /usr/lib/postgresql/15/bin/pg_dump; do
+    if [[ -x "$client" ]]; then
+      export PATH="${client%/*}:$PATH"
+      return 0
+    fi
+  done
+  _fail "pg_dump is not installed on this host — install the PostgreSQL client package (postgresql-client) and retry."
 }
 
 _container_running() {

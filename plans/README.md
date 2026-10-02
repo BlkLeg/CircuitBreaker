@@ -21,18 +21,18 @@ carries a status column.
 
 | Plan | Date | Status |
 |---|---|---|
-| [npm CLI implementation](./2026-09-30-v0.4.7-npm-cli-implementation.md) | 2026-09-30 | **Active** — 01 and 02 implemented on dev. Remaining sub-plans 03–09 are written. Implements the [design contract](../docs/design/2026-09-30-v0.4.7-npm-cli-design.md) and approved terminal pattern, with verified staging, complete recovery, lifecycle commands and governed npm publication. |
+| [npm CLI implementation](./2026-09-30-v0.4.7-npm-cli-implementation.md) | 2026-09-30 | **Active** — 01–08 scoped implementation landed; 09 release automation implemented, external host/registry acceptance open. Implements the [design contract](../docs/design/2026-09-30-v0.4.7-npm-cli-design.md) and approved terminal pattern, with verified staging, complete recovery, lifecycle commands and governed npm publication. |
 | [npm CLI 01 — foundation](./2026-09-30-v0.4.7-npm-cli-01-foundation.md) | 2026-09-30 | **Active** — tasks 1–8 implemented on dev; awaiting push and the maintainer actions listed in the plan. Package, identity, trusted native bridge, help/version, pack gates. Sub-plan 01 of the roadmap above. |
 | [Release bundle signing](./2026-09-30-release-bundle-signing.md) | 2026-09-30 | **Active** — planned; no task started. Ed25519 `SHA256SUMS.sig` plus build-provenance attestations; `install.sh` verifies signature then hash, offline included. Implements the [signing design](../docs/design/2026-09-30-release-bundle-signing-design.md); prerequisite of npm CLI sub-plan 02. |
 | [npm CLI 02 — verified staging](./2026-09-30-v0.4.7-npm-cli-02-verified-staging.md) | 2026-09-30 | **Active** — Implemented on dev: tasks 1–8 committed; awaiting push. `install --plan`: one immutable target, bounded resumable proxy-aware staging, signature → hash → sigstore provenance → archive scan, air-gap with zero requests. Adds `sigstore` (first runtime dependency) and raises the Node floor to sigstore's range, ^22.22.2 \|\| ^24.15.0 \|\| >=26.0.0. |
 
-| [npm CLI 03 — lock, journal and events](./2026-09-30-v0.4.7-npm-cli-03-lock-journal-events.md) | 2026-09-30 | **Active** — planned; no task started. |
-| [npm CLI 04 — backup and restore adapters](./2026-09-30-v0.4.7-npm-cli-04-backup-restore.md) | 2026-09-30 | **Active** — planned; no task started. |
-| [npm CLI 05 — install, update and native mutation helper](./2026-09-30-v0.4.7-npm-cli-05-install-update.md) | 2026-09-30 | **Active** — planned; no task started. |
-| [npm CLI 06 — downgrade, rollback, recover and cli update](./2026-09-30-v0.4.7-npm-cli-06-downgrade-recovery.md) | 2026-09-30 | **Active** — planned; no task started. |
-| [npm CLI 07 — uninstall and purge](./2026-09-30-v0.4.7-npm-cli-07-uninstall-purge.md) | 2026-09-30 | **Active** — planned; no task started. |
-| [npm CLI 08 — terminal surfaces](./2026-09-30-v0.4.7-npm-cli-08-terminal-surfaces.md) | 2026-09-30 | **Active** — planned; no task started. |
-| [npm CLI 09 — packed journeys and governed publication](./2026-09-30-v0.4.7-npm-cli-09-publication.md) | 2026-09-30 | **Active** — planned; no task started. |
+| [npm CLI 03 — lock, journal and events](./2026-09-30-v0.4.7-npm-cli-03-lock-journal-events.md) | 2026-09-30 | **Active** — implementation landed; `deploy/lib/lifecycle.sh`, native journal/event tests; real-host gates open. |
+| [npm CLI 04 — backup and restore adapters](./2026-09-30-v0.4.7-npm-cli-04-backup-restore.md) | 2026-09-30 | **Active** — scoped implementation: 1258f5e9; external acceptance gates open. |
+| [npm CLI 05 — install, update and native mutation helper](./2026-09-30-v0.4.7-npm-cli-05-install-update.md) | 2026-09-30 | **Active** — scoped implementation: 7e19f02f; external acceptance gates open. |
+| [npm CLI 06 — downgrade, rollback, recover and cli update](./2026-09-30-v0.4.7-npm-cli-06-downgrade-recovery.md) | 2026-09-30 | **Active** — scoped implementation: 5493f4dd; external acceptance gates open. |
+| [npm CLI 07 — uninstall and purge](./2026-09-30-v0.4.7-npm-cli-07-uninstall-purge.md) | 2026-09-30 | **Active** — scoped implementation: 368046d2; external acceptance gates open. |
+| [npm CLI 08 — terminal surfaces](./2026-09-30-v0.4.7-npm-cli-08-terminal-surfaces.md) | 2026-09-30 | **Active** — scoped implementation: 70e3abf9; external acceptance gates open. |
+| [npm CLI 09 — packed journeys and governed publication](./2026-09-30-v0.4.7-npm-cli-09-publication.md) | 2026-09-30 | **Active** — scoped implementation: `scripts/ci/cli_publish.mjs`, `.github/workflows/release.yml`; external acceptance gates open. |
 
 ## cb-agent on macOS and Windows (2026-09-30)
 

@@ -1,37 +1,7 @@
-"""RISK-009 / ADR 0006: npm is not a Circuit Breaker distribution channel *yet*.
-
-ADR 0006 (2026-09-30, superseding ADR 0004) puts an npm installer CLI on the road
-to 1.0, and keeps ADR 0004's surface rules in force until that package ships and
-passes its NPM gates. This suite enforces those interim rules and is revised
-deliberately in the same change that first publishes the CLI.
-
-ADR 0004 decides that no Circuit Breaker package is published to npm for the
-1.0 line, and its Consequences add that documentation and release notes "must
-not show `npm install` or `npx` as an installation path". Until this file, only
-the first half of that had a test behind it
-(test_tracked_file_policy.py::test_root_npm_manifest_stays_private, which
-covers the root manifest alone). The rest was a sentence in an ADR.
-
-This suite makes the remaining promises mechanical:
-
-* every tracked ``package.json`` is ``private: true`` — the frontend workspace
-  as well as the root — so ``npm publish`` refuses from any directory;
-* no workflow publishes to an npm registry;
-* no user-facing installation surface (README, CHANGELOG, every page in the
-  MkDocs nav, docs/installation/, docs/release/, docs/updates/, install.sh,
-  and any release-notes file a workflow feeds to ``gh release``) presents a
-  package-manager install or exec of a Circuit Breaker package; and
-* the installation pages carry no package-manager command at all.
-
-The matcher is deliberately narrow in the second-to-last rule. Developer
-documentation legitimately says ``npm install -D @playwright/test``,
-``npm ci`` or ``cd apps/frontend && npx playwright test``; those install the
-project's *dependencies*, not Circuit Breaker. What the ADR forbids is
-installing or running *Circuit Breaker itself* through npm, so a hit needs both
-an install/exec command and a Circuit Breaker package name in that command's
-own arguments. The self-check tests at the bottom pin both directions.
+"""ADR 0006 distribution guard: only the dedicated CLI and protected release job
+may publish. Root/frontend stay private; public install advertising stays gated
+until registry provenance and exact-byte acceptance have passed.
 """
-
 from __future__ import annotations
 
 import json
@@ -160,7 +130,7 @@ def installation_surfaces() -> list[str]:
     return sorted(candidates & tracked)
 
 
-def test_every_tracked_package_manifest_is_private() -> None:
+def test_only_dedicated_cli_manifest_is_publishable() -> None:
     """NPM-02, extended past the root: no workspace can be `npm publish`ed."""
     manifests = [p for p in tracked_files() if Path(p).name == "package.json"]
     assert "apps/frontend/package.json" in manifests, (
@@ -170,17 +140,20 @@ def test_every_tracked_package_manifest_is_private() -> None:
     offenders = []
     for path in manifests:
         manifest = json.loads((ROOT / path).read_text(encoding="utf-8"))
+        if path == "packages/cli/package.json":
+            assert manifest["private"] is False
+            assert manifest["name"] == "@blkleg/circuitbreaker"
+            assert manifest["publishConfig"] == {"access": "public", "registry": "https://registry.npmjs.org/"}
+            continue
         if manifest.get("private") is not True or "publishConfig" in manifest:
             offenders.append(path)
     assert not offenders, (
-        f"{offenders} can be published to npm. ADR 0004 decides no Circuit "
-        'Breaker package is published for 1.0: set "private": true and drop '
-        "any publishConfig."
+        f"Only the dedicated CLI may be published under ADR 0006; keep these manifests private: {offenders}"
     )
 
 
-def test_no_workflow_publishes_to_npm() -> None:
-    """ADR 0004 decision 2: nothing is published to npmjs under any name."""
+def test_only_protected_release_workflow_publishes_cli() -> None:
+    """ADR 0006: only release.yml may publish the dedicated CLI."""
     offenders = []
     for workflow in sorted(WORKFLOWS.glob("*.y*ml")):
         for number, line in enumerate(
@@ -188,13 +161,17 @@ def test_no_workflow_publishes_to_npm() -> None:
         ):
             if line.lstrip().startswith("#"):
                 continue
-            if NPM_PUBLISH.search(line):
+            if NPM_PUBLISH.search(line) and workflow.name != "release.yml":
                 offenders.append(
                     f"{workflow.relative_to(ROOT)}:{number}: {line.strip()}"
                 )
+    release = (WORKFLOWS / "release.yml").read_text()
+    assert "node scripts/ci/cli_publish.mjs" in release
+    assert "environment: release" in release and "id-token: write" in release
+    assert "npm pack --ignore-scripts" in release
     assert not offenders, (
         "a workflow publishes to an npm registry or carries an npm publish "
-        f"credential, which ADR 0004 rules out for 1.0: {offenders}"
+        f"credential outside the protected release flow: {offenders}"
     )
 
 

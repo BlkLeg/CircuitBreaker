@@ -12,12 +12,14 @@ def run(tmp_path, commands, *, backup_fails=False, health_version="0.4.7"):
     (current / "old-marker").write_text("old")
     backup = tmp_path / "snapshot.tar.gz"
     library = (ROOT / "deploy/lib/release-retention.sh").read_text()
+    library = library.replace("/etc/circuitbreaker", str(tmp_path / "config"))
     library = library.replace("/opt/circuitbreaker.previous", str(tmp_path / "previous"))
     library = library.replace("/opt/circuitbreaker.retained", str(tmp_path / "retained"))
     library = library.replace("/opt/circuitbreaker.failed", str(tmp_path / "failed"))
     library = library.replace("/opt/circuitbreaker", str(current))
     library = library.replace("/usr/local/bin/cb backup", "fake_backup")
     harness = f'''set -euo pipefail
+_cb_lifecycle_trusted_program() {{ [[ -f "$1" && ! -L "$1" ]]; }}
 systemctl() {{ printf '%s\\n' "$*" >> '{tmp_path}/units'; }}
 sleep() {{ :; }}
 curl() {{ if [[ "${{@: -1}}" == */health ]]; then printf '%s' '{{"version":"{health_version}"}}'; fi; }}
@@ -66,3 +68,14 @@ def test_restored_release_with_unhealthy_version_requires_manual_recovery(tmp_pa
     result = run(tmp_path, "cb_release_prepare\ncb_release_revert_failed", health_version="0.4.8")
     assert result.returncode == 9
     assert (tmp_path / "current/old-marker").exists()
+
+
+def test_release_recovery_restores_the_previous_install_identity(tmp_path):
+    config = tmp_path / "config"
+    config.mkdir()
+    identity = config / "install-identity.json"
+    identity.write_text('{"version":"0.4.7","mode":"native"}')
+    result = run(tmp_path, "cb_release_prepare\nprintf '%s' '{\"version\":\"0.4.8\",\"mode\":\"native\"}' > " + str(identity) + "\ncb_release_revert_failed")
+    assert result.returncode == 8, result.stderr
+    assert identity.read_text() == '{"version":"0.4.7","mode":"native"}'
+    assert identity.stat().st_mode & 0o777 == 0o644

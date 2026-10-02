@@ -1138,7 +1138,8 @@ cb_lifecycle_interrupted() {
 cb_lifecycle_install_control_plane() {
   local src="${1:-}" dest="${2:-$CB_LIFECYCLE_CONTROL_PLANE}" item from name perm tmp
   local -a items=("lib/lifecycle.sh lifecycle.sh 644" "scripts/lifecycle-state.py lifecycle-state.py 755" \
-    "lib/bundle-signature.sh bundle-signature.sh 644")
+    "lib/bundle-signature.sh bundle-signature.sh 644" \
+    "lib/release-retention.sh release-retention.sh 644" "scripts/rollback-release.sh rollback-release.sh 755")
   for item in "${items[@]}"; do
     read -r from name perm <<<"$item"
     if [[ ! -f "$src/$from" || -L "$src/$from" ]]; then

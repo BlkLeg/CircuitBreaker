@@ -15,8 +15,7 @@
 # echo's output shows exactly which argv arrived. Finally `install --plan`
 # runs air-gapped against a tiny local bundle: the installed package trusts
 # only the real release key, so an unsigned bundle and one signed with a
-# throwaway key are both refused (exit 5), and `install` without --plan is not
-# in this build (exit 3).
+# throwaway key are both refused (exit 5), and `install` without --yes refuses before mutation (exit 2).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,7 +30,13 @@ fail() { printf '::error::cli packed smoke: %s\n' "$*" >&2; exit 1; }
 node -e "import('$ROOT/packages/cli/src/runtime.js').then(m=>{const p=m.unsupportedRuntime(); if(p){console.error(p);process.exit(1)}})" \
     || fail "Node $(node -v) is below the package's floor; install a supported Node to run this smoke"
 
-tarball="$(cd "$ROOT/packages/cli" && npm pack --silent --ignore-scripts --pack-destination "$work")"
+if [[ $# -gt 0 ]]; then
+  [[ $# -eq 1 && -f "$1" ]] || fail "usage: cli_packed_smoke.sh [accepted.tgz]"
+  tarball="blkleg-circuitbreaker-${VERSION}.tgz"
+  cp -- "$1" "$work/$tarball"
+else
+  tarball="$(cd "$ROOT/packages/cli" && npm pack --silent --ignore-scripts --pack-destination "$work")"
+fi
 [ "$tarball" = "blkleg-circuitbreaker-${VERSION}.tgz" ] || fail "packed $tarball, expected blkleg-circuitbreaker-${VERSION}.tgz"
 
 node "$ROOT/scripts/ci/cli_local_registry.mjs" "$work/$tarball" "$ROOT/packages/cli/package.json" > "$work/registry.port" &
@@ -64,7 +69,7 @@ set -e
 [ "$code" -eq 3 ] || fail "status without identity exited $code, expected 3"
 
 cat > "$work/identity.json" <<JSON
-{"schema_version": 1, "mode": "native", "version": "${VERSION}", "installed_at": "2026-09-30T00:00:00Z", "cli_path": "/usr/bin/echo"}
+{"schema_version": 1, "mode": "package", "version": "${VERSION}", "installed_at": "2026-09-30T00:00:00Z", "cli_path": "/usr/bin/echo"}
 JSON
 export CB_IDENTITY_PATH="$work/identity.json"
 
@@ -73,9 +78,9 @@ out="$(cd "$work" && "$cli" token create --name '$(touch pwned)' '; rm -rf /')" 
 [ ! -e "$work/pwned" ] || fail "an argument was evaluated by a shell"
 
 set +e
-"$cli" update >/dev/null 2>&1; code=$?
+"$cli" update --yes >/dev/null 2>&1; code=$?
 set -e
-[ "$code" -eq 3 ] || fail "update exited $code, expected 3 (lifecycle refused in this build)"
+[ "$code" -eq 3 ] || fail "update exited $code, expected 3 (package lifecycle uses its authoritative manager)"
 
 set +e
 CIRCUITBREAKER_FORWARDED=1 "$cli" status >/dev/null 2>&1; code=$?
@@ -101,8 +106,8 @@ set -e
 grep -q 'Keys tried' <<<"$err" || fail "refusal did not name the trusted keys: $err"
 
 set +e
-"$cli" install >/dev/null 2>&1; code=$?
+CB_IDENTITY_PATH="$work/missing.json" "$cli" install >/dev/null 2>&1; code=$?
 set -e
-[ "$code" -eq 3 ] || fail "install without --plan exited $code, expected 3"
+[ "$code" -eq 2 ] || fail "install without --yes exited $code, expected 2"
 
 printf 'cli packed smoke: %s passed on Node %s\n' "$tarball" "$(node -v)"

@@ -565,6 +565,35 @@ jobs:
           sudo tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
           syft version
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.15.0'
+
+      - name: Pack and accept the exact npm CLI candidate
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --prefix packages/cli
+          node --test packages/cli/test/*.test.js
+          npm audit --omit=dev --audit-level=high --prefix packages/cli
+          cd packages/cli
+          npm pack --ignore-scripts --pack-destination ../../dist/release
+          cd ../..
+          scripts/ci/cli_packed_smoke.sh "dist/release/blkleg-circuitbreaker-$(cat VERSION).tgz"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.22.2'
+
+      - name: Accept the same tarball on the minimum Node runtime
+        run: |
+          node --test packages/cli/test/*.test.js
+          scripts/ci/cli_packed_smoke.sh "dist/release/blkleg-circuitbreaker-$(cat VERSION).tgz"
+
+      - name: Generate CLI dependency SBOM
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: syft scan dir:packages/cli --output "cyclonedx-json=dist/release/circuit-breaker_${VERSION}_sbom-cli.cdx.json"
+
       - name: Generate source SBOMs
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -694,7 +723,7 @@ jobs:
           gpgconf --kill gpg-agent
 
           cd dist/release/
-          for f in *.tar.gz *.deb *.rpm *.apk *.pkg.tar.zst *.AppImage *.json; do
+          for f in *.tgz *.tar.gz *.deb *.rpm *.apk *.pkg.tar.zst *.AppImage *.json; do
             [ -f "$f" ] && [[ "$f" != *.asc ]] || continue
             gpg --batch --yes --pinentry-mode loopback \
                 --passphrase "${GPG_PASSPHRASE}" \
@@ -770,7 +799,9 @@ jobs:
       - name: Attest build provenance for the bundles
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: dist/release/circuit-breaker_*_linux_*.tar.gz
+          subject-path: |
+            dist/release/circuit-breaker_*_linux_*.tar.gz
+            dist/release/blkleg-circuitbreaker-*.tgz
 
       - name: Remove bundle directory from release artifacts
         run: rm -rf dist/release/bundle
@@ -1012,8 +1043,38 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.15.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish and verify the accepted CLI tarball
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.promote-verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          # Trusted publishing requires npm >=11.5.1; never use an npm token.
+          npm install --global --ignore-scripts npm@11.5.1
+          mkdir -p /tmp/npm-candidate
+          gh release download "v${VERSION}" --dir /tmp/npm-candidate \
+            --pattern "blkleg-circuitbreaker-${VERSION}.tgz" \
+            --pattern SHA256SUMS --pattern SHA256SUMS.sig
+          source deploy/lib/bundle-signature.sh
+          cb_verify_sums_signature /tmp/npm-candidate/SHA256SUMS /tmp/npm-candidate/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt
+          cb_verify_sums_entry /tmp/npm-candidate/SHA256SUMS "/tmp/npm-candidate/blkleg-circuitbreaker-${VERSION}.tgz"
+          gh attestation verify "/tmp/npm-candidate/blkleg-circuitbreaker-${VERSION}.tgz" --repo "${GITHUB_REPOSITORY}"
+          scripts/ci/cli_packed_smoke.sh "/tmp/npm-candidate/blkleg-circuitbreaker-${VERSION}.tgz"
+          tag=latest
+          [ "${PRERELEASE}" != true ] || tag=next
+          node scripts/ci/cli_publish.mjs "/tmp/npm-candidate/blkleg-circuitbreaker-${VERSION}.tgz" \
+            "${VERSION}" "$tag" /tmp/npm-candidate/npm-publication.json
+          gh release upload "v${VERSION}" /tmp/npm-candidate/npm-publication.json --clobber
+
       - name: Retag the candidate's image digest
         env:
           VERSION: ${{ needs.version.outputs.version }}

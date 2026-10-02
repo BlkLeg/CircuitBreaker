@@ -14,8 +14,9 @@ done
 source /usr/local/lib/circuitbreaker/lifecycle.sh
 cb_lifecycle_lock_acquire 'native rollback' || exit $?
 cb_lifecycle_arm_interrupt
-lib=/opt/circuitbreaker/deploy/lib/release-retention.sh
+lib=/usr/local/lib/circuitbreaker/release-retention.sh
 _cb_lifecycle_trusted_program "$lib" || exit 5
+# shellcheck source=/dev/null
 source "$lib"
 [[ -d "$CB_PREVIOUS_RELEASE" && ! -L "$CB_PREVIOUS_RELEASE" ]] || { echo 'No previous update release is retained.' >&2; exit 3; }
 _cb_lifecycle_trusted_program "$CB_PREVIOUS_RELEASE/share/VERSION" || exit 5
@@ -63,6 +64,7 @@ retained="$(mktemp -d /opt/circuitbreaker.retained.XXXXXXXX)"
 rmdir "$retained"
 mv -T -- /opt/circuitbreaker "$retained"
 mv -T -- "$CB_PREVIOUS_RELEASE" /opt/circuitbreaker
+cb_release_restore_identity || exit 9
 systemctl daemon-reload
 systemctl restart circuitbreaker.target circuitbreaker-backend
 cb_lifecycle_checkpoint state=checking
