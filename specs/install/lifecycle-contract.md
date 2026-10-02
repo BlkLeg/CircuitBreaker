@@ -622,16 +622,16 @@ holder may be another shell entrypoint, a nested call or the npm coordinator's n
 Sub-plans 04–07 consume this table. A new mutator gets a row and a lock label before it ships.
 
 **Inventory.** The label is what the owner record shows (§10). It names the command, never its
-arguments. Each `cb` row re-runs through sudo at the point named, just before it takes the
-lock. See **Root first** below.
+arguments. Each native, binary and package `cb` row re-runs through sudo at the point named, just
+before it takes the lock. Docker mode never does. See **Root first** below.
 
 | Entrypoint | What it changes | Label | Taken |
 | --- | --- | --- | --- |
 | `install.sh` (native) | packages, users, units, `/opt/circuitbreaker`, config, data, control plane | `install.sh` | in `main`, right after root is confirmed, before the bootstrap log, the UI and preflight |
 | `install.sh --upgrade` | the same, plus the pre-upgrade dump, the service stop and migrations | `install.sh upgrade` | as above |
-| `install.sh --docker` | Docker packages, `cb-helperd`, the compose stack, host identity, host `cb`, control plane | `install.sh docker` | in `main`, after the re-run through sudo, before `stage_docker_deploy` |
+| `install.sh --docker` | Docker packages, `cb-helperd`, the compose stack, host identity, host `cb`, control plane | `install.sh docker` | in `main`, before `stage_docker_deploy`, as root only; never re-runs through sudo |
 | `deploy/setup.sh` | every stage (sourced into install.sh's shell) | `setup.sh` | first line of `stage0_preflight` and `run_upgrade`; nests on install.sh's lock |
-| `uninstall.sh` | containers, volumes, images, units, `/opt/circuitbreaker`, config, data, the `breaker` user | `uninstall.sh` | after the read-only preflight and the re-run through sudo, before the first container stop |
+| `uninstall.sh` | containers, volumes, images, units, `/opt/circuitbreaker`, config, data, the `breaker` user | `uninstall.sh` | after the read-only preflight and, on a native or packaged install, the re-run through sudo, before the first container stop |
 | `deploy/scripts/restore.sh` | stops the unit, replaces database, uploads, vault key, nginx site | `restore.sh` | after the argument check and the re-run through sudo, before the tool check, validation and stop |
 | `cb restart` | restarts the container, stack, unit or target | `cb restart` | after the identity check |
 | `cb update` | pulls and recreates the container or stack | `cb update` | in the docker and compose branches, before `docker pull`; native and binary refuse first |
@@ -686,8 +686,16 @@ conflict.
 
 **Root first.** The lock is root-only (§10). An entrypoint that would take it first makes sure it
 runs as root, through `cb_lifecycle_elevate` (`deploy/lib/lifecycle.sh`), before it changes
-anything. That covers every mode of `cb`, the native and Docker installers, uninstall.sh and
-restore.sh.
+anything. That covers the native, binary and package modes of `cb`, the native installer,
+uninstall.sh of a native or packaged install and restore.sh.
+
+- **Docker mode never elevates.** The docker and compose branches of the `cb` mutators,
+  `install.sh --docker` and a Docker-only `uninstall.sh` run as the invoking user, a docker-group
+  operator, with no sudo re-run. Run as root they take the host lock as any other entrypoint. Run
+  without root they skip the lock silently, with no warning line. Those commands are unlocked
+  against a concurrent operation unless one of them is root. Native, binary and package paths keep
+  the re-run, the lock and the protection against re-running a `./bash` from the working
+  directory as root.
 
 - **How it elevates.** Without root, the entrypoint re-runs itself through
   `sudo -- env CB_LIFECYCLE_ELEVATED=1 HOME=… <allowlist> bash <script> <args>`. The re-run does
@@ -710,11 +718,9 @@ restore.sh.
     not allow this re-run. Run that command as `sudo cb …`, which starts as root and needs no re-run.
   - `cb` runs `systemctl` and the vault-key writes directly.
   - uninstall.sh replaces its per-step `sudo` with a direct call once it holds the lock.
-- **HOME.** HOME is carried across, so a Docker install is still found through the operator's home.
-  Files the re-run writes there are handed back to `SUDO_UID`: the backup, any backup directory
-  the run had to create (an existing directory keeps its owner), the Docker installer's identity
-  directory and its install tree. The Docker installer adds
-  `SUDO_USER` to the docker group, as it did for an unprivileged operator.
+- **HOME.** HOME is carried across the re-run. When `sudo cb …` runs a Docker-mode backup as root,
+  the backup and any backup directory the run had to create (an existing directory keeps its
+  owner) are handed back to `SUDO_UID`.
 - **Refusals (6, before anything changes):**
   - A piped script has no file to re-run, so it names `curl … | sudo bash` instead, with the
     operator's own arguments quoted.

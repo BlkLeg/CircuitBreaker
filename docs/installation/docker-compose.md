@@ -7,7 +7,7 @@ Deploy Circuit Breaker with Docker Compose. The compose file runs a single conta
 ## Quick Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash -s -- --docker
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --docker
 ```
 
 This mode is compose-only: it never runs the native/systemd installer path. It auto-detects Docker, installs Docker (engine + compose plugin) only when missing, downloads `docker-compose.yml`, `docker/docker-compose.socket.yml`, and `.env.example` to `~/.circuitbreaker/`, creates `.env` with generated secrets (if absent), then starts the stack.

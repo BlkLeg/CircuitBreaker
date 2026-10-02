@@ -39,8 +39,8 @@ set -eo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _CB_HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-# This script and its arguments, for a mutating command that re-runs itself
-# through sudo to take the root-only host lifecycle lock (_cb_lock).
+# This script and its arguments, for a native or binary mutating command that
+# re-runs itself through sudo to take the root-only host lifecycle lock (_cb_lock).
 _CB_SELF="${_CB_HERE}/$(basename -- "${BASH_SOURCE[0]}")"
 _CB_ARGV=("$@")
 for _id_lib in \
@@ -450,14 +450,20 @@ _cb_lifecycle_library() {
 # root, 7 when it cannot be taken at all. Nested calls in this shell (cb
 # restore's safety backup) take one more level of the same lock.
 #
-# The lock is root-only, so a command run without root first re-runs itself
-# through sudo (cb_lifecycle_elevate), in every mode: the whole command then
-# runs as root under the real host lock, and none of its steps escalates on
-# its own. HOME is carried across, so a Docker install is still found through
-# the operator's home. Without sudo, or when sudo refuses, it stops with 6
-# before anything runs.
+# The lock is root-only. A native, binary or package command run without root
+# first re-runs itself through sudo (cb_lifecycle_elevate): the whole command
+# then runs as root under the real host lock, and none of its steps escalates
+# on its own. Without sudo, or when sudo refuses, it stops with 6 before
+# anything runs. A docker or compose install belongs to the operator who
+# manages it and never elevates: as root it takes the lock, and without root it
+# runs unlocked, silently.
 _cb_lock() {
-  local label="$1" lib rc=0 quoted=""
+  local label="$1" lib rc=0 quoted="" docker_mode=false
+  case "$CB_MODE" in docker|compose) docker_mode=true ;; esac
+  if [[ "$docker_mode" == true && "$EUID" -ne 0 && -z "${CB_LIFECYCLE_ROOT:-}" ]]; then
+    declare -F cb_lifecycle_mark_mutation >/dev/null 2>&1 || cb_lifecycle_mark_mutation() { :; }
+    return 0
+  fi
   if ! declare -F cb_lifecycle_lock_acquire >/dev/null 2>&1; then
     if ! lib="$(_cb_lifecycle_library)"; then
       echo "cb: the lifecycle library (lifecycle.sh) is not installed in /usr/local/lib/circuitbreaker, so '${label}' cannot take the host lifecycle lock. Re-run the installer for this mode. Nothing was changed." >&2
@@ -466,13 +472,15 @@ _cb_lock() {
     # shellcheck source=deploy/lib/lifecycle.sh
     source "$lib"
   fi
-  cb_lifecycle_elevate "$_CB_SELF" ${_CB_ARGV[@]+"${_CB_ARGV[@]}"} || rc=$?
-  if [[ "$rc" -ne 0 ]]; then
-    if [[ ${#_CB_ARGV[@]} -gt 0 ]]; then
-      printf -v quoted ' %q' "${_CB_ARGV[@]}"
+  if [[ "$docker_mode" == false ]]; then
+    cb_lifecycle_elevate "$_CB_SELF" ${_CB_ARGV[@]+"${_CB_ARGV[@]}"} || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      if [[ ${#_CB_ARGV[@]} -gt 0 ]]; then
+        printf -v quoted ' %q' "${_CB_ARGV[@]}"
+      fi
+      echo "cb: '${label}' needs root for the host lifecycle lock. Run: sudo cb${quoted}" >&2
+      exit "$rc"
     fi
-    echo "cb: '${label}' needs root for the host lifecycle lock. Run: sudo cb${quoted}" >&2
-    exit "$rc"
   fi
   cb_lifecycle_lock_acquire "$label" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
@@ -484,11 +492,10 @@ _cb_lock() {
 }
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
-# A docker or compose install belongs to the operator who manages it, and a
-# mutating command reaches root only by re-running itself through sudo
-# (_cb_lock). What this run wrote into that operator's tree (a backup, a
-# backup directory it had to create) is handed back to them, as it would have
-# been theirs had the command not needed root. The caller passes only paths
+# A docker or compose install belongs to the operator who manages it. When
+# `sudo cb ...` ran the command as root, what this run wrote into that
+# operator's tree (a backup, a backup directory it had to create) is handed back
+# to them. The caller passes only paths
 # this run created; a link is changed itself, never what it points to. Other
 # modes are root's already.
 _cb_hand_back() {

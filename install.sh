@@ -3469,13 +3469,12 @@ CB_BUNDLE_DIR=""
 
 main() {
   if [[ "${DOCKER_MODE}" == "true" ]]; then
-    # The lock is root-only, so the Docker install re-runs itself through
-    # sudo first, as the native one does. It already installs cb-helperd, the
-    # host cb and the lifecycle control plane as root; now all of it runs under
-    # the host lock. docker_target_user still resolves the operator through
-    # SUDO_USER, so the stack and its files remain theirs.
-    cb_require_root "the Docker install" "$@"
-    cb_take_lifecycle_lock "install.sh docker"
+    # The Docker install runs as the invoking user and never elevates. Root
+    # (or the CB_LIFECYCLE_ROOT test seam) takes the host lock; without it the
+    # install runs unlocked, silently.
+    if [[ $EUID -eq 0 || -n "${CB_LIFECYCLE_ROOT:-}" ]]; then
+      cb_take_lifecycle_lock "install.sh docker"
+    fi
     cb_lifecycle_mark_mutation
     stage_docker_deploy
     exit 0

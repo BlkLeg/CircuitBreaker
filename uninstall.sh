@@ -1473,12 +1473,14 @@ if [ "$CB_UNATTENDED" = "false" ] && ! true 2>/dev/null < /dev/tty; then
   Show 1 "Uninstall aborted. Nothing was removed."
 fi
 
-# Root before anything is removed: the host lifecycle lock below is root-only,
-# so on Linux this re-runs itself through sudo here — after the terminal check,
+# Root before anything is removed on a native or packaged install: the host
+# lifecycle lock below is root-only, so on Linux this re-runs itself through sudo here — after the terminal check,
 # since sudo may need the same terminal to ask for a password — and the re-run
 # does the whole removal as root under the lock. Read from a pipe there is no
-# file to re-run, and the operator is told to pipe it to sudo instead.
-if [ "$(uname -s)" = "Linux" ]; then
+# file to re-run, and the operator is told to pipe it to sudo instead. A
+# Docker-only host never elevates: as root (or over the CB_LIFECYCLE_ROOT test
+# seam) it takes the lock, and without root it removes unlocked, silently.
+if [ "$(uname -s)" = "Linux" ] && { [ "$CB_HAS_NATIVE" = true ] || [ "$CB_HAS_PACKAGE" = true ]; }; then
   _cb_elevate_rc=0
   cb_lifecycle_elevate "${BASH_SOURCE[0]:-}" ${CB_UNINSTALL_ARGS[@]+"${CB_UNINSTALL_ARGS[@]}"} || _cb_elevate_rc=$?
   if [ "$_cb_elevate_rc" -ne 0 ]; then
@@ -1498,10 +1500,12 @@ fi
 # Removal conflicts with every other lifecycle operation — an install, an
 # upgrade, a restore, a `cb` mutation, the npm coordinator's native helper —
 # so it takes the one host-wide lock before the first container stop below,
-# and stops with 10 while anything else holds it. This script is root by now
-# (it re-ran itself through sudo above). Linux only: the lock needs flock(1).
+# and stops with 10 while anything else holds it. This script is root by now,
+# unless this is a Docker-only host run without root, which skips the lock.
+# Linux only: the lock needs flock(1).
 # Contract: specs/install/lifecycle-contract.md §11.
-if [ "$(uname -s)" = "Linux" ]; then
+if [ "$(uname -s)" = "Linux" ] && { [ "$(id -u)" -eq 0 ] || [ -n "${CB_LIFECYCLE_ROOT:-}" ] \
+    || [ "$CB_HAS_NATIVE" = true ] || [ "$CB_HAS_PACKAGE" = true ]; }; then
   _cb_lock_rc=0
   cb_lifecycle_lock_acquire "uninstall.sh" || _cb_lock_rc=$?
   if [ "$_cb_lock_rc" -ne 0 ]; then

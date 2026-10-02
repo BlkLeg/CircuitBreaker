@@ -119,9 +119,11 @@ curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/uninstal
 bash uninstall.sh
 ```
 
-Run without root, it re-runs itself through `sudo` before it removes anything. Removal takes the
-host-wide lifecycle lock, which is root-only. While another install, upgrade, restore or `cb`
-command holds the lock, it stops with exit code 10 and removes nothing.
+Removing a native or packaged install, run without root, it re-runs itself through `sudo` before
+it removes anything. Removal takes the host-wide lifecycle lock, which is root-only, and while
+another install, upgrade, restore or `cb` command holds it, it stops with exit code 10 and removes
+nothing. A Docker-only host never uses `sudo` for this: as root it takes the lock, and without root
+it runs unlocked.
 
 Download it and run it, rather than piping it straight into `bash`. Every prompt in the script reads
 from `/dev/tty`, so the piped form has nothing to answer with: it used to remove the container and

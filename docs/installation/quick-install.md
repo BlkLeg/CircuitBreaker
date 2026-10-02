@@ -119,7 +119,7 @@ Takes about 3 minutes. Circuit Breaker is accessible at `https://<container-ip>:
 Runs Circuit Breaker as a single container — Postgres, Redis, NATS, the backend, the workers and nginx are all inside the mono image — using Docker Compose. This path never prompts.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash -s -- --docker
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --docker
 ```
 
 **Access at:** `https://<host>/` (HTTP on port 80 redirects)
@@ -138,7 +138,7 @@ image after the compose smoke passes. Point the installer at the `dev` branch
 and that image with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/dev/install.sh | sudo bash -s -- --docker --version dev
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/dev/install.sh | bash -s -- --docker --version dev
 ```
 
 Or by hand, the same way the [Manual Setup](docker-compose.md#manual-setup-without-the-install-script)

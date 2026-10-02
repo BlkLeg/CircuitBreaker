@@ -107,7 +107,7 @@ It creates a Debian 12 container, installs Circuit Breaker inside it and connect
 ### Docker Compose
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash -s -- --docker
+curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | bash -s -- --docker
 ```
 
 Installs Docker only if it is missing, downloads the official Compose templates into `~/.circuitbreaker`, generates an `.env` with fresh secrets, and starts the stack. See [Docker Compose](docs/installation/docker-compose.md) for environment variables, persistence, ARP scanning and the Docker socket.

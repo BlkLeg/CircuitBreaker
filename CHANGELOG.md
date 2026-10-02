@@ -24,22 +24,19 @@ next round.
   The mutating commands are `restart`, `update`, `backup`, `restore`,
   `vault-recover` and `migrate upgrade`. A second one stops with exit code 10
   and changes nothing; read-only commands are unaffected.
-- The lock is root-only, so the Docker installer (`install.sh --docker`),
-  `uninstall.sh` and the mutating `cb` commands in Docker mode now escalate
-  through `sudo`, as the native installer already did. Run from a file, they
-  re-run themselves through `sudo`.
-- Piped, there is no file to re-run, so use
-  `curl ... | sudo bash -s -- --docker` and `curl ... uninstall.sh | sudo bash`.
-- Backups and install files written into the operator's home are still owned
-  by that operator.
-- Without `sudo`, or when `sudo` refuses, these commands stop with exit code 6
-  before changing anything.
-- A docker-group user's crontab entry for `cb backup` now needs root: move it
-  to root's crontab, or run it as `sudo cb backup`. Run from an unprivileged
-  cron job, `cb backup` has no terminal for `sudo` to ask on and stops with 6.
+- The lock is root-only. The native, binary and package paths, the native
+  installer and `uninstall.sh` of a native or packaged install re-run
+  themselves through `sudo` before taking it; piped, use
+  `curl ... | sudo bash`. Without `sudo`, or when `sudo` refuses, they stop
+  with exit code 6 before changing anything.
+- Docker mode never uses `sudo`: `install.sh --docker`, a Docker-only
+  `uninstall.sh` and the docker and compose branches of the mutating `cb`
+  commands run as the invoking user, as before. Run as root they take the
+  lock; run without root they skip it, silently.
 - A sudoers rule that allows only the `cb` command, such as
-  `NOPASSWD: /usr/local/bin/cb`, must be used as `sudo cb …`. A plain `cb …`
-  re-runs itself as `sudo env … bash cb …`, which such a rule does not allow.
+  `NOPASSWD: /usr/local/bin/cb`, must be used as `sudo cb …` for native and
+  binary installs. A plain `cb …` re-runs itself as `sudo env … bash cb …`,
+  which such a rule does not allow.
 - The re-run through `sudo` no longer carries the whole environment
   (`sudo -E`). It passes `HOME`, `TERM`, `NO_COLOR`, `CB_AIRGAP`,
   `CB_VERBOSE` and `CB_ASSUME_YES`, and nothing else, so a variable such as
