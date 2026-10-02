@@ -1057,7 +1057,10 @@ _cb_lifecycle_fd_holds() {
     return 1
   fi
   exec {probe}<&-
-  flock -n "$fd" 2>/dev/null
+  # AppArmor can refuse lock calls on a descriptor opened before a policy
+  # reload (seen in a Proxmox LXC); the kernel still lists this description's locks.
+  flock -n "$fd" 2>/dev/null \
+    || grep -qE '^lock:[[:space:]]+[0-9]+: FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE ' "/proc/$BASHPID/fdinfo/$fd" 2>/dev/null
 }
 
 # The start time of process $1 in clock ticks since boot (field 22 of
@@ -1956,15 +1959,20 @@ cb_release_restore_identity() {
   fi
 }
 
+# Ready on /readyz and running the expected release. The API reports its
+# version only to authenticated callers, so the version is the installed
+# tree's: the services were just restarted from /opt/circuitbreaker.
 cb_release_health() {
-  local expected="$1" attempt body
+  local expected="$1" attempt installed
   [[ "$expected" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 7
+  installed="$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null)" || installed=""
+  if [[ "$installed" != "$expected" ]]; then
+    echo "Installed release is ${installed:-unknown}, expected $expected." >&2
+    return 7
+  fi
   for ((attempt=0; attempt<60; attempt++)); do
     if curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8000/api/v1/readyz >/dev/null; then
-      body="$(curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8000/api/v1/health)" || body=""
-      if printf '%s' "$body" | /usr/bin/python3 -I -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("version") == sys.argv[1] else 1)' "$expected"; then
-        return 0
-      fi
+      return 0
     fi
     sleep 2
   done
@@ -2345,7 +2353,7 @@ cb_install_result() {
        cb_lifecycle_checkpoint state=recovered outcome=recovered error_code=RECOVERED "error_reason=previous release restored; data restore is manual" || { status=9; outcome=recovery_required; } ;;
     *) outcome=recovery_required; current=""; error_code=MANUAL
        cb_lifecycle_checkpoint state=recovery_required cause=apply_failed error_code=MANUAL "error_reason=installer stopped; inspect retained release and restore instructions" || true
-       cb_lifecycle_checkpoint state=recovery_required outcome=manual error_code=MANUAL "error_reason=installer stopped; inspect retained release and restore instructions" || true ;;
+       cb_lifecycle_checkpoint state=recovery_required cause=apply_failed outcome=manual error_code=MANUAL "error_reason=installer stopped; inspect retained release and restore instructions" || true ;;
   esac
   if [[ "${CB_NPM_RESULT:-false}" == true ]]; then
     /usr/bin/python3 -I -c 'import json,sys
