@@ -1738,6 +1738,11 @@ stage9_install_cb_cli() {
   fi
 
   # Shared identity helpers travel with the bundle when present.
+  if [[ -f /opt/circuitbreaker/deploy/cli/cb_terminal.py ]]; then
+    install -Dm644 /opt/circuitbreaker/deploy/cli/cb_terminal.py \
+      /usr/local/lib/circuitbreaker/cb_terminal.py \
+      || cb_warn "Terminal formatter could not be installed; cb will use the bundled helper"
+  fi
   if [[ -f /opt/circuitbreaker/deploy/cli/cb_resources.py ]]; then
     install -Dm644 /opt/circuitbreaker/deploy/cli/cb_resources.py \
       /usr/local/lib/circuitbreaker/cb_resources.py \

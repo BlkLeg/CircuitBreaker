@@ -28,8 +28,8 @@ consistent database/uploads snapshot.
 `rollback [--restore-data] [--yes]` restores the last retained update. Without
 `--restore-data`, it keeps current data; incompatible schemas can require manual
 data restoration. `uninstall` forwards the native uninstaller with `--keep-data`.
-`uninstall --purge` requires typing DELETE or explicit `--yes`. The npm tool remains
-installed. Uninstall and management output/exit codes are passed through unchanged.
+`uninstall --purge` requires typing `DELETE circuitbreaker` or explicit `--yes`. The npm tool remains
+installed. A removal plan precedes confirmation; native output and exit codes are forwarded.
 
 Native lifecycle apply is supported by the new installer adapter; Docker lifecycle
 apply and package lifecycle apply remain with their existing management tools.
@@ -39,8 +39,11 @@ recover are deferred. Update the npm tool manually with
 npm through sudo.
 
 For install/update/rollback, `--json` prints one final result on stdout and
-`--events=jsonl` writes framed events on stderr. Otherwise progress uses static
-phase lines with durations and no ANSI. Interrupted-update history lists the
+`--events=jsonl` writes framed events on stderr. Interactive progress uses the approved phase ledger, measured download bytes and a
+bounded live region (at most 8 redraws/second). `--no-animation` or
+`CB_REDUCED_MOTION=1` disables motion; `NO_COLOR` disables color. Redirected
+output uses permanent phase lines without ANSI. Existing artwork appears once
+on an interactive install when the terminal has room. Interrupted-update history lists the
 native rollback command; `cb doctor` provides read-only inspection.
 
 Requires Linux and Node.js 22.22.2+, 24.15.0+ or 26+. Licensed MIT.

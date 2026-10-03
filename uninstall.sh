@@ -1317,12 +1317,16 @@ fi
 # ─── Colors ──────────────────────────────────────────────────────────────────
 COLOUR_RESET='\e[0m'
 aCOLOUR=(
-  '\e[38;5;154m'  # [0] green
+  '\e[38;5;209m'  # [0] CLI orange
   '\e[1m'         # [1] bold
   '\e[90m'        # [2] grey
   '\e[91m'        # [3] red
   '\e[33m'        # [4] yellow
 )
+
+if [[ ! -t 1 || "${NO_COLOR+x}" == x || "${TERM:-dumb}" == dumb ]]; then
+  COLOUR_RESET=''; aCOLOUR=('' '' '' '' '')
+fi
 
 # ─── Progress rendering ──────────────────────────────────────────────────────
 #
@@ -1346,9 +1350,10 @@ fi
 _cb_phase() { declare -f "$1" >/dev/null 2>&1 && "$@"; return 0; }
 
 Show() {
+  _cb_phase _cb_live_clear
   case $1 in
     0) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[0]} OK ${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
-    1) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[3]}FAILED${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2"; exit 1 ;;
+    1) _cb_phase cb_ui_ledger; echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[3]}FAILED${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2"; exit 1 ;;
     2) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[0]} INFO ${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
     3) echo -e "${aCOLOUR[2]}[${COLOUR_RESET}${aCOLOUR[4]}NOTICE${COLOUR_RESET}${aCOLOUR[2]}]${COLOUR_RESET} $2" ;;
   esac
@@ -1527,6 +1532,31 @@ if [ "$(uname -s)" = "Linux" ] && { [ "$(id -u)" -eq 0 ] || [ -n "${CB_LIFECYCLE
     "$@"
   }
 fi
+
+_cb_phase cb_ui_teardown
+printf '\nPLAN BEFORE CHANGING ANYTHING\n'
+if [ "$CB_HAS_NATIVE" = true ]; then
+  printf '  REMOVE  /opt/circuitbreaker, retained release trees, app units and app nginx site\n'
+  if [ "$CB_PURGE_DATA" = true ]; then
+    printf '  DELETE  /etc/circuitbreaker, /var/lib/circuitbreaker, /var/backups/circuitbreaker\n'
+  elif [ "$CB_UNATTENDED" = true ]; then
+    printf '  KEEP    /etc/circuitbreaker, /var/lib/circuitbreaker, /var/backups/circuitbreaker\n'
+  else
+    printf '  CHOOSE  whether to retain configuration and data at the native prompts\n'
+  fi
+  printf '  KEEP    shared nginx and system dependencies\n'
+elif [ "$CB_HAS_PACKAGE" = true ]; then
+  printf '  REMOVE  packaged application files and app services\n'
+  printf '  Data choice: %s\n' "$(if [ "$CB_PURGE_DATA" = true ]; then printf 'delete /etc/circuit-breaker and /var/lib/circuit-breaker'; else printf 'retain /etc/circuit-breaker and /var/lib/circuit-breaker'; fi)"
+else
+  printf '  REMOVE  application container %s\n' "$CB_CONTAINER"
+  printf '  Data volume: %s; purge requested: %s\n' "$CB_VOLUME" "$CB_PURGE_DATA"
+fi
+printf '  KEEP    npm CLI (remove the npm package separately)\n'
+if [ "$CB_PURGE_DATA" = true ]; then
+  printf '\nLocal database, uploads, backups and vault key will be deleted.\nRetain an independent recovery copy; backups inside deleted directories cannot recover this operation.\n'
+fi
+printf '\n'
 
 _cb_phase cb_phase_end preflight
 
@@ -1811,6 +1841,7 @@ if [ "$CB_HAS_NATIVE" = "true" ]; then
 
   # The target first, so systemd tears the tree down in dependency order rather
   # than leaving the backend talking to a database that has already gone.
+  _cb_phase cb_phase_begin stop "Stop app services"
   Show 2 "Stopping Circuit Breaker services..."
   sudo systemctl stop circuitbreaker.target >/dev/null 2>&1 || true
   for unit in \
@@ -1838,6 +1869,8 @@ if [ "$CB_HAS_NATIVE" = "true" ]; then
   # it has been removed from.
   sudo systemctl stop circuitbreaker.slice >/dev/null 2>&1 || true
   Show 0 "Services stopped and disabled."
+  _cb_phase cb_phase_end stop
+  _cb_phase cb_phase_begin remove "Remove app files and units"
 
   Show 2 "Removing systemd units..."
   sudo rm -f \
@@ -1918,6 +1951,9 @@ if [ "$CB_HAS_NATIVE" = "true" ]; then
   # `breaker` account this uninstaller has just deleted — at each boot.
   sudo rm -f /usr/lib/tmpfiles.d/circuitbreaker.conf >/dev/null 2>&1 || true
   sudo rm -rf /run/circuitbreaker >/dev/null 2>&1 || true
+
+  _cb_phase cb_phase_end remove
+  _cb_phase cb_ui_teardown
 
   # Config and data, asked for separately and in that order: an operator who
   # keeps the data almost always wants the credentials that decrypt it, and
@@ -2071,6 +2107,7 @@ echo ""
 echo -e "  ${aCOLOUR[2]}To reinstall: curl -fsSL https://raw.githubusercontent.com/BlkLeg/circuitbreaker/main/install.sh | bash${COLOUR_RESET}"
 echo ""
 echo -e "${aCOLOUR[0]}"
+if [[ -t 1 && "${TERM:-dumb}" != dumb && "${NO_COLOR+x}" != x && "${COLUMNS:-80}" =~ ^[0-9]+$ && "${LINES:-24}" =~ ^[0-9]+$ && "${COLUMNS:-80}" -ge 140 && "${LINES:-24}" -ge 16 ]]; then
 cat <<'BANNER'
   ░██████  ░██                               ░██   ░██    ░████████                                  ░██                           
  ░██   ░██                                         ░██    ░██    ░██                                 ░██                           
@@ -2081,4 +2118,5 @@ cat <<'BANNER'
   ░██████  ░██░██       ░███████   ░█████░██ ░██    ░████ ░█████████  ░██       ░███████   ░█████░██ ░██    ░██ ░███████  ░██      
 
 BANNER
+fi
 echo -e "${COLOUR_RESET}"

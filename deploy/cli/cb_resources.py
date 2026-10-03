@@ -1060,6 +1060,8 @@ def bar(percent, *, fancy):
 
 
 def stdout_is_unicode():
+    if os.environ.get('CB_ASCII') == '1' or os.environ.get('LC_ALL') == 'C' or os.environ.get('TERM') == 'dumb':
+        return False
     encoding = (getattr(sys.stdout, "encoding", None) or "").lower().replace("-", "")
     return encoding in ("utf8", "utf16", "utf32")
 
@@ -1185,6 +1187,9 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
             f"{data['interval_seconds']:.1f}s - {scope}"
         ),
         "",
+        "RESOURCES",
+        "Scope: app-owned components; shared services excluded from app totals.",
+        "",
         "USAGE",
     ]
 
@@ -1207,7 +1212,7 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
         )
     lines.append(memory_line + partial("memory_bytes"))
     lines.append(
-        f"           cache {amount('cache_bytes')}, swap {amount('swap_bytes')}"
+        f"           Includes cache; cache {amount('cache_bytes')}, swap {amount('swap_bytes')}"
     )
     lines.append(
         f"  Disk     read {amount('read_bytes_per_second', True)}, "
@@ -1235,8 +1240,11 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
     rows = sorted(data["components"], key=ordering)
     hidden = []
     shown = []
+    shared_rows = []
     for row in rows:
-        if not expanded and "worker@" in row["id"]:
+        if not row.get("included_in_totals", True):
+            shared_rows.append(row)
+        elif not expanded and "worker@" in row["id"]:
             hidden.append(row)
         else:
             shown.append(row)
@@ -1244,7 +1252,7 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
         group = {
             "id": f"workers ({len(hidden)}), e to expand",
             "owned": True,
-            "state": "group",
+            "state": "active" if all(r["state"] == "active" for r in hidden) else "mixed",
             "metrics": {},
             "limits": [],
         }
@@ -1259,6 +1267,7 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
                 "value": sum(values) if all(v is not None for v in values) else None
             }
         shown.append(group)
+    shown.sort(key=ordering)
 
     lines += [
         "",
@@ -1289,6 +1298,12 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
             lines.append(line + f"  {cap:<{cap_width}}  {row['state']}")
     else:
         lines.append("  No components measured.")
+
+    if shared_rows:
+        lines += ["", "SHARED USAGE"]
+        for row in shared_rows:
+            m = row["metrics"]
+            lines.append(f"  {component_label(row)}  {pretty(m['cpu_cores']['value'], 'cores')} cores / {pretty(m['memory_bytes']['value'])}  {row['state']}  (excluded from app totals)")
 
     # Only ceilings shared by several components get their own section; a
     # component's own caps are its Limit column above.
@@ -1363,24 +1378,24 @@ def render(data, *, sort="cpu_cores", expanded=True, width=100, fancy=None):
         )
     if gaps:
         lines += ["", "NOT MEASURED"] + gaps
-    return "\n".join(line.rstrip() for line in lines)
+    return "\n".join(part.rstrip() for line in lines for part in (textwrap.wrap(line, max(1, width - 1), replace_whitespace=False, subsequent_indent="  ") or [""]))
 
 
-# The web app's default (Gruvbox) palette, so the terminal view reads as the
-# same product: --color-primary, --color-danger, --color-success and
-# --color-warning from apps/frontend/src/styles/main.css, plus Gruvbox grey for
-# de-emphasis. Each role carries a 24-bit colour and its nearest xterm-256 slot.
+# Approved CLI gallery palette. Each role carries a 24-bit colour and
+# its nearest xterm-256 slot; labels remain usable without colour.
 THEME = {
-    "primary": ((0xFE, 0x80, 0x19), 208),
+    "primary": ((0xFF, 0x87, 0x5F), 209),
     "danger": ((0xFB, 0x49, 0x34), 203),
     "success": ((0xB8, 0xBB, 0x26), 142),
     "warning": ((0xD7, 0x99, 0x21), 172),
-    "muted": ((0x92, 0x83, 0x74), 245),
+    "muted": ((0x98, 0x98, 0x9F), 245),
 }
 SECTIONS = (
+    "RESOURCES",
     "USAGE",
     "COMPONENTS",
     "SHARED LIMITS",
+    "SHARED USAGE",
     "ATTENTION",
     "NOTICES",
     "NOT MEASURED",
@@ -1389,7 +1404,7 @@ SECTIONS = (
 
 def color_mode(stream):
     """None for plain text, else "truecolor" or "256". Honours NO_COLOR and TERM=dumb."""
-    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+    if "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb":
         return None
     if not hasattr(stream, "isatty") or not stream.isatty():
         return None
@@ -1568,7 +1583,8 @@ def main(argv=None):
                 wait = max(0, deadline - time.monotonic())
                 if interactive:
                     if select.select([sys.stdin], [], [], wait)[0]:
-                        key = sys.stdin.read(1)
+                        # TextIO prefetch can hide rapid keys from select().
+                        key = os.read(sys.stdin.fileno(), 1).decode('ascii', errors='ignore')
                         if key == "q":
                             return 0
                         if key in ("c", "m"):
@@ -1607,10 +1623,12 @@ def main(argv=None):
                             or [""]
                         )
                     ]
-                    page = max(1, height - 2)
+                    controls = '[q] quit [c/m] sort [e] workers [j/k] scroll'
+                    footer = textwrap.wrap(controls, max(1, width - 1))
+                    page = max(1, height - 1 - len(footer))
                     scroll = min(scroll, max(0, len(lines) - page))
                     text = "\n".join(lines[scroll : scroll + page])
-                    text += "\n[q] quit [c/m] sort [e] workers [j/k] scroll"
+                    text += '\n' + '\n'.join(footer)
                     sys.stdout.write("\033[H\033[2J")
                 print(colorize(text, color_mode(sys.stdout)), flush=True)
             if not args.watch:
