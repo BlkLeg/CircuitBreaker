@@ -12,10 +12,12 @@ test('Node inside the sigstore 5 engines range passes', () => {
   }
 });
 
-test('Node outside the range is refused with the floors and the running version named', () => {
+test('Node outside the range is refused with the floors, the running version and a way forward', () => {
   for (const version of ['20.20.2', '22.11.0', '22.22.1', '23.1.0', '24.0.0', '24.14.9', '25.9.0']) {
     const message = linux(version);
-    assert.equal(message, `Node.js 22.22.2+, 24.15.0+ or 26+ is required; this is ${version}.`);
+    assert.ok(message.startsWith(`Node.js 22.22.2+, 24.15.0+ or 26+ is required; this is ${version}. `), message);
+    assert.match(message, /Install Node 24/);
+    assert.match(message, /install\.sh \| sudo bash$/);
   }
 });
 

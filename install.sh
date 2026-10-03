@@ -2373,14 +2373,18 @@ cb_install_result() {
     8) outcome=recovered; current="${CB_LIFECYCLE_SOURCE_VERSION:-}"; error_code=RECOVERED
        cb_lifecycle_checkpoint state=recovered outcome=recovered error_code=RECOVERED "error_reason=previous release restored; data restore is manual" || { status=9; outcome=recovery_required; } ;;
     *) outcome=recovery_required; current=""; error_code=MANUAL
-       cb_lifecycle_checkpoint state=recovery_required cause=apply_failed error_code=MANUAL "error_reason=installer stopped; inspect retained release and restore instructions" || true
-       cb_lifecycle_checkpoint state=recovery_required cause=apply_failed outcome=manual error_code=MANUAL "error_reason=installer stopped; inspect retained release and restore instructions" || true ;;
+       # A fresh install has nothing to restore: a re-run resumes it (setup.sh treats
+       # an install without its identity as unfinished, not as an upgrade).
+       local reason="installer stopped; inspect retained release and restore instructions"
+       [[ "${CB_LIFECYCLE_ACTION:-install}" == install ]] && reason="fresh install stopped; re-run the installer to resume it"
+       cb_lifecycle_checkpoint state=recovery_required cause=apply_failed error_code=MANUAL "error_reason=$reason" || true
+       cb_lifecycle_checkpoint state=recovery_required cause=apply_failed outcome=manual error_code=MANUAL "error_reason=$reason" || true ;;
   esac
   if [[ "${CB_NPM_RESULT:-false}" == true ]]; then
     /usr/bin/python3 -I -c 'import json,sys
 op,action,outcome,current,target,recovery,code=sys.argv[1:]
 r=dict(schema_version=1,operation_id=op,action=action,outcome=outcome,current_version=current or None,target_version=target or None,recovery_available=recovery=="true")
-if outcome != "committed": r["error"]=dict(code=code or "MANUAL",reason="Inspect history and the printed backup/restore instructions.")
+if outcome != "committed": r["error"]=dict(code=code or "MANUAL",reason="Re-run the same install command to resume it." if action=="install" and outcome=="recovery_required" else "Inspect history and the printed backup/restore instructions.")
 print("CIRCUITBREAKER_RESULT="+json.dumps(r))' "$CB_LIFECYCLE_OPERATION" "${CB_LIFECYCLE_ACTION:-install}" "$outcome" "$current" "${CB_EXPECTED_VERSION:-}" "$recovery" "$error_code"
   fi
   return "$status"
