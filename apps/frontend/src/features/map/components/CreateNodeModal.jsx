@@ -83,7 +83,7 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
             exit={{ opacity: 0 }}
             onClick={onClose}
             style={{ zIndex: 1200 }}
-            className="tw-fixed tw-inset-0 tw-bg-black/70 tw-backdrop-blur-sm tw-flex tw-items-center tw-justify-center tw-p-4"
+            className="tw:fixed tw:inset-0 tw:bg-black/70 tw:backdrop-blur-xs tw:flex tw:items-center tw:justify-center tw:p-4"
           >
             {/* Modal */}
             <motion.div
@@ -94,12 +94,12 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
               role="dialog"
               aria-modal="true"
               aria-labelledby="create-node-modal-title"
-              className="tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-xl tw-shadow-2xl tw-w-full tw-max-w-2xl tw-overflow-hidden tw-flex tw-flex-col tw-max-h-[90vh]"
+              className="tw:bg-cb-surface tw:border tw:border-cb-border tw:rounded-xl tw:shadow-2xl tw:w-full tw:max-w-2xl tw:overflow-hidden tw:flex tw:flex-col tw:max-h-[90vh]"
             >
-              <div className="tw-flex tw-items-center tw-justify-between tw-px-6 tw-py-4 tw-border-b tw-border-cb-border tw-bg-cb-secondary">
+              <div className="tw:flex tw:items-center tw:justify-between tw:px-6 tw:py-4 tw:border-b tw:border-cb-border tw:bg-cb-secondary">
                 <h3
                   id="create-node-modal-title"
-                  className="tw-text-cb-text tw-font-bold tw-text-lg tw-font-mono"
+                  className="tw:text-cb-text tw:font-bold tw:text-lg tw:font-mono"
                 >
                   Create New Node
                 </h3>
@@ -107,20 +107,20 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                   type="button"
                   onClick={onClose}
                   aria-label="Close create node dialog"
-                  className="tw-w-7 tw-h-7 tw-rounded-full tw-border tw-border-cb-border tw-bg-transparent tw-cursor-pointer tw-text-cb-muted hover:tw-text-cb-text hover:tw-bg-cb-bg tw-transition-colors tw-inline-flex tw-items-center tw-justify-center"
+                  className="tw:w-7 tw:h-7 tw:rounded-full tw:border tw:border-cb-border tw:bg-transparent tw:cursor-pointer tw:text-cb-muted tw:hover:text-cb-text tw:hover:bg-cb-bg tw:transition-colors tw:inline-flex tw:items-center tw:justify-center"
                 >
-                  <X className="tw-w-4 tw-h-4" />
+                  <X className="tw:w-4 tw:h-4" />
                 </button>
               </div>
 
-              <div className="tw-flex tw-flex-1 tw-overflow-hidden">
+              <div className="tw:flex tw:flex-1 tw:overflow-hidden">
                 {/* Left: Form */}
-                <div className="tw-w-1/2 tw-p-6 tw-border-r tw-border-cb-border tw-overflow-y-auto">
-                  <form id="create-node-form" onSubmit={handleSubmit} className="tw-space-y-6">
+                <div className="tw:w-1/2 tw:p-6 tw:border-r tw:border-cb-border tw:overflow-y-auto">
+                  <form id="create-node-form" onSubmit={handleSubmit} className="tw:space-y-6">
                     <div>
                       <label
                         htmlFor="create-node-name"
-                        className="tw-block tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider tw-mb-2"
+                        className="tw:block tw:text-xs tw:font-bold tw:text-cb-text tw:uppercase tw:tracking-wider tw:mb-2"
                       >
                         Name / Device Lookup
                       </label>
@@ -130,7 +130,7 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                         value={label}
                         onChange={(e) => setLabel(e.target.value)}
                         placeholder="e.g. OptiPlex 7080 SFF"
-                        className="tw-w-full tw-bg-cb-bg tw-border tw-border-cb-border tw-rounded-lg tw-px-4 tw-py-2.5 tw-text-cb-text placeholder:tw-text-cb-muted focus:tw-outline-none focus:tw-border-cb-primary tw-transition-colors tw-font-mono tw-text-sm"
+                        className="tw:w-full tw:bg-cb-bg tw:border tw:border-cb-border tw:rounded-lg tw:px-4 tw:py-2.5 tw:text-cb-text tw:placeholder:text-cb-muted tw:focus:outline-hidden tw:focus:border-cb-primary tw:transition-colors tw:font-mono tw:text-sm"
                         autoFocus
                       />
                     </div>
@@ -138,7 +138,7 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                     <div>
                       <label
                         htmlFor="create-node-ip"
-                        className="tw-block tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider tw-mb-2"
+                        className="tw:block tw:text-xs tw:font-bold tw:text-cb-text tw:uppercase tw:tracking-wider tw:mb-2"
                       >
                         IP Address
                       </label>
@@ -148,39 +148,39 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                         value={subLabel}
                         onChange={(e) => setSubLabel(e.target.value)}
                         placeholder="e.g. 10.10.10.4"
-                        className="tw-w-full tw-bg-cb-bg tw-border tw-border-cb-border tw-rounded-lg tw-px-4 tw-py-2.5 tw-text-cb-text placeholder:tw-text-cb-muted focus:tw-outline-none focus:tw-border-cb-primary tw-transition-colors tw-font-mono tw-text-sm"
+                        className="tw:w-full tw:bg-cb-bg tw:border tw:border-cb-border tw:rounded-lg tw:px-4 tw:py-2.5 tw:text-cb-text tw:placeholder:text-cb-muted tw:focus:outline-hidden tw:focus:border-cb-primary tw:transition-colors tw:font-mono tw:text-sm"
                       />
                     </div>
 
                     <div>
-                      <div className="tw-block tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider tw-mb-2">
+                      <div className="tw:block tw:text-xs tw:font-bold tw:text-cb-text tw:uppercase tw:tracking-wider tw:mb-2">
                         Selected Role
                       </div>
-                      <div className="tw-flex tw-items-center tw-gap-3 tw-p-3 tw-rounded-lg tw-bg-cb-secondary tw-border tw-border-cb-border">
-                        <div className="tw-w-10 tw-h-10 tw-rounded-full tw-bg-cb-primary/15 tw-flex tw-items-center tw-justify-center tw-text-cb-primary">
-                          <selectedRole.icon className="tw-w-5 tw-h-5" />
+                      <div className="tw:flex tw:items-center tw:gap-3 tw:p-3 tw:rounded-lg tw:bg-cb-secondary tw:border tw:border-cb-border">
+                        <div className="tw:w-10 tw:h-10 tw:rounded-full tw:bg-cb-primary/15 tw:flex tw:items-center tw:justify-center tw:text-cb-primary">
+                          <selectedRole.icon className="tw:w-5 tw:h-5" />
                         </div>
                         <div>
-                          <div className="tw-text-cb-text tw-font-medium tw-text-sm">
+                          <div className="tw:text-cb-text tw:font-medium tw:text-sm">
                             {selectedRole.label}
                           </div>
-                          <div className="tw-text-cb-muted tw-text-xs">{selectedRole.type}</div>
+                          <div className="tw:text-cb-muted tw:text-xs">{selectedRole.type}</div>
                         </div>
                       </div>
                     </div>
 
                     <div>
-                      <div className="tw-block tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider tw-mb-2">
+                      <div className="tw:block tw:text-xs tw:font-bold tw:text-cb-text tw:uppercase tw:tracking-wider tw:mb-2">
                         Icon
                       </div>
-                      <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-p-3 tw-rounded-lg tw-bg-cb-secondary tw-border tw-border-cb-border">
-                        <div className="tw-flex tw-items-center tw-gap-3">
+                      <div className="tw:flex tw:items-center tw:justify-between tw:gap-3 tw:p-3 tw:rounded-lg tw:bg-cb-secondary tw:border tw:border-cb-border">
+                        <div className="tw:flex tw:items-center tw:gap-3">
                           {selectedIconSlug ? (
                             <IconImg slug={selectedIconSlug} size={22} />
                           ) : (
-                            <div className="tw-w-[22px] tw-h-[22px] tw-rounded tw-bg-cb-bg tw-border tw-border-cb-border" />
+                            <div className="tw:w-[22px] tw:h-[22px] tw:rounded-sm tw:bg-cb-bg tw:border tw:border-cb-border" />
                           )}
-                          <div className="tw-text-xs tw-text-cb-muted">
+                          <div className="tw:text-xs tw:text-cb-muted">
                             {selectedIconSlug || 'No custom icon selected'}
                           </div>
                         </div>
@@ -194,11 +194,11 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                       </div>
                     </div>
 
-                    <div className="tw-pt-4">
+                    <div className="tw:pt-4">
                       <button
                         type="submit"
                         disabled={!label}
-                        className="tw-w-full tw-bg-cb-primary hover:tw-bg-cb-primary-h disabled:tw-opacity-50 disabled:tw-cursor-not-allowed tw-text-cb-text tw-font-medium tw-py-2.5 tw-rounded-lg tw-transition-colors tw-shadow-lg tw-shadow-cb-primary-h/20"
+                        className="tw:w-full tw:bg-cb-primary tw:hover:bg-cb-primary-h tw:disabled:opacity-50 tw:disabled:cursor-not-allowed tw:text-cb-text tw:font-medium tw:py-2.5 tw:rounded-lg tw:transition-colors tw:shadow-lg tw:shadow-cb-primary-h/20"
                       >
                         Create Node
                       </button>
@@ -207,30 +207,30 @@ export default function CreateNodeModal({ isOpen, onClose, onConfirm, position }
                 </div>
 
                 {/* Right: Role Selection */}
-                <div className="tw-w-1/2 tw-bg-cb-bg tw-flex tw-flex-col">
-                  <div className="tw-px-4 tw-py-3 tw-border-b tw-border-cb-border tw-bg-cb-secondary">
-                    <span className="tw-text-xs tw-font-bold tw-text-cb-text tw-uppercase tw-tracking-wider">
+                <div className="tw:w-1/2 tw:bg-cb-bg tw:flex tw:flex-col">
+                  <div className="tw:px-4 tw:py-3 tw:border-b tw:border-cb-border tw:bg-cb-secondary">
+                    <span className="tw:text-xs tw:font-bold tw:text-cb-text tw:uppercase tw:tracking-wider">
                       Select Role
                     </span>
                   </div>
-                  <div className="tw-flex-1 tw-overflow-y-auto tw-p-2">
-                    <div className="tw-grid tw-grid-cols-1 tw-gap-1">
+                  <div className="tw:flex-1 tw:overflow-y-auto tw:p-2">
+                    <div className="tw:grid tw:grid-cols-1 tw:gap-1">
                       {roles.map((role) => (
                         <button
                           key={role.id}
                           type="button"
                           onClick={() => setSelectedRole(role)}
                           aria-pressed={selectedRole.id === role.id}
-                          className={`tw-flex tw-items-center tw-gap-3 tw-px-4 tw-py-3 tw-rounded-lg tw-text-left tw-transition-all ${
+                          className={`tw:flex tw:items-center tw:gap-3 tw:px-4 tw:py-3 tw:rounded-lg tw:text-left tw:transition-all ${
                             selectedRole.id === role.id
-                              ? 'tw-bg-cb-secondary tw-border tw-border-cb-primary tw-text-cb-text tw-shadow-sm'
-                              : 'tw-bg-cb-surface tw-border tw-border-cb-border tw-text-cb-text hover:tw-bg-cb-secondary hover:tw-border-cb-primary/60 hover:tw-shadow-sm'
+                              ? 'tw:bg-cb-secondary tw:border tw:border-cb-primary tw:text-cb-text tw:shadow-xs'
+                              : 'tw:bg-cb-surface tw:border tw:border-cb-border tw:text-cb-text tw:hover:bg-cb-secondary tw:hover:border-cb-primary/60 tw:hover:shadow-xs'
                           }`}
                         >
                           <role.icon
-                            className={`tw-w-4 tw-h-4 ${selectedRole.id === role.id ? 'tw-text-cb-primary' : 'tw-text-cb-muted'}`}
+                            className={`tw:w-4 tw:h-4 ${selectedRole.id === role.id ? 'tw:text-cb-primary' : 'tw:text-cb-muted'}`}
                           />
-                          <span className="tw-text-sm tw-font-medium">{role.label}</span>
+                          <span className="tw:text-sm tw:font-medium">{role.label}</span>
                         </button>
                       ))}
                     </div>

@@ -54,7 +54,7 @@ function IdentityCorrectionDrawer({ row, onClose, onSaved }) {
             {error}
           </p>
         )}
-        <p className="tw-text-sm tw-opacity-70">
+        <p className="tw:text-sm tw:opacity-70">
           {describeIdentityProvenance(identity) ||
             'This entity has no identity yet. What you enter here becomes the operator identity.'}
         </p>
