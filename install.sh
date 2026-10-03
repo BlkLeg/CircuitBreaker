@@ -2366,7 +2366,18 @@ _cb_note_err() {
 # Final authoritative child result; progress events never grant mutation authority.
 cb_install_result() {
   local status="$1" outcome=committed state=committed error_code="" current="${CB_EXPECTED_VERSION:-}" recovery=false
-  [[ -n "${CB_LIFECYCLE_OPERATION:-}" ]] || return 0
+  if [[ -z "${CB_LIFECYCLE_OPERATION:-}" ]]; then
+    # Stopped at a check before any operation began: nothing was changed. Tell
+    # the npm coordinator so, or it can only report that no result arrived.
+    if [[ "$status" -ne 0 && "${CB_NPM_RESULT:-false}" == true ]]; then
+      local action=install
+      [[ "${UPGRADE_MODE:-false}" == true ]] && action=update
+      /usr/bin/python3 -I -c 'import json,sys
+action,target=sys.argv[1:]
+print("CIRCUITBREAKER_RESULT="+json.dumps(dict(schema_version=1,operation_id=None,action=action,outcome="refused",current_version=None,target_version=target or None,recovery_available=False,error=dict(code="PREFLIGHT",reason="The installer stopped at a check before changing anything; its output above says why."))))' "$action" "${CB_EXPECTED_VERSION:-}" 2>/dev/null || true
+    fi
+    return 0
+  fi
   [[ -n "${_CB_RELEASE_BACKUP:-}" ]] && recovery=true
   case "$status" in
     0) cb_lifecycle_checkpoint state=committed outcome=committed || { status=9; outcome=recovery_required; } ;;
@@ -3684,6 +3695,13 @@ CB_BUNDLE_DIR=""
 # ============================================================================
 
 main() {
+  # `bash -x` would write every secret these scripts handle into the trace: the
+  # vault key, JWT secret and database, Redis and NATS credentials from
+  # /etc/circuitbreaker/.env. Tracing is switched off unless it is asked for by name.
+  if [[ $- == *x* && "${CB_ALLOW_XTRACE:-}" != 1 ]]; then
+    { set +x; } 2>/dev/null
+    echo "Shell tracing (bash -x) is off: it would print the vault key and every service password. Use --verbose, or set CB_ALLOW_XTRACE=1 to trace anyway and treat the output as secret." >&2
+  fi
   if [[ "${DOCKER_MODE}" == "true" ]]; then
     # The Docker install runs as the invoking user and never elevates. Root
     # (or the CB_LIFECYCLE_ROOT test seam) takes the host lock; without it the

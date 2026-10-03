@@ -37,6 +37,14 @@
 
 set -eo pipefail
 
+# `bash -x` would write every secret these scripts handle into the trace: the
+# vault key, JWT secret and database, Redis and NATS credentials from
+# /etc/circuitbreaker/.env. Tracing is switched off unless it is asked for by name.
+if [[ $- == *x* && "${CB_ALLOW_XTRACE:-}" != 1 ]]; then
+  { set +x; } 2>/dev/null
+  echo "Shell tracing (bash -x) is off: it would print the vault key and every service password. Set CB_ALLOW_XTRACE=1 to trace anyway and treat the output as secret." >&2
+fi
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _CB_HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 # This script and its arguments, for a native or binary mutating command that
@@ -375,7 +383,9 @@ _load_install_identity() {
       CB_MODE="native"
       CB_DATA_DIR="${CB_DATA_DIR:-/var/lib/circuitbreaker}"
       CB_PORT="${CB_PORT:-8000}"
-      [[ -f /etc/circuitbreaker/.env ]] && {
+      # Root-only (it holds the vault key). Without root, read-only commands
+      # run without it; ones that need it re-run through sudo.
+      [[ -r /etc/circuitbreaker/.env ]] && {
         # shellcheck source=/dev/null
         set -a; source /etc/circuitbreaker/.env; set +a
       }

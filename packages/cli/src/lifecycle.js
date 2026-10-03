@@ -8,6 +8,7 @@ import { runInstallPlan } from './install-plan.js';
 import { loadIdentityFor } from './identity.js';
 import { runNativeStep, refuseWith, exitName } from './events.js';
 import { EXIT } from './exit-codes.js';
+import { exitCodeFor } from './lifecycle-contract.js';
 import { resolveTarget } from './release-resolve.js';
 import { fetchJson } from './http.js';
 import { checkTrustedFile } from './trust.js';
@@ -94,7 +95,15 @@ export async function runLifecycle(action, args, deps) {
         const { code, result } = stopped;
         const matches = result && result.action === (identity ? 'update' : 'install') && result.target_version === target;
         deps.events?.phase('apply', matches && result.outcome === 'committed' ? 'completed' : 'failed');
-        if (!result) return refuse(EXIT.MANUAL, 'Native installer returned no final result; inspect history and cb doctor before retrying.');
+        // The installer stopped at a check before it began an operation: nothing changed.
+        if (result?.outcome === 'refused' && result.operation_id === null) return refuse(exitCodeFor(result), result.error.reason);
+        // No result at all (no python3, or it stopped before its exit report was armed). Its
+        // own lifecycle exit codes still say why; anything else needs a look before retrying.
+        if (!result) {
+          return [EXIT.PERMISSION, EXIT.PREFLIGHT, EXIT.LOCKED].includes(code)
+            ? refuse(code, `Native installer stopped before changing anything (exit ${code}); its output above says why.`)
+            : refuse(EXIT.MANUAL, `Native installer ended without a final result (exit ${code}); its output above says why. Check circuitbreaker history and cb doctor before retrying.`);
+        }
         if (result.action !== (identity ? 'update' : 'install') || result.target_version !== target) return refuse(EXIT.MANUAL, 'Native result did not match the selected action/version; inspect history.');
         if (json) deps.result.write(result);
         else if (deps.events?.machine === false) {

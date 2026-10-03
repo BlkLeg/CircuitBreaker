@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# `bash -x` would write every secret these scripts handle into the trace: the
+# vault key, JWT secret and database, Redis and NATS credentials from
+# /etc/circuitbreaker/.env. Tracing is switched off unless it is asked for by name.
+if [[ $- == *x* && "${CB_ALLOW_XTRACE:-}" != 1 ]]; then
+  { set +x; } 2>/dev/null
+  echo "Shell tracing (bash -x) is off: it would print the vault key and every service password. Use --verbose, or set CB_ALLOW_XTRACE=1 to trace anyway and treat the output as secret." >&2
+fi
+
 # install.sh exports these before sourcing this file; they are repeated here so
 # that the ~30 package operations below cannot block on an invisible prompt if
 # this file is ever sourced by anything else. See the comment in install.sh for

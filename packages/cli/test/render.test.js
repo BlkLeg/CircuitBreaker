@@ -74,3 +74,15 @@ test('dumb/C terminals use ASCII and progress events do not fabricate success', 
   renderer.phase('apply', 'failed');
   assert.equal(text, 'OK download\nFAIL apply\n');
 });
+
+test('the summary names what ran before the operation, not what runs after it', () => {
+  const summary = (previousVersion) => {
+    let text = ''; const r = createPhaseRenderer({ write: s => { text += s; }, terminal: { isTTY: false }, env: { NO_COLOR: '1' } });
+    r.heading('install', previousVersion, '0.4.7');
+    r.result({ action: 'install', outcome: 'committed', current_version: '0.4.7', target_version: '0.4.7', operation_id: 'op-20261002-001', recovery_available: false });
+    r.close();
+    return text;
+  };
+  assert.match(summary(undefined), /Previous: none \(new install\)/);
+  assert.match(summary('0.4.6'), /Previous: 0\.4\.6\n {2}Target: {3}0\.4\.7/);
+});

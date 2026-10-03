@@ -20,6 +20,7 @@ export function createPhaseRenderer({ write: rawWrite, now = Date.now, env = {},
   const good = ascii ? 'OK' : '✓', bad = ascii ? 'FAIL' : '✗';
   const active = new Map();
   let current = null, live = [], last = -Infinity, frame = 0, ordinal = 0, closed = false, timer, partial = false, artwork = false;
+  let previous;
   const startedAt = now();
   const width = () => Math.max(1, (terminal.columns ?? 80) - 1);
   const fit = s => Array.from(display(s)).slice(0, width()).join('');
@@ -134,6 +135,7 @@ export function createPhaseRenderer({ write: rawWrite, now = Date.now, env = {},
         if (context.cliVersion) line(`                         CLI v${clean(context.cliVersion)}\n`);
       }
       line(`\n${paint(action.toUpperCase(), 209)}${context.arch ? `  native / linux-${clean(context.arch)}` : ''}\n`);
+      previous = currentVersion ?? null;
       line(`${clean(currentVersion ?? 'new install')} → ${clean(targetVersion ?? 'selected release')}\n\n`);
     },
     target(version) { line(`  Verified target: ${clean(version)}\n\n`); },
@@ -141,7 +143,11 @@ export function createPhaseRenderer({ write: rawWrite, now = Date.now, env = {},
       clear(); current = null; active.clear();
       const success = result.outcome === 'committed';
       line(`\n${paint(success ? `${result.action.toUpperCase()} COMPLETE` : result.outcome.toUpperCase().replaceAll('_', ' '), success ? 142 : 203)}\n`);
-      line(`  Previous: ${clean(result.current_version ?? 'unavailable')}\n  Target:   ${clean(result.target_version ?? 'unavailable')}\n`);
+      // result.current_version is what runs after the operation; the heading recorded what ran before it.
+      // Without a heading, only an uncommitted result still names the earlier version.
+      const prior = previous !== undefined ? previous ?? 'none (new install)'
+        : success ? 'unavailable' : result.current_version ?? 'unavailable';
+      line(`  Previous: ${clean(prior)}\n  Target:   ${clean(result.target_version ?? 'unavailable')}\n`);
       if (success) line('  Health:   native readiness checks committed\n');
       else line('  Health:   inspect current state with cb doctor\n');
       if (success && identity?.health_url) line(`  Endpoint: ${clean(identity.health_url)}\n`);

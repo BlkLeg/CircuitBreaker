@@ -265,7 +265,8 @@ for (const [label, ending, code, outcome] of [
     assert.ok(notes.some((m) => /not valid JSON/.test(m)), notes.join(' | '));
     assert.ok(notes.some((m) => /out of order/.test(m)), notes.join(' | '));
     assert.ok(notes.some((m) => m === 'applying with token (redacted)'), notes.join(' | '));
-    assert.ok(notes.some((m) => m === '\\u001b[31mwarning\\u001b[0m from the helper'), notes.join(' | '));
+    // Colour sequences from the installer are dropped whole; they never reach the stream as text or as bytes.
+    assert.ok(notes.some((m) => m === 'warning from the helper'), notes.join(' | '));
   });
 }
 

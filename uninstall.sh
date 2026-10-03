@@ -1523,14 +1523,19 @@ if [ "$(uname -s)" = "Linux" ] && { [ "$(id -u)" -eq 0 ] || [ -n "${CB_LIFECYCLE
   fi
   cb_lifecycle_arm_interrupt
   # Every privileged step below was written as `sudo ...` for an operator
-  # running this as themselves. The whole script is root now, under the lock,
-  # so those steps run directly: nothing escalates past the lock on its own.
-  sudo() {
-    if [ "${1:-}" = "-v" ]; then
-      return 0
-    fi
-    "$@"
-  }
+  # running this as themselves. As root, under the lock, those steps run
+  # directly: nothing escalates past the lock on its own. Only as root: over
+  # the CB_LIFECYCLE_ROOT test seam the script holds the lock unprivileged,
+  # and running `rm -rf /opt/circuitbreaker` as that user would act on the
+  # developer's own host.
+  if [ "$(id -u)" -eq 0 ]; then
+    sudo() {
+      if [ "${1:-}" = "-v" ]; then
+        return 0
+      fi
+      "$@"
+    }
+  fi
 fi
 
 _cb_phase cb_ui_teardown
