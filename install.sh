@@ -3185,8 +3185,9 @@ cb_check_bundle() {
 
   if [[ -z "$sums" ]]; then
     if [[ "$origin" == "local" ]] && [[ -z "$sig" ]]; then
-      cb_warn "No SHA256SUMS or SHA256SUMS.sig next to ${tarball}: installing an UNVERIFIED bundle"
-      return 0
+      # An unverified install is always the operator's explicit choice.
+      cb_fail "No SHA256SUMS or SHA256SUMS.sig next to ${tarball}: the bundle cannot be verified" \
+        "${refetch}. For a bundle you built yourself, pass --skip-checksum"
     fi
     cb_fail "No SHA256SUMS for ${name}" \
       "${refetch}, or pass --skip-checksum only for a bundle you already trust"
