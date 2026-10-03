@@ -34,7 +34,7 @@ export function renderHelp(lookup, { columns = 80, color = false } = {}) {
     text += `\n${heading(group)}\n`;
     for (const name of available) text += columns >= 72 ? `  ${name.padEnd(19)}${rows.get(name)}\n` : `  ${name}\n    ${rows.get(name)}\n`;
   }
-  text += '\nReview install/update --plan before --yes. Rollback can restore pre-update data with --restore-data. Downgrade and automated recover are deferred.\n';
+  text += '\nReview install/update --plan before --yes. Rollback can restore pre-update data with --restore-data.\n';
   text += 'Machine output: --json prints one final JSON result on stdout; install/update/rollback --events=jsonl write JSONL events, and nothing else, on stderr. Native management and uninstall output are forwarded unchanged.\n';
   text += 'Presentation: --no-animation disables lifecycle motion; NO_COLOR disables color.\n\n';
   text += `Identity: ${lookup.status === 'found' ? clean(lookup.path) : lookup.status}\n`;
