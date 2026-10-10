@@ -39,6 +39,8 @@ export function defaultDeps() {
     keys: TRUSTED_KEYS,
     arch: debArch(process.arch),
     now: Date.now,
+    terminal: process.stderr,
+    outputTerminal: process.stdout,
   };
 }
 
@@ -98,7 +100,7 @@ async function dispatch(argv, deps) {
   }
   const [command = 'help', ...rest] = argv;
   if (command === 'help' || command === '--help' || command === '-h') {
-    deps.out(renderHelp(await loadIdentityFor(deps)));
+    deps.out(renderHelp(await loadIdentityFor(deps), { columns: deps.outputTerminal?.columns ?? 80, color: deps.outputTerminal?.isTTY === true && deps.env.TERM !== 'dumb' && !Object.hasOwn(deps.env, 'NO_COLOR') }));
     return EXIT.OK;
   }
   if (command === 'version' || command === '--version') return runVersion(rest, deps);
@@ -153,12 +155,21 @@ function resultMembers(command, argv) {
 // injected writers of the two machine streams; by default events go to
 // deps.err as JSON lines and the one result to deps.out.
 export async function run(argv, deps = defaultDeps()) {
+  // Presentation flags belong only to commands this coordinator renders.
+  if (OWN_COMMANDS.has(argv[0]) && argv.includes('--no-animation')) {
+    argv = argv.filter(a => a !== '--no-animation');
+    deps = { ...deps, env: { ...deps.env, CB_NO_ANIMATION: '1' } };
+  }
   const streams = requestedStreams(argv);
   const events = streams.events ? (deps.events ?? createEventWriter({ write: deps.err, now: deps.now ?? Date.now })) :
-    (!streams.json && ['install', 'update', 'rollback'].includes(argv[0]) ? createPhaseRenderer({ write: deps.err, now: deps.now ?? Date.now, env: deps.env }) : null);
+    (!streams.json && ['install', 'update', 'rollback'].includes(argv[0]) ? createPhaseRenderer({ write: deps.err, now: deps.now ?? Date.now, env: deps.env, terminal: deps.terminal, proc: deps.proc }) : null);
   const io = { ...deps, events, result: deps.result ?? createResultWriter(deps.out) };
   // In event mode nothing reaches stderr unframed, whatever a command writes.
   if (streams.events) io.err = (text) => events.diagnostic(text);
+  else if (events?.machine === false) {
+    io.out = text => events.output(text, deps.out);
+    io.err = text => events.output(text, deps.err);
+  }
   const members = streams.json ? resultMembers(argv[0], argv) : null;
   try {
     if (streams.invalid !== null) {
@@ -167,5 +178,7 @@ export async function run(argv, deps = defaultDeps()) {
     return await dispatch(argv, io);
   } catch (error) {
     return refuseWith(io, { prefix: 'circuitbreaker', code: EXIT.UNSUPPORTED, reason: `unexpected error: ${error.code ?? error.message}`, result: members });
+  } finally {
+    if (events?.machine === false) events.close();
   }
 }

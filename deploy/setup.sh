@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# `bash -x` would write every secret these scripts handle into the trace: the
+# vault key, JWT secret and database, Redis and NATS credentials from
+# /etc/circuitbreaker/.env. Tracing is switched off unless it is asked for by name.
+if [[ $- == *x* && "${CB_ALLOW_XTRACE:-}" != 1 ]]; then
+  { set +x; } 2>/dev/null
+  echo "Shell tracing (bash -x) is off: it would print the vault key and every service password. Use --verbose, or set CB_ALLOW_XTRACE=1 to trace anyway and treat the output as secret." >&2
+fi
+
 # install.sh exports these before sourcing this file; they are repeated here so
 # that the ~30 package operations below cannot block on an invisible prompt if
 # this file is ever sourced by anything else. See the comment in install.sh for
@@ -607,9 +615,18 @@ stage0_preflight() {
 
   # Existing install detection
   cb_step "Checking for existing installation"
-  if systemctl is-active circuitbreaker-backend &>/dev/null || [[ -f /etc/circuitbreaker/.env ]]; then
+  # Upgrade only over a completed install: its identity (written last), a
+  # running backend, or an .env beside an initialised database (installs from
+  # before the identity existed). A fresh install that stopped part-way has an
+  # .env but none of these, so a re-run resumes it as a fresh install; that
+  # path keeps existing secrets and reuses an existing database.
+  if [[ -f /etc/circuitbreaker/install-identity.json ]] \
+    || systemctl is-active circuitbreaker-backend &>/dev/null \
+    || { [[ -f /etc/circuitbreaker/.env ]] && [[ -f "${CB_DATA_DIR:-/var/lib/circuitbreaker}/postgres/PG_VERSION" ]]; }; then
     UPGRADE_MODE=true
     cb_ok "Existing installation detected — upgrade mode"
+  elif [[ -f /etc/circuitbreaker/.env ]]; then
+    cb_ok "Unfinished fresh install found — resuming it"
   else
     cb_ok "No existing installation — fresh install"
   fi
@@ -1738,6 +1755,11 @@ stage9_install_cb_cli() {
   fi
 
   # Shared identity helpers travel with the bundle when present.
+  if [[ -f /opt/circuitbreaker/deploy/cli/cb_terminal.py ]]; then
+    install -Dm644 /opt/circuitbreaker/deploy/cli/cb_terminal.py \
+      /usr/local/lib/circuitbreaker/cb_terminal.py \
+      || cb_warn "Terminal formatter could not be installed; cb will use the bundled helper"
+  fi
   if [[ -f /opt/circuitbreaker/deploy/cli/cb_resources.py ]]; then
     install -Dm644 /opt/circuitbreaker/deploy/cli/cb_resources.py \
       /usr/local/lib/circuitbreaker/cb_resources.py \
@@ -2188,9 +2210,25 @@ stage2_dependencies() {
       | gpg --yes --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg \
       || cb_fail "Could not fetch the PostgreSQL signing key from postgresql.org" \
                  "Transient network failure, or the host is unreachable. Check: curl -I https://www.postgresql.org — then re-run"
-    echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+    # lsb_release is absent from minimal images; os-release always has the codename.
+    local pg_codename
+    pg_codename="$(lsb_release -cs 2>/dev/null || true)"
+    [[ -n "$pg_codename" ]] || pg_codename="$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}")"
+    [[ -n "$pg_codename" ]] \
+      || cb_fail "Could not tell which ${OS_NAME:-distribution} release this is (no VERSION_CODENAME in /etc/os-release)" \
+                 "Install postgresql-15 yourself, then re-run with --airgap"
+    # PGDG adds a new distro release some time after it ships. Say so here
+    # rather than let apt fail later with an error that names nothing.
+    if ! curl -fsSI --retry 3 --retry-delay 2 --connect-timeout 15 \
+        "http://apt.postgresql.org/pub/repos/apt/dists/${pg_codename}-pgdg/Release" >/dev/null 2>&1; then
+      cb_fail "The PostgreSQL apt repository has no packages for '${pg_codename}' yet (or apt.postgresql.org is unreachable)" \
+              "PostgreSQL 15 comes only from apt.postgresql.org on this distro. Check: curl -I https://apt.postgresql.org/pub/repos/apt/dists/ — on a release it does not serve yet, use the previous LTS or Debian 12"
+    fi
+    echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt ${pg_codename}-pgdg main" > /etc/apt/sources.list.d/pgdg.list
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
-    $PKG_MGR install -y -q postgresql-15 postgresql-client-15 >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q postgresql-15 postgresql-client-15 >> "$LOG_FILE" 2>&1 \
+      || cb_fail "Could not install postgresql-15 from apt.postgresql.org" \
+                 "Check: tail -50 ${LOG_FILE} — then re-run; the install resumes where it stopped"
     PG_BIN_DIR="/usr/lib/postgresql/15/bin"
 
     # Debian/Ubuntu: postgresql-common auto-creates AND starts a default

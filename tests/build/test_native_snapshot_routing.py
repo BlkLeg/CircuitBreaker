@@ -7,7 +7,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def run(tmp_path, *, verify_fails=False, dump_fails=False):
     cb = (ROOT / "cb").read_text()
-    block = "_cb_snapshot_runtime() {" + cb.split("_cb_snapshot_runtime() {", 1)[1].split("# ── restore", 1)[0]
+    import re
+    presentation = "\n".join(re.search(r"^" + name + r"\(\) \{\n.*?^\}", cb, re.M | re.S).group() for name in ("_cb_heading", "_cb_present_begin", "_cb_present_end"))
+    block = presentation + "\n_cb_snapshot_runtime() {" + cb.split("_cb_snapshot_runtime() {", 1)[1].split("# ── restore", 1)[0]
     binary = tmp_path / "runtime"
     binary.write_text(f'''#!/bin/bash
 printf '%s\\n' "$@" >> '{tmp_path}/argv'
@@ -34,7 +36,7 @@ CB_MODE=native
 CB_NATIVE_BIN='{binary}'
 CB_BINARY_ENV_FILE='{env}'
 CB_BACKUP_DIR='{tmp_path}/backups'
-GR= Y= R=
+GR= Y= R= P= V= G=
 {block}
 cmd_backup
 '''

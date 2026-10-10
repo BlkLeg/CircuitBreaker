@@ -8,6 +8,7 @@ import { runInstallPlan } from './install-plan.js';
 import { loadIdentityFor } from './identity.js';
 import { runNativeStep, refuseWith, exitName } from './events.js';
 import { EXIT } from './exit-codes.js';
+import { exitCodeFor } from './lifecycle-contract.js';
 import { resolveTarget } from './release-resolve.js';
 import { fetchJson } from './http.js';
 import { checkTrustedFile } from './trust.js';
@@ -64,9 +65,11 @@ export async function runLifecycle(action, args, deps) {
     }
     if (opts.plan) return runInstallPlan(planArgs, deps);
     if (!opts.yes) return refuse(EXIT.USAGE, 'review install --plan (or update --plan), then pass --yes to apply it');
+    deps.events?.heading?.(action, identity?.version, opts.version ?? 'selected release', { arch: deps.arch, cliVersion: deps.cliVersion });
     return await runInstallPlan(planArgs, { ...deps, onVerified: async (plan, verified) => {
       const target = plan.target.version;
       if (!target) return refuse(EXIT.TRUST, 'bundle must have its release filename');
+      deps.events?.target?.(target);
       // An older version is staging input, never downgrade authorization.
       if (identity && compareVersions(target, identity.version) < 0) return refuse(EXIT.UNSUPPORTED, 'downgrade is not supported; use rollback for the previous update');
       if (identity?.version === target) {
@@ -90,10 +93,28 @@ export async function runLifecycle(action, args, deps) {
         deps.events?.phase('apply', 'started');
         const stopped = await executeScript(script, nativeArgs, { ...deps, captureResult: true }, json);
         const { code, result } = stopped;
-        deps.events?.phase('apply', code === 0 ? 'completed' : 'failed');
-        if (!result) return refuse(EXIT.MANUAL, 'Native installer returned no final result; inspect history and cb doctor before retrying.');
+        const matches = result && result.action === (identity ? 'update' : 'install') && result.target_version === target;
+        deps.events?.phase('apply', matches && result.outcome === 'committed' ? 'completed' : 'failed');
+        // The installer stopped at a check before it began an operation: nothing changed.
+        if (result?.outcome === 'refused' && result.operation_id === null) return refuse(exitCodeFor(result), result.error.reason);
+        // No result at all (no python3, or it stopped before its exit report was armed). Its
+        // own lifecycle exit codes still say why; anything else needs a look before retrying.
+        if (!result) {
+          return [EXIT.PERMISSION, EXIT.PREFLIGHT, EXIT.LOCKED].includes(code)
+            ? refuse(code, `Native installer stopped before changing anything (exit ${code}); its output above says why.`)
+            : refuse(EXIT.MANUAL, `Native installer ended without a final result (exit ${code}); its output above says why. Check circuitbreaker history and cb doctor before retrying.`);
+        }
         if (result.action !== (identity ? 'update' : 'install') || result.target_version !== target) return refuse(EXIT.MANUAL, 'Native result did not match the selected action/version; inspect history.');
         if (json) deps.result.write(result);
+        else if (deps.events?.machine === false) {
+          // Supplementary presentation cannot turn an authoritative commit
+          // into a refusal if the identity becomes unreadable after apply.
+          let running = null;
+          if (result.outcome === 'committed') {
+            try { running = await loadIdentityFor(deps); } catch { /* omit unavailable endpoint */ }
+          }
+          deps.events.result(result, running?.status === 'found' ? running.identity : identity);
+        }
         return result.outcome === 'committed' ? EXIT.OK : result.outcome === 'recovered' ? EXIT.RECOVERED : code || EXIT.MANUAL;
       } finally { await rm(dir, { recursive: true, force: true }); }
     } });

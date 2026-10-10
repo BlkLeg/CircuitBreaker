@@ -41,7 +41,7 @@ finish() {
     outcome=recovery_required
     code=MANUAL
     cb_lifecycle_checkpoint state=recovery_required cause=apply_failed error_code=MANUAL 'error_reason=rollback stopped; inspect retained releases and snapshots' || true
-    cb_lifecycle_checkpoint state=recovery_required outcome=manual error_code=MANUAL 'error_reason=rollback stopped; inspect retained releases and snapshots' || true
+    cb_lifecycle_checkpoint state=recovery_required cause=apply_failed outcome=manual error_code=MANUAL 'error_reason=rollback stopped; inspect retained releases and snapshots' || true
     echo 'Rollback needs inspection. Run sudo cb doctor; snapshots and release trees are retained.' >&2
   fi
   if [[ "$npm_result" == true ]]; then

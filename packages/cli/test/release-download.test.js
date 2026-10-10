@@ -32,6 +32,16 @@ function server({ failFirst = 0, status = 200, body = BODY, honourRange = true, 
 
 async function dir() { return mkdtemp(join(tmpdir(), 'cb-dl-')); }
 
+test('progress follows written bytes and preserves the resumed baseline', async () => {
+  const d = await dir();
+  await writeFile(join(d, 'bundle.tar.gz.part'), BODY.subarray(0, 300));
+  await writeFile(join(d, 'bundle.tar.gz.asset.json'), JSON.stringify({ id: 7, size: 1024, url: asset.url }));
+  const progress = [];
+  await downloadAsset(asset, d, { fetchImpl: server().fetchImpl, statfs: roomy, onProgress: (done, total) => progress.push([done, total]) });
+  assert.deepEqual(progress, [[300, 1024], [1024, 1024]]);
+  assert.equal((await readFile(join(d, 'bundle.tar.gz'))).length, 1024);
+});
+
 test('downloads to .part then renames, recording the asset identity', async () => {
   const d = await dir();
   const s = server();

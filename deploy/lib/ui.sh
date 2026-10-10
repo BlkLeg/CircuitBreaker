@@ -31,8 +31,9 @@ _CB_UI_LOADED=true
 # Palette, taken from the banner so the bar belongs to the same picture.
 _CB_ORANGE=$'\033[38;5;209m'
 _CB_VIOLET=$'\033[38;5;99m'
-_CB_GREEN=$'\033[0;32m'
-_CB_RED=$'\033[0;31m'
+_CB_ACTIVE=$'\033[38;5;141m'
+_CB_GREEN=$'\033[38;5;142m'
+_CB_RED=$'\033[38;5;203m'
 _CB_YELLOW=$'\033[1;33m'
 _CB_BOLD=$'\033[1m'
 _CB_DIM=$'\033[2m'
@@ -41,6 +42,8 @@ _CB_RESET=$'\033[0m'
 CB_UI_MODE="plain"
 _CB_LIVE_ON=false
 _CB_LAST_RENDER=""
+_CB_LAST_DRAW_US=0
+_CB_PHASE_ORDINAL=0
 _CB_START_EPOCH=0
 _CB_OPEN_PHASE=""
 _CB_OPEN_HEADLINE=""
@@ -158,16 +161,25 @@ _cb_log() {
 cb_ui_init() {
   _CB_START_EPOCH="$(date +%s)"
 
-  if [[ "${CB_VERBOSE:-false}" == "true" ]]; then
+  if [[ "${CB_RENDERER_OWNER:-}" == node ]]; then
+    CB_UI_MODE="node"
+  elif [[ "${CB_VERBOSE:-false}" == "true" ]]; then
     CB_UI_MODE="verbose"
   elif [[ "${UNATTENDED:-false}" == "true" ]] \
     || [[ "${CI:-}" == "true" ]] \
-    || [[ -n "${NO_COLOR:-}" ]] \
+    || [[ "${NO_COLOR+x}" == x ]] \
     || [[ "${TERM:-dumb}" == "dumb" ]] \
     || ! _cb_ui_term_at_least 66; then
     CB_UI_MODE="plain"
   else
-    CB_UI_MODE="tty"
+    if [[ "${CB_NO_ANIMATION:-0}" == 1 || "${CB_REDUCED_MOTION:-0}" == 1 ]]; then
+      CB_UI_MODE="static"
+    else
+      CB_UI_MODE="tty"
+    fi
+  fi
+  if [[ "${NO_COLOR+x}" == x || "${TERM:-dumb}" == dumb || ! -t 1 ]]; then
+    _CB_ORANGE=""; _CB_VIOLET=""; _CB_ACTIVE=""; _CB_GREEN=""; _CB_RED=""; _CB_YELLOW=""; _CB_BOLD=""; _CB_DIM=""; _CB_RESET=""
   fi
 
   _cb_log "ui: mode=${CB_UI_MODE}"
@@ -189,26 +201,13 @@ cb_ui_teardown() {
 
 _cb_live_clear() {
   [[ "${_CB_LIVE_ON}" == "true" ]] || return 0
-  # Cursor sits at the end of the timer line. Clear it, step up to the bar line,
-  # clear that. Never `clear`, and never absolute positioning: this runs inside
-  # somebody's scrollback, not on a screen we own.
-  #
-  # This assumes the two lines directly above the cursor are still the bar and
-  # timer this renderer drew — there is no way to confirm that from here. A
-  # terminal has no read-back for "what did I last print", so this function
-  # cannot detect foreign output (a raw `echo`/`printf`, `clear`, a banner)
-  # that landed between the last draw and this call; if that happened, this
-  # rewind erases real output instead of its own. There is no general fix for
-  # that inside the renderer — no heuristic here can distinguish "my own
-  # redraw" from "somebody else's line that happens to be two lines up". The
-  # only honest fix is at the call sites: anything that emits raw output after
-  # a phase is open MUST call cb_ui_teardown first (cb_header, the
-  # stage10_final_output banner, uninstall.sh's closing block all do).
-  # tests/build/test_installer_live_region_discipline.py is the guard that
-  # keeps those call sites honest; it is not a substitute for this function
-  # being able to protect itself, because it can't.
+  # Clear only the owned live line, including any rows reflowed on resize.
+  local cols rows i
+  cols="$(_cb_ui_columns)"
+  (( cols > 0 )) || cols=1
+  rows=$(( (${#_CB_LAST_RENDER} + cols - 1) / cols ))
   printf '\r\033[K'
-  printf '\033[1A\r\033[K'
+  for ((i=1; i<rows; i++)); do printf '\033[1A\r\033[K'; done
   _CB_LIVE_ON=false
   _CB_LAST_RENDER=""
 }
@@ -341,45 +340,62 @@ _cb_render_eta() {
 }
 
 _cb_render_live() {
-  local pct cols width filled empty bar elapsed
-  pct="$(_cb_overall_percent)"
+  local cols elapsed text width filled empty bar
   cols="$(_cb_ui_columns)"
-  width=$(( cols - 28 ))
-  (( width > 32 )) && width=32
-  (( width < 10 )) && width=10
-  filled=$(( (pct * width) / 100 ))
-  empty=$(( width - filled ))
-  elapsed=$(( $(date +%s) - _CB_START_EPOCH ))
-
-  bar=""
-  (( filled > 0 )) && bar+="${_CB_ORANGE}$(printf '█%.0s' $(seq 1 "$filled"))${_CB_RESET}"
-  (( empty > 0 )) && bar+="${_CB_VIOLET}$(printf '░%.0s' $(seq 1 "$empty"))${_CB_RESET}"
-
-  printf '  %s  %3d%%\n' "$bar" "$pct"
-  printf '  %s%s elapsed · %s%s' \
-    "${_CB_DIM}" "$(_cb_human_duration "$elapsed")" "$(_cb_render_eta)" "${_CB_RESET}"
+  elapsed=$(( $(date +%s) - _CB_OPEN_START ))
+  text="Phase ${_CB_PHASE_ORDINAL} — ${_CB_OPEN_HEADLINE} · ${elapsed}s elapsed"
+  # Only the current phase's measured substeps/bytes may have a percentage.
+  # No weighted operation percentage or ETA is inferred from elapsed time.
+  if (( _CB_OPEN_TICKS > 0 || _CB_OPEN_FRACTION > 0 )); then
+    width=16
+    filled=$(( _CB_OPEN_FRACTION * width / 100 )); empty=$(( width - filled ))
+    bar="$(printf '%*s' "$filled" '' | tr ' ' '#')$(printf '%*s' "$empty" '' | tr ' ' '-')"
+    text="${text} · [${bar}] ${_CB_OPEN_FRACTION}% of phase"
+  fi
+  printf '%s' "${text:0:$((cols > 1 ? cols - 1 : 1))}"
 }
 
 # Redraw only when the rendered text actually changed. The timer changes once a
 # second and the percentage only when it crosses an integer, so this is well
 # under the 10 Hz ceiling the design asks for while costing no timer plumbing.
 _cb_live_draw() {
-  [[ "${CB_UI_MODE}" == "tty" ]] || return 0
-  local rendered
-  # _cb_update_eta must run here, in the current shell: _cb_render_live below
-  # is captured with $(...), and anything a subshell assigns is gone the
-  # instant that subshell exits.
-  _cb_update_eta
+  [[ "${CB_UI_MODE}" == "tty" && -n "${_CB_OPEN_PHASE}" ]] || return 0
+  local rendered stamp="${EPOCHREALTIME:-}"
+  stamp="${stamp/./}"
+  [[ "$stamp" =~ ^[0-9]+$ ]] || stamp="$(( $(date +%s) * 1000000 ))"
+  (( stamp - _CB_LAST_DRAW_US >= 125000 )) || return 0
+  _CB_LAST_DRAW_US="$stamp"
   rendered="$(_cb_render_live)"
   [[ "$rendered" == "${_CB_LAST_RENDER}" ]] && return 0
   _cb_live_clear
-  printf '%s' "$rendered"
+  if (( _CB_OPEN_FRACTION > 0 )); then
+    printf '%s%s%s' "$_CB_ORANGE" "$rendered" "$_CB_RESET"
+  else
+    printf '%s%s%s' "$_CB_ACTIVE" "$rendered" "$_CB_RESET"
+  fi
   _CB_LAST_RENDER="$rendered"
   _CB_LIVE_ON=true
 }
 
+_cb_ui_event() {
+  local phase="$1" status="$2"
+  [[ "${CB_LIFECYCLE_OPERATION:-}" =~ ^op-[0-9]{8}-[0-9]{3,9}$ ]] || return 0
+  declare -f cb_lifecycle_emit >/dev/null 2>&1 || return 0
+  case "$phase" in
+    bundle) phase=download ;;
+    files|deps|services) phase=stage ;;
+    upgrade_check) phase=preflight ;;
+    apply_bundle) phase=apply ;;
+    database) phase=migrate ;;
+  esac
+  local -a args=(type=phase "phase=$phase" "status=$status")
+  [[ -z "${3:-}" ]] || args+=("duration_ms=$3")
+  cb_lifecycle_emit "${args[@]}" || true
+}
+
 cb_phase_begin() {
   local key="$1" headline="$2"
+  _CB_PHASE_ORDINAL=$(( _CB_PHASE_ORDINAL + 1 ))
   _CB_OPEN_PHASE="$key"
   _CB_OPEN_HEADLINE="$headline"
   _CB_OPEN_START="$(date +%s)"
@@ -387,11 +403,12 @@ cb_phase_begin() {
   _CB_OPEN_TICKS=0
   _CB_OPEN_TICKS_DONE=0
   _cb_log "phase begin: ${key} — ${headline}"
+  _cb_ui_event "$key" started
 
   case "${CB_UI_MODE}" in
-    tty)
+    tty|static)
       _cb_live_clear
-      printf '  %s▸%s %s\n' "${_CB_ORANGE}" "${_CB_RESET}" "$headline"
+      printf '  %s▸%s %s\n' "${_CB_ACTIVE}" "${_CB_RESET}" "$headline"
       _cb_live_draw
       ;;
     plain|verbose)
@@ -440,9 +457,10 @@ cb_phase_end() {
   _CB_DONE_WEIGHT=$(( _CB_DONE_WEIGHT + ${CB_PHASE_WEIGHTS[${key}]:-0} ))
   _CB_LEDGER+=("${key}|${_CB_OPEN_HEADLINE}|${seconds}")
   _cb_log "phase end: ${key} (${seconds}s)"
+  _cb_ui_event "$key" completed "$(( seconds * 1000 ))"
 
   case "${CB_UI_MODE}" in
-    tty)
+    tty|static)
       _cb_live_clear
       # Reprint the headline as a completed line, replacing the ▸ marker.
       printf '  %s✓%s %-42s %s%s%s\n' \

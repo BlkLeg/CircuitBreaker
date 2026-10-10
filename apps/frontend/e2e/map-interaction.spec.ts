@@ -464,7 +464,7 @@ test.describe('topology map node panels', () => {
     const menu = page.locator('.context-menu');
     await expect(menu).toBeVisible();
 
-    // Its layout comes from Tailwind utilities (tw-fixed, tw-w-64). When
+    // Its layout comes from Tailwind utilities (tw:fixed, tw:w-64). When
     // Tailwind stopped scanning src/features/, those classes were never
     // generated and the menu fell into page flow: full-width, or clipped
     // out of sight inside the map container.

@@ -231,10 +231,11 @@ def test_local_bundle_with_only_sums_warns_and_checks_the_hash(s: Setup) -> None
     assert "SHA256 checksum verified" in r.stdout
 
 
-def test_local_bundle_with_neither_file_warns_and_continues(s: Setup) -> None:
+def test_local_bundle_with_neither_file_is_refused_until_the_operator_opts_out(s: Setup) -> None:
     r = s.check("", "", "local", "")
-    assert r.returncode == 0
-    assert "UNVERIFIED" in r.stdout
+    assert r.returncode != 0
+    assert "the bundle cannot be verified" in r.stdout + r.stderr
+    assert "--skip-checksum" in r.stdout + r.stderr
 
 
 def test_local_bundle_with_a_signature_but_no_sums_fails(s: Setup) -> None:
