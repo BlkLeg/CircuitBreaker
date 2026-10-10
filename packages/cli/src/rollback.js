@@ -20,15 +20,17 @@ export async function runRollback(args, deps) {
     const { values } = parseArgs({ args, strict: true, allowPositionals: false, options: { yes: { type: 'boolean' }, 'restore-data': { type: 'boolean' }, json: { type: 'boolean' }, events: { type: 'string' } } });
     const identity = await trustedIdentity(deps);
     if (identity.mode !== 'native') return refuse(EXIT.UNSUPPORTED, 'rollback supports native installs with a retained previous update');
+    deps.events?.heading?.('rollback', identity.version, 'retained previous release', { arch: deps.arch, cliVersion: deps.cliVersion });
     if (!values.yes && !await confirmPhrase(values['restore-data'] ? 'RESTORE' : 'ROLLBACK', values['restore-data'] ? 'Rollback replaces the database, uploads and vault key with the pre-update snapshot.' : 'Rollback replaces the release and retains current data. A safety snapshot is taken first.', deps)) return refuse(EXIT.USAGE, 'rollback cancelled; nothing changed (unattended: --yes; data replacement additionally requires --restore-data)');
     const trusted = await checkTrustedFile('/usr/local/lib/circuitbreaker/rollback-release.sh', deps);
     if (!trusted.ok) return refuse(EXIT.TRUST, `cannot run rollback: ${trusted.reason}`);
     deps.events?.phase('recover', 'started');
     const stopped = await executeScript(trusted.path, ['--npm-result', ...(values['restore-data'] ? ['--restore-data'] : [])], { ...deps, captureResult: true }, json);
-    deps.events?.phase('recover', stopped.code === 0 ? 'completed' : 'failed');
+    deps.events?.phase('recover', stopped.result?.action === 'rollback' && stopped.result.outcome === 'committed' ? 'completed' : 'failed');
     if (!stopped.result) return refuse(stopped.code || EXIT.MANUAL, 'rollback returned no final result; run cb doctor and inspect retained releases');
     if (stopped.result.action !== 'rollback') return refuse(EXIT.MANUAL, 'unexpected native rollback result; inspect history');
     if (json) deps.result.write(stopped.result);
+    else deps.events?.result?.(stopped.result, identity);
     return stopped.result.outcome === 'committed' ? EXIT.OK : stopped.code || EXIT.MANUAL;
   } catch (error) { return refuse(typeof error.code === 'number' ? error.code : error.code?.startsWith('ERR_PARSE_ARGS') ? EXIT.USAGE : EXIT.MANUAL, error.message); }
 }

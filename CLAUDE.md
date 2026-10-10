@@ -75,7 +75,7 @@ binary itself.** Five whole suites sit outside them:
 | Tier 2 (composed) | browser E2E, the composed journey and the mono smoke, as CI runs them (not a separate suite) | `make verify-composed` (nightly: `tier2.yml`) |
 | Browser E2E (Playwright) | the real frontend in a real browser | `cd apps/frontend && npx playwright test` |
 | Composed Agent E2E | the agent against the mono image | `make e2e-local` |
-| Installer journey | `install.sh` end to end on a real host | `bash install.sh --local-bundle <tarball> --unattended --no-tls` |
+| Installer journey | `install.sh` end to end on a real host | `bash install.sh --local-bundle <tarball> --unattended --no-tls` (add `--skip-checksum` for a local build with no `SHA256SUMS` beside it) |
 | Artifact self-test | that the packaged tree contains the application | `dist/native/bundle/bin/circuit-breaker --selftest` |
 | Runtime parity | native tree and mono image share `runtime_digest` | `scripts/ci/assert_runtime_parity.py` |
 

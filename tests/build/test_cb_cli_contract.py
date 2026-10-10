@@ -248,7 +248,8 @@ def test_native_doctor_exit_status_follows_the_verdict(tmp_path: Path, healthy: 
     result = _run(NATIVE_CLI, env)
     if healthy:
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "All checks passed." in result.stdout
+        assert "0 failed" in result.stdout and "1 skipped" in result.stdout
+        assert "All checks passed." not in result.stdout
     else:
         assert result.returncode != 0, result.stdout
         assert "FAILED" in result.stdout
@@ -283,7 +284,8 @@ def test_root_doctor_exit_status_follows_the_verdict(tmp_path: Path, healthy: bo
     result = _run(ROOT_CLI, env)
     if healthy:
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "All checks passed." in result.stdout
+        assert "0 failed" in result.stdout and "1 skipped" in result.stdout
+        assert "All checks passed." not in result.stdout
     else:
         assert result.returncode != 0, result.stdout
         assert "FAILED" in result.stdout
@@ -293,7 +295,7 @@ def test_both_doctors_end_on_the_verdict_not_on_an_echo():
     root = ROOT_CLI.read_text()
     assert root.count("[[ $failed -eq 0 ]]") >= 1
     native = NATIVE_CLI.read_text()
-    body = native.split("cmd_doctor()", 1)[1].split("\ncmd_logs()", 1)[0]
+    body = native.split("_cmd_doctor_collect()", 1)[1].split("\ncmd_doctor()", 1)[0]
     assert "[[ $failed -eq 0 ]]" in body
 
 

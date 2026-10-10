@@ -64,8 +64,10 @@ REQUIRED_PACKED = {
 # 168 KiB takes that task's review fixes (measured 170,126 B): the native step
 # runner's bounded drain after exit, and exitResult building a stopped step's
 # result from its journal instead of its status.
-# Plans 04–09 add the native lifecycle adapters and static renderer.
-UNPACKED_SIZE_BUDGET = 192 * 1024
+# Plans 04–09 add the native lifecycle adapters. The restored terminal gallery
+# adds the measured live renderer and exact ASCII artwork (203,011 B measured
+# before final integration); 208 KiB allows these reviewed presentation assets.
+UNPACKED_SIZE_BUDGET = 208 * 1024
 SHRINKWRAP_SIZE_BUDGET = 40 * 1024
 SHRINKWRAP = PKG / "npm-shrinkwrap.json"
 ENTRY_BUDGET = 45

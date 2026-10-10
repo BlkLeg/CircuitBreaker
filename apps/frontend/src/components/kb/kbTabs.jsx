@@ -20,7 +20,7 @@ function SourceBadge({ source }) {
   const manual = source === 'manual';
   return (
     <span
-      className="tw-inline-block tw-rounded-full tw-px-2 tw-py-0.5 tw-text-xs tw-border"
+      className="tw:inline-block tw:rounded-full tw:px-2 tw:py-0.5 tw:text-xs tw:border"
       style={{
         color: manual ? 'var(--color-success, #3fb950)' : 'var(--color-primary, #4493f8)',
         borderColor: 'var(--color-border, #2a323c)',

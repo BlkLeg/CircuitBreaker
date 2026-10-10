@@ -107,3 +107,20 @@ test('an option install.sh rejects is refused before any native work', async () 
   assert.notEqual(await run(['install', '--yes', '--airgap', '--local-bundle', f.bundle, '--no-docker'], f.deps), 0);
   assert.equal(f.io.steps.length, 0);
 });
+
+test('an installer that stops before any operation is a refusal with its own reason and code', async () => {
+  const f = await fixture();
+  f.deps.nativeStep = async () => ({ code: 1, result: { schema_version: 1, action: 'install', operation_id: null, outcome: 'refused', current_version: null, target_version: null, recovery_available: false, error: { code: 'PREFLIGHT', reason: 'The installer stopped at a check before changing anything; its output above says why.' } } });
+  assert.equal(await run(['install', '--yes', '--airgap', '--local-bundle', f.bundle], f.deps), 7);
+  assert.match(f.io.err, /stopped at a check before changing anything/);
+  assert.doesNotMatch(f.io.err, /no final result|did not match/);
+});
+
+test('with no native result, a lifecycle exit code is kept and anything else asks for inspection', async () => {
+  for (const [native, expected, text] of [[10, 10, /before changing anything \(exit 10\)/], [7, 7, /before changing anything \(exit 7\)/], [1, 9, /without a final result \(exit 1\)/]]) {
+    const f = await fixture();
+    f.deps.nativeStep = async () => ({ code: native, result: null });
+    assert.equal(await run(['install', '--yes', '--airgap', '--local-bundle', f.bundle], f.deps), expected);
+    assert.match(f.io.err, text);
+  }
+});

@@ -27,6 +27,7 @@ uid over a temporary root that uid owns, exactly as test_lifecycle_lock.py does.
 from __future__ import annotations
 
 import ast
+import errno
 import fcntl
 import importlib.util
 import io
@@ -1746,3 +1747,79 @@ echo "op=$CB_LIFECYCLE_OPERATION"
     assert document["outcome"] == expected
     journal = journal_of(tmp_path / "state", op_from(result))
     assert journal["checkpoints"][-1]["state"] == expected
+
+
+# AppArmor in a Proxmox LXC refused flock(2) with EACCES on the installer's
+# inherited lock descriptor after a policy reload during the upgrade, while the
+# kernel still recorded the lock on it. Ownership then comes from fdinfo.
+def _held_lock(state: Path, monkeypatch: pytest.MonkeyPatch) -> int:
+    prepared = sh("cb_lifecycle_lock_acquire 'test prepare' || exit $?", state)
+    assert prepared.returncode == 0, prepared.stderr
+    monkeypatch.setenv("CB_LIFECYCLE_ROOT", str(state))
+    monkeypatch.delenv("CB_LIFECYCLE_OPERATION", raising=False)
+    fd = os.open(state / "private" / "lock", os.O_RDONLY)
+    monkeypatch.setenv("CB_LIFECYCLE_LOCK_FD", str(fd))
+    return fd
+
+
+def _refuse_lock_calls_on(fd: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = LS.fcntl.flock
+
+    def flock(target: int, op: int) -> None:
+        if target == fd:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        real(target, op)
+
+    monkeypatch.setattr(LS.fcntl, "flock", flock)
+
+
+@seam
+def test_a_refused_lock_call_on_the_held_descriptor_falls_back_to_fdinfo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fd = _held_lock(tmp_path, monkeypatch)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _refuse_lock_calls_on(fd, monkeypatch)
+        tree = LS.open_tree()
+        assert tree is not None
+        assert LS.require_lock(tree) == ""
+    finally:
+        os.close(fd)
+
+
+@seam
+def test_a_refused_lock_call_on_a_descriptor_without_the_lock_is_still_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fd = _held_lock(tmp_path, monkeypatch)
+    holder = os.open(tmp_path / "private" / "lock", os.O_RDONLY)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _refuse_lock_calls_on(fd, monkeypatch)
+        tree = LS.open_tree()
+        assert tree is not None
+        with pytest.raises(LS.StateError, match="held through CB_LIFECYCLE_LOCK_FD"):
+            LS.require_lock(tree)
+    finally:
+        os.close(holder)
+        os.close(fd)
+
+
+@seam
+def test_the_shell_proves_a_held_descriptor_through_fdinfo_when_flock_is_refused(tmp_path: Path) -> None:
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    real_flock = shutil.which("flock")
+    assert real_flock
+    # Refuse only a lock call on an inherited descriptor number, as AppArmor did; probes on fresh files pass.
+    (fake / "flock").write_text(
+        f'#!/bin/bash\n[[ "${{@: -1}}" == "$CB_TEST_REFUSE_FD" ]] && {{ echo "flock: $CB_TEST_REFUSE_FD: Permission denied" >&2; exit 1; }}\nexec {real_flock} "$@"\n'
+    )
+    (fake / "flock").chmod(0o755)
+    result = sh(
+        "cb_lifecycle_lock_acquire 'install.sh upgrade' || exit $?\n"
+        "fd=$CB_LIFECYCLE_LOCK_FD\n"
+        "_cb_lifecycle_lstat \"$CB_LIFECYCLE_ROOT/private/lock\"\n"
+        "export CB_TEST_REFUSE_FD=$fd PATH=" + str(fake) + ":$PATH\n"
+        "_cb_lifecycle_fd_holds \"$fd\" \"$CB_LIFECYCLE_ROOT/private/lock\" \"$_CB_LC_ID\" && echo HELD\n",
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("HELD"), result.stdout + result.stderr

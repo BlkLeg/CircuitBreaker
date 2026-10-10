@@ -355,7 +355,10 @@ _cb_lifecycle_fd_holds() {
     return 1
   fi
   exec {probe}<&-
-  flock -n "$fd" 2>/dev/null
+  # AppArmor can refuse lock calls on a descriptor opened before a policy
+  # reload (seen in a Proxmox LXC); the kernel still lists this description's locks.
+  flock -n "$fd" 2>/dev/null \
+    || grep -qE '^lock:[[:space:]]+[0-9]+: FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE ' "/proc/$BASHPID/fdinfo/$fd" 2>/dev/null
 }
 
 # The start time of process $1 in clock ticks since boot (field 22 of

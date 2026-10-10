@@ -147,7 +147,9 @@ if [ -n "$PREVIOUS" ]; then
   # runtime tree. Everything the fresh-install path asserts below is asserted
   # again after the upgrade; this block only establishes the starting state.
   set +e
-  bash install.sh --local-bundle "$PREVIOUS" --unattended --no-tls \
+  # --skip-checksum: build output has no SHA256SUMS beside it, and an
+  # unverified local bundle is refused unless that is asked for by name.
+  bash install.sh --local-bundle "$PREVIOUS" --unattended --no-tls --skip-checksum \
     > "$EVIDENCE/previous-install-stdout.log" 2>&1
   PREV_RC=$?
   set -e
@@ -177,7 +179,7 @@ section "Install from the staged bundle"
 # Output is captured rather than streamed so the phase ledger can be asserted
 # below; it is echoed back on both paths so a failure is still readable.
 set +e
-bash install.sh --local-bundle "$BUNDLE" --unattended --no-tls \
+bash install.sh --local-bundle "$BUNDLE" --unattended --no-tls --skip-checksum \
   > "$EVIDENCE/install-stdout.log" 2>&1
 INSTALL_RC=$?
 set -e
@@ -517,7 +519,7 @@ systemctl disable --now circuitbreaker-worker@integration circuitbreaker-worker@
   >/dev/null 2>&1 || true
 
 set +e
-bash install.sh --local-bundle "$BUNDLE" --unattended --no-tls \
+bash install.sh --local-bundle "$BUNDLE" --unattended --no-tls --skip-checksum \
   > "$EVIDENCE/upgrade-stdout.log" 2>&1
 UPGRADE_RC=$?
 set -e
