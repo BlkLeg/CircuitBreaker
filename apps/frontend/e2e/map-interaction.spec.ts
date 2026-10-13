@@ -218,6 +218,22 @@ test.describe('topology map hover telemetry card', () => {
     })),
   };
 
+  async function waitForViewportSettled(page: Page) {
+    let previous: string | null = null;
+    let stableSamples = 0;
+    await expect
+      .poll(
+        async () => {
+          const transform = await page.locator('.react-flow__viewport').getAttribute('style');
+          stableSamples = transform === previous ? stableSamples + 1 : 0;
+          previous = transform;
+          return stableSamples;
+        },
+        { intervals: [100, 200, 400] }
+      )
+      .toBeGreaterThanOrEqual(3);
+  }
+
   test('opens beside the pointer', async ({ page }) => {
     await stubApi(page, { graph: FAN_OUT, 'graph/topology': FAN_OUT });
     await page.goto('/map');
@@ -241,10 +257,22 @@ test.describe('topology map hover telemetry card', () => {
   });
 
   test('stays closed when its close button sits on top of another node', async ({ page }) => {
-    await stubApi(page, { graph: FAN_OUT, 'graph/topology': FAN_OUT });
+    await stubApi(page, {
+      graph: FAN_OUT,
+      'graph/topology': FAN_OUT,
+      // Keep the hover targets away from the dock's animated reveal zone.
+      'graph/layout': {
+        layout_data: {
+          nodes: Object.fromEntries(
+            FAN_OUT.nodes.map((node, index) => [node.id, { x: index * 200, y: 100 }])
+          ),
+        },
+      },
+    });
     await page.goto('/map');
     await waitForRouteSettled(page);
     await expect(page.locator('.react-flow__node')).toHaveCount(FAN_OUT.nodes.length);
+    await waitForViewportSettled(page);
 
     // The card opens just right of the pointer, so on a row of nodes its close
     // button can land on a neighbour. Closing it uncovers that node, and the
@@ -282,7 +310,9 @@ test.describe('topology map hover telemetry card', () => {
           await expect(close).toBeHidden();
         }
         // Skip nodes that are off screen or under an overlay such as the legend.
-        const targetBox = await target.boundingBox();
+        // The full node includes its label; its centre can enter the dock's
+        // reveal zone, which covers the pointer and cancels the hover timer.
+        const targetBox = await target.locator('.map-node-shell > div').first().boundingBox();
         if (!targetBox) continue;
         const cx = targetBox.x + targetBox.width / 2;
         const cy = targetBox.y + targetBox.height / 2;
@@ -293,7 +323,7 @@ test.describe('topology map hover telemetry card', () => {
         x = box.x + box.width / 2;
         y = box.y + box.height / 2;
         const under = await nodeAt(x, y, true);
-        if (under && under !== child.id) {
+        if (under && under !== child.id && (await nodeAt(x + 2, y + 1, true)) === under) {
           covered = under;
           break;
         }
@@ -301,6 +331,7 @@ test.describe('topology map hover telemetry card', () => {
       if (!covered) {
         await page.mouse.move(5, 5);
         await page.getByRole('button', { name: 'zoom in' }).click();
+        await waitForViewportSettled(page);
       }
     }
     expect(covered, 'no hover target put the close button over another node').not.toBeNull();
@@ -317,8 +348,13 @@ test.describe('topology map hover telemetry card', () => {
 
     // Hover still works once the pointer genuinely leaves and comes back.
     await page.mouse.move(5, 5, { steps: 5 });
-    await page.locator(`.react-flow__node[data-id="${covered}"]`).hover();
+    await page
+      .locator(`.react-flow__node[data-id="${covered}"] .map-node-shell > div`)
+      .first()
+      .hover();
     await expect(close).toBeVisible();
+    const coveredLabel = FAN_OUT.nodes.find((node) => node.id === covered)!.label;
+    await expect(close.locator('xpath=../..')).toContainText(coveredLabel);
   });
 });
 

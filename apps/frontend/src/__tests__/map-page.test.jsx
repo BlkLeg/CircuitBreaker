@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CONNECTION_LINE_STYLE } from '../lib/constants';
 import { MAP_MIN_ZOOM, VIEWPORT_FIT_DEFAULTS } from '../utils/viewportFit';
 
@@ -11,6 +11,7 @@ const mockSnapEdgesToNearestHandles = vi.fn((_movedNodeIds, _nodes, edges) => ed
 const mockOnEdgesChangeBase = vi.fn();
 let latestReactFlowProps = null;
 let latestBaseOnEdgesChange = null;
+let latestTelemetryProps = null;
 
 // Mock ReactFlow before importing MapPage
 vi.mock('reactflow', () => {
@@ -177,7 +178,10 @@ vi.mock('../features/map/components/ContextMenu', () => ({
   default: () => null,
 }));
 vi.mock('../features/map/components/TelemetrySidebar', () => ({
-  default: () => null,
+  default: (props) => {
+    latestTelemetryProps = props;
+    return React.createElement('div', { 'data-testid': 'hover-telemetry' }, props.node.id);
+  },
 }));
 vi.mock('../features/map/components/BoundaryContextMenu', () => ({
   default: () => null,
@@ -353,6 +357,7 @@ describe('MapPage', () => {
     mockSnapEdgesToNearestHandles.mockClear();
     latestReactFlowProps = null;
     latestBaseOnEdgesChange = null;
+    latestTelemetryProps = null;
   });
 
   it('renders map page container', async () => {
@@ -370,6 +375,51 @@ describe('MapPage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('map-toolbar')).toBeInTheDocument();
     });
+  });
+
+  it('reopens a dismissed hover card after pointer movement without a node mouseleave', async () => {
+    const { unmount } = render(<MapPage />);
+    await waitFor(() => expect(latestReactFlowProps).toBeTruthy());
+
+    const covered = document.createElement('div');
+    covered.className = 'react-flow__node';
+    covered.dataset.id = 'hw-2';
+    const hitTest = vi.fn(() => [covered]);
+    const original = Object.getOwnPropertyDescriptor(document, 'elementsFromPoint');
+    Object.defineProperty(document, 'elementsFromPoint', { configurable: true, value: hitTest });
+    vi.useFakeTimers();
+    try {
+      const source = { id: 'hw-1', data: { label: 'Source' } };
+      const neighbour = { id: 'hw-2', data: { label: 'Neighbour' } };
+      const pointer = { clientX: 100, clientY: 200 };
+      act(() => {
+        latestReactFlowProps.onNodeMouseEnter(pointer, source);
+        vi.advanceTimersByTime(400);
+      });
+      expect(screen.getByTestId('hover-telemetry')).toHaveTextContent('hw-1');
+
+      act(() => latestTelemetryProps.onDismiss(pointer));
+      act(() => {
+        fireEvent.pointerMove(document, pointer);
+        latestReactFlowProps.onNodeMouseEnter(pointer, neighbour);
+        vi.advanceTimersByTime(1000);
+      });
+      expect(screen.queryByTestId('hover-telemetry')).not.toBeInTheDocument();
+
+      hitTest.mockReturnValue([]);
+      act(() => fireEvent.pointerMove(document, { clientX: 5, clientY: 5 }));
+      hitTest.mockReturnValue([covered]);
+      act(() => {
+        latestReactFlowProps.onNodeMouseEnter(pointer, neighbour);
+        vi.advanceTimersByTime(400);
+      });
+      expect(screen.getByTestId('hover-telemetry')).toHaveTextContent('hw-2');
+    } finally {
+      unmount();
+      vi.useRealTimers();
+      if (original) Object.defineProperty(document, 'elementsFromPoint', original);
+      else delete document.elementsFromPoint;
+    }
   });
 
   it('does not recompute edge sides on click or zero-delta drag stop', async () => {
