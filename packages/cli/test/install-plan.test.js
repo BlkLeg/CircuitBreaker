@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign, createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, mkdir, writeFile, readdir, readFile as fsReadFile, stat, realpath, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, chmod, readdir, readFile as fsReadFile, stat, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { run } from '../src/main.js';
@@ -57,6 +57,9 @@ async function host({ fetchImpl, keys, identity = null, env = {} } = {}) {
   const identityPath = join(root, 'install-identity.json');
   if (identity) {
     await writeFile(identityPath, JSON.stringify({ schema_version: 1, mode: 'native', installed_at: '2026-09-30T00:00:00Z', ...identity }));
+    // install.sh writes the identity 0644; set it here too rather than inherit
+    // the caller's umask, which is 0002 on many desktops and trips the trust check.
+    await chmod(identityPath, 0o644);
   }
   const output = { out: '', err: '' };
   const attested = [];

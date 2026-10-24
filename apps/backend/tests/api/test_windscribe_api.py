@@ -283,19 +283,23 @@ async def test_privacy_score_history_buckets_by_day_and_picks_latest(
 @pytest.mark.asyncio
 async def test_privacy_score_history_days_param_clamped_to_90(client, auth_headers, db_session):
     _set_windscribe(db_session, True)
-    old = datetime(2020, 1, 1, tzinfo=UTC)
-    recent = datetime(2026, 7, 14, tzinfo=UTC)
-    _seed_snapshot(db_session, score=50, grade="F", created_at=old)
-    _seed_snapshot(db_session, score=90, grade="A", created_at=recent)
+    # Relative to now, as the endpoint's cutoff is: a fixed date such as
+    # 2026-07-14 passed until it aged past 90 days and then failed in CI.
+    # 120 days back is inside the requested 99999 but outside the clamp;
+    # 80 days back is outside the 30-day default but inside the clamp.
+    outside = datetime.now(UTC) - timedelta(days=120)
+    inside = datetime.now(UTC) - timedelta(days=80)
+    _seed_snapshot(db_session, score=50, grade="F", created_at=outside)
+    _seed_snapshot(db_session, score=90, grade="A", created_at=inside)
 
     resp = await client.get(
         "/api/v1/network/privacy-score/history?days=99999", headers=auth_headers
     )
     assert resp.status_code == 200
     days = resp.json()["days"]
-    # clamped window (90 days back from the latest snapshot) excludes the 2020 row
+    # clamped window (90 days back from now) keeps the 80-day row only
     assert len(days) == 1
-    assert days[0]["date"] == "2026-07-14"
+    assert days[0]["date"] == inside.date().isoformat()
 
 
 # ── /privacy-findings/ignore(s) ──────────────────────────────────────────────

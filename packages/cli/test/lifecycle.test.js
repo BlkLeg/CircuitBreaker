@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, stat, realpath, readFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod, stat, realpath, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, createHash, sign } from 'node:crypto';
@@ -12,7 +12,12 @@ import { compareVersions } from '../src/lifecycle.js';
 async function fixture({ installed = null, version = '0.4.8', mismatched = false, mode = 'native' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'cb-lifecycle-'));
   const identity = join(dir, 'identity.json');
-  if (installed) await writeFile(identity, JSON.stringify({ schema_version: 1, mode, version: installed, installed_at: '2026-10-02', cli_path: '/usr/bin/echo' }));
+  if (installed) {
+    await writeFile(identity, JSON.stringify({ schema_version: 1, mode, version: installed, installed_at: '2026-10-02', cli_path: '/usr/bin/echo' }));
+    // install.sh writes the identity 0644; set it here too rather than inherit
+    // the caller's umask, which is 0002 on many desktops and trips the trust check.
+    await chmod(identity, 0o644);
+  }
   const name = `circuit-breaker_${version}_linux_amd64.tar.gz`;
   const bundle = join(dir, name);
   const bytes = makeTarGz([{ name: 'install.sh', data: Buffer.from('#!/bin/bash\nexit 0\n') }, { name: 'share/VERSION', data: Buffer.from(mismatched ? '0.4.6' : version) }]);
@@ -85,6 +90,8 @@ test('rollback cancellation never invokes the native adapter; explicit data cons
   assert.equal(f.io.steps.length, 0);
   const script = join(f.dir, 'rollback.sh');
   await writeFile(script, '#!/bin/bash\n');
+  // A shipped release script is 0755; the trust check refuses anything wider.
+  await chmod(script, 0o755);
   f.deps.realpath = async (path) => path.endsWith('rollback-release.sh') ? script : realpath(path);
   f.deps.nativeStep = async (step) => { f.io.steps.push(step); return { code: 0, result: { schema_version: 1, action: 'rollback', operation_id: 'op-20261002-001', outcome: 'committed', current_version: '0.4.7', target_version: '0.4.7', recovery_available: true } }; };
   assert.equal(await run(['rollback', '--yes', '--restore-data', '--json'], f.deps), 0, f.io.err);

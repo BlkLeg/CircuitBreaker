@@ -21,6 +21,9 @@ async function host({ identity, cbBody = "require('node:fs').writeFileSync(proce
     await writeFile(identityPath, JSON.stringify({
       schema_version: 1, mode: 'native', version: '0.4.7', installed_at: '2026-09-30T00:00:00Z', cli_path: cb, ...identity,
     }));
+    // install.sh writes the identity 0644; set it here too rather than inherit
+    // the caller's umask, which is 0002 on many desktops and trips the trust check.
+    await chmod(identityPath, 0o644);
   }
   const output = { out: '', err: '' };
   const deps = {

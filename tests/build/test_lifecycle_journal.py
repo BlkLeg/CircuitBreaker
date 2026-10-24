@@ -314,6 +314,23 @@ root_only = pytest.mark.skipif(
 PLANE: list[Path] = []
 
 
+@pytest.fixture(autouse=True)
+def host_umask() -> Iterator[None]:
+    """Build every case's tree under umask 022, the floor sudo applies on a host.
+
+    The trust checks refuse a group-writable program or ancestor directory, and
+    a desktop default of 0002 makes every `mkdir` here 0775. Under it the cases
+    that expect a trusted bundle failed, and the cases that expect a refusal
+    passed whatever the mode under test was. The case that exercises a
+    permissive umask sets its own inside the script it runs.
+    """
+    previous = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def control_plane() -> Iterator[Path]:
     """A control plane under a fresh private temporary directory, the way setup.sh lays one out."""

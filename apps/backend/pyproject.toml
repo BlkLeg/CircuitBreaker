@@ -42,7 +42,7 @@ dependencies = [
     "PyJWT>=2.15.0,<3.0.0",
     "pyasn1>=0.6.4",
     "bcrypt>=4.0",
-    "Pillow>=12.3.0",
+    "Pillow>=13.0.0",
     "slowapi>=0.1.9; python_version < \"4.0\"",
     "markdown-it-py[plugins]>=4.2.0",
     "bleach>=6.4.0",
@@ -82,6 +82,10 @@ dependencies = [
     "docker>=7.2.0",
     "boto3>=1.43.98",
     "redis[hiredis]>=5.0.0",
+    # Security floors for transitive runtime packages: the images install the
+    # lock, CI installs from this list, so both need the fixed release.
+    "certifi>=2026.10.19",
+    "mako>=1.4.2",
 ]
 
 [project.optional-dependencies]
@@ -98,6 +102,8 @@ otel = [
     "opentelemetry-instrumentation-fastapi>=0.45b0",
     "opentelemetry-instrumentation-sqlalchemy>=0.45b0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.24.0",
+    # Security floor: CVE-2026-114603 is fixed in 1.45.1.
+    "opentelemetry-api>=1.45.1",
 ]
 dev = [
     # PyInstaller does not yet support every CPython in our declared `<4` range; keep
@@ -140,10 +146,12 @@ dev = [
     "bandit>=1.7.0",
     "pip-audit>=2.7.0",
     # Security floors for transitive packages retained in the all-groups lock.
+    "filelock>=4.2.1",
     "msgpack>=1.2.2",
     "pip>=26.1.2",
     "pymdown-extensions>=11.0.1",
     "setuptools>=83.0.0",
+    "werkzeug>=3.1.9",
 ]
 security = [
     "bandit>=1.7.0",
