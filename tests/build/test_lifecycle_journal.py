@@ -328,6 +328,14 @@ def control_plane() -> Iterator[Path]:
     shutil.rmtree(plane)
 
 
+def _trusted_dirs(path: Path) -> None:
+    """Create path and its missing parents at 0o755 whatever the umask: the library distrusts a utility below a
+    group-writable directory, and a umask of 002 would otherwise make every fixture directory one."""
+    for directory in reversed([p for p in (path, *path.parents) if not p.exists()]):
+        directory.mkdir()
+        os.chmod(directory, 0o755)
+
+
 def _system_python() -> str:
     """The host's root-owned python3: /usr/bin/python3 where it exists (the library's default), else the image's."""
     for candidate in ("/usr/bin/python3", "/usr/local/bin/python3"):
@@ -938,7 +946,7 @@ def test_after_an_unacknowledged_checkpoint_the_next_is_stale_only_if_the_record
     state = tmp_path / "state"
     marker = tmp_path / "mutated"
     flaky = tmp_path / "bundle" / "python" / "bin" / "python3"
-    flaky.parent.mkdir(parents=True)
+    _trusted_dirs(flaky.parent)
     flaky.write_text(FLAKY_PYTHON.format(python=SYSTEM_PYTHON))
     os.chmod(flaky, 0o755)
     fault = tmp_path / "fault"
@@ -1491,7 +1499,7 @@ def test_the_system_interpreter_is_resolved_once_and_an_exported_one_is_ignored(
 @pytest.mark.parametrize("case", ["older than 3.9", "group-writable", "missing"])
 def test_without_a_trusted_interpreter_the_utility_is_refused_with_7(case: str, tmp_path: Path) -> None:
     fake = tmp_path / "bundle" / "python" / "bin" / "python3"
-    fake.parent.mkdir(parents=True)
+    _trusted_dirs(fake.parent)
     fake.write_text("#!/bin/sh\nexit 1\n" if case == "older than 3.9" else f'#!/bin/sh\nexec {SYSTEM_PYTHON} "$@"\n')
     os.chmod(fake, 0o775 if case == "group-writable" else 0o755)
     candidate = "" if case == "missing" else str(fake)
@@ -1504,7 +1512,7 @@ def test_without_a_trusted_interpreter_the_utility_is_refused_with_7(case: str, 
 
 def test_a_fresh_install_may_use_the_verified_bundle_interpreter(tmp_path: Path) -> None:
     fake = tmp_path / "bundle" / "python" / "bin" / "python3"
-    fake.parent.mkdir(parents=True)
+    _trusted_dirs(fake.parent)
     fake.write_text(f'#!/bin/sh\nexec {SYSTEM_PYTHON} "$@"\n')
     os.chmod(fake, 0o755)
     r = ok(sh(f'CB_LIFECYCLE_SYSTEM_PYTHON="{tmp_path}/no-python3"\ncb_lifecycle_python "{fake}"\n'
@@ -1521,7 +1529,7 @@ def _plant_decoys(work: Path, perm: int) -> None:
     """Decoy utilities at every place a library that took the working directory for its own would look."""
     for rel in ("lifecycle-state.py", "deploy/scripts/lifecycle-state.py", "../scripts/lifecycle-state.py"):
         decoy = work / rel
-        decoy.parent.mkdir(parents=True, exist_ok=True)
+        _trusted_dirs(decoy.parent)
         decoy.write_text(DECOY_UTILITY)
         os.chmod(decoy, perm)
 
@@ -1547,9 +1555,10 @@ def test_a_piped_library_never_runs_a_utility_from_the_working_directory(perm: i
 def _bundle_with(tmp_path: Path, utility_text: str, perm: int) -> Path:
     """A bundle's deploy tree: the library and, next to it in scripts/, the given utility."""
     deploy = tmp_path / "bundle" / "deploy"
-    (deploy / "lib").mkdir(parents=True)
-    (deploy / "scripts").mkdir()
+    _trusted_dirs(deploy / "lib")
+    _trusted_dirs(deploy / "scripts")
     shutil.copyfile(LIB, deploy / "lib" / "lifecycle.sh")
+    os.chmod(deploy / "lib" / "lifecycle.sh", 0o644)
     (deploy / "scripts" / "lifecycle-state.py").write_text(utility_text)
     os.chmod(deploy / "scripts" / "lifecycle-state.py", perm)
     return deploy

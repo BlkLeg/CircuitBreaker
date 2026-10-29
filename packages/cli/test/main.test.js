@@ -20,7 +20,7 @@ async function host({ identity, cbBody = "require('node:fs').writeFileSync(proce
   if (identity !== null) {
     await writeFile(identityPath, JSON.stringify({
       schema_version: 1, mode: 'native', version: '0.4.7', installed_at: '2026-09-30T00:00:00Z', cli_path: cb, ...identity,
-    }));
+    }), { mode: 0o644 });
   }
   const output = { out: '', err: '' };
   const deps = {

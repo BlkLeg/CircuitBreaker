@@ -12,7 +12,7 @@ import { compareVersions } from '../src/lifecycle.js';
 async function fixture({ installed = null, version = '0.4.8', mismatched = false, mode = 'native' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'cb-lifecycle-'));
   const identity = join(dir, 'identity.json');
-  if (installed) await writeFile(identity, JSON.stringify({ schema_version: 1, mode, version: installed, installed_at: '2026-10-02', cli_path: '/usr/bin/echo' }));
+  if (installed) await writeFile(identity, JSON.stringify({ schema_version: 1, mode, version: installed, installed_at: '2026-10-02', cli_path: '/usr/bin/echo' }), { mode: 0o644 });
   const name = `circuit-breaker_${version}_linux_amd64.tar.gz`;
   const bundle = join(dir, name);
   const bytes = makeTarGz([{ name: 'install.sh', data: Buffer.from('#!/bin/bash\nexit 0\n') }, { name: 'share/VERSION', data: Buffer.from(mismatched ? '0.4.6' : version) }]);
@@ -84,7 +84,7 @@ test('rollback cancellation never invokes the native adapter; explicit data cons
   assert.equal(await run(['rollback', '--restore-data'], f.deps), 2);
   assert.equal(f.io.steps.length, 0);
   const script = join(f.dir, 'rollback.sh');
-  await writeFile(script, '#!/bin/bash\n');
+  await writeFile(script, '#!/bin/bash\n', { mode: 0o644 });
   f.deps.realpath = async (path) => path.endsWith('rollback-release.sh') ? script : realpath(path);
   f.deps.nativeStep = async (step) => { f.io.steps.push(step); return { code: 0, result: { schema_version: 1, action: 'rollback', operation_id: 'op-20261002-001', outcome: 'committed', current_version: '0.4.7', target_version: '0.4.7', recovery_available: true } }; };
   assert.equal(await run(['rollback', '--yes', '--restore-data', '--json'], f.deps), 0, f.io.err);
