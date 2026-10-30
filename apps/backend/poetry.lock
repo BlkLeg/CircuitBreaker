@@ -884,7 +884,7 @@ description = "Cross-platform colored terminal text."
 optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
 groups = ["main"]
-markers = "(platform_system == \"Windows\" or extra == \"dev\" or extra == \"security\" or extra == \"docs\") and (platform_system == \"Windows\" or sys_platform == \"win32\" or extra == \"security\" or extra == \"docs\")"
+markers = "(platform_system == \"Windows\" or extra == \"dev\" or extra == \"docs\" or extra == \"security\") and (platform_system == \"Windows\" or sys_platform == \"win32\" or extra == \"docs\" or extra == \"security\")"
 files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
     {file = "colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44"},
@@ -1445,15 +1445,15 @@ sqlalchemy = {version = ">=2.0.0,<2.1.0", extras = ["asyncio"]}
 
 [[package]]
 name = "filelock"
-version = "3.28.0"
+version = "4.2.5"
 description = "A platform independent file lock."
 optional = true
-python-versions = ">=3.10"
+python-versions = ">=3.11"
 groups = ["main"]
 markers = "extra == \"dev\" or extra == \"security\""
 files = [
-    {file = "filelock-3.28.0-py3-none-any.whl", hash = "sha256:de9af6712788e7171df1b28b15eba2446c69721433fa427a9bee07b17820a9db"},
-    {file = "filelock-3.28.0.tar.gz", hash = "sha256:4ed1010aae813c4ee8d9c660e4792475ee60c4a0ba76073ceaf862bd317e3ca6"},
+    {file = "filelock-4.2.5-py3-none-any.whl", hash = "sha256:46ce42d27e5cdde09ee7197349663e97cb106679bd9e75db3a09679fbc7aa1a8"},
+    {file = "filelock-4.2.5.tar.gz", hash = "sha256:37d8fa4f8b5e9233612e68ab23bf64cae41771322c8797361088ae2895b12894"},
 ]
 
 [[package]]
@@ -5710,14 +5710,9 @@ files = [
     {file = "zensical-0.0.33-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:f658e3c241cfbb560bd8811116a9486cff7e04d7d5aed73569dd533c74187450"},
     {file = "zensical-0.0.33-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:f9813ac3256c28e2e2f1ba5c9fab1b4bca62bbe0e0f8e85ac22d33b068b1b08a"},
     {file = "zensical-0.0.33-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3bad7ac71028769c5d1f3f84f448dbb7352db28d77095d1b40a8d1b0aa34ec30"},
-    {file = "zensical-0.0.33-cp310-abi3-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:06bb039daf044547c9400a52f9493b3cd486ba9baef3324fdcffd2e26e61105f"},
-    {file = "zensical-0.0.33-cp310-abi3-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:260238062b3139ece0edab93f4dbe7a12923453091f5aa580dfd73e799388076"},
     {file = "zensical-0.0.33-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7dff0f4afda7b8586bc4ab2a5684bce5b282232dd4e0cad3be4c73fedd264425"},
     {file = "zensical-0.0.33-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:207b4d81b208d75b97dc7bd318804550b886a3e852ef67429ef0e6b9442839d1"},
-    {file = "zensical-0.0.33-cp310-abi3-musllinux_1_2_armv7l.whl", hash = "sha256:06d2f57f7bc8cc8fd904386020ea1365eebc411e8698a871e9525c885abca574"},
-    {file = "zensical-0.0.33-cp310-abi3-musllinux_1_2_i686.whl", hash = "sha256:c2851b82d83aa0b2ae4f8e99731cfeedeecebfa04e6b3fc4d375deca629fa240"},
     {file = "zensical-0.0.33-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:90daaf512b0429d7b9147ad5e6085b455d24803eff18b508aed738ca65444683"},
-    {file = "zensical-0.0.33-cp310-abi3-win32.whl", hash = "sha256:2701820597fe19361a12371129927c58c19633dcaa5f6986d610dce58cecd8c4"},
     {file = "zensical-0.0.33-cp310-abi3-win_amd64.whl", hash = "sha256:a5a0911b4247708a55951b74c459f4d5faec5daaf287d23a2e1f0d96be1e647f"},
     {file = "zensical-0.0.33.tar.gz", hash = "sha256:05209cb4f80185c533e0d37c25d084ddc2050e3d5a4dd1b1812961c2ee0c3380"},
 ]
