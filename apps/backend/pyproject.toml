@@ -32,30 +32,30 @@ dependencies = [
     # gate stops covering the API. Raise it only together with the route walk in
     # scripts/generate_endpoint_inventory.py and tests/test_endpoint_policy_inventory.py.
     "fastapi>=0.136.3,<0.137",
-    "uvicorn[standard]>=0.53.0",
+    "uvicorn[standard]>=0.54.0",
     "uptime-kuma-api-v2>=1.0.3",
-    "sqlalchemy>=2.0.54",
-    "pydantic>=2.13.5",
-    "pydantic-settings>=2.15.0",
-    "alembic>=1.20.0",
+    "sqlalchemy>=2.0.55",
+    "pydantic>=2.14.2",
+    "pydantic-settings>=2.16.2",
+    "alembic>=1.20.1",
     "python-multipart>=0.0.31",
     "PyJWT>=2.15.0,<3.0.0",
-    "pyasn1>=0.6.4",
+    "pyasn1>=0.6.5",
     "bcrypt>=4.0",
     "Pillow>=12.3.0",
     "slowapi>=0.1.9; python_version < \"4.0\"",
     "markdown-it-py[plugins]>=4.2.0",
     "bleach>=6.4.0",
     "prometheus-client>=0.26.0",
-    "cryptography>=50.0.1",
+    "cryptography>=50.0.2",
     "dissononce>=0.34.3",
     "requests>=2.33.0",
     "python-nmap>=0.7.1",
-    "pysnmp>=7.1.29",
+    "pysnmp>=7.1.30",
     "scapy>=2.5; python_version < \"4.0\"",
     "netaddr>=0.10",
     "apscheduler>=3.11.3",
-    "dnspython>=2.6",
+    "dnspython>=2.9.1",
     "httpx>=0.27",
     # Floor: 4.14.2 is the fixed release for CVE-2026-63374 (IDNA 2003 host
     # encoding in TLSStream), CVE-2026-64847 and CVE-2026-63349. CI installs
@@ -69,18 +69,18 @@ dependencies = [
     "anyio>=4.14.2,<4.15",
     "fastapi-users[sqlalchemy]>=15.0.5",
     "nats-py>=2.16.0",
-    "zeroconf>=0.151.3",
+    "zeroconf>=0.153.0",
     "manuf==1.1.3",
     "psycopg2-binary>=2.9.13",
-    "asyncpg>=0.29.0",
+    "asyncpg>=0.32.0",
     "aiosmtplib>=5.1.3",
     "proxmoxer>=2.0.0",
     "urllib3>=2.8.0",
     "psutil>=5.9.0",
     "pyotp>=2.10.0",
-    "cachetools>=7.2.0",
+    "cachetools>=7.2.8",
     "docker>=7.2.0",
-    "boto3>=1.43.98",
+    "boto3>=1.43.123",
     "redis[hiredis]>=5.0.0",
 ]
 
@@ -91,7 +91,7 @@ analytics = [
 ]
 mobile = [
     # Optional: SSH-based DHCP lease snooping (Layer 4 phone discovery)
-    "asyncssh>=2.23.0",
+    "asyncssh>=2.24.1",
 ]
 otel = [
     "opentelemetry-sdk>=1.24.0",
@@ -103,19 +103,19 @@ dev = [
     # PyInstaller does not yet support every CPython in our declared `<4` range; keep
     # the marker so `poetry lock` can resolve without pretending pyinstaller installs on 3.15+.
     "pyinstaller>=6.0.0; python_version < \"3.15\"",
-    "moto[s3]>=5.2.3",
-    "pytest>=9.0.3",
+    "moto[s3]>=5.2.5",
+    "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
-    "pytest-asyncio>=1.4.0",
+    "pytest-asyncio>=1.4.1",
     "pytest-xdist>=3.6",
     "pytest-timeout>=2.3",
     "httpx>=0.27.0",
     "testcontainers[postgres]>=4.15.0",
     "factory-boy>=3.3",
-    "faker>=40.39.0",
+    "faker>=40.44.0",
     "freezegun>=1.5",
     "respx>=0.23.1",
-    "ruff>=0.16.8",
+    "ruff>=0.17.3",
     "mypy>=1.10.0",
     "mypy-extensions>=1.0.0",
     "types-bleach>=6.4.0.20260728",
@@ -136,14 +136,14 @@ dev = [
     # against that runner's system python3, which is 3.10 on ubuntu-22.04.
     # A hand-maintained list of 3.11+ names cannot stay complete; this does not
     # have to be maintained at all.
-    "vermin>=1.8.0",
+    "vermin>=1.9.2",
     "bandit>=1.7.0",
     "pip-audit>=2.7.0",
     # Security floors for transitive packages retained in the all-groups lock.
-    "msgpack>=1.2.2",
-    "pip>=26.1.2",
+    "msgpack>=1.2.4",
+    "pip>=26.2.2",
     "pymdown-extensions>=11.0.1",
-    "setuptools>=83.0.0",
+    "setuptools>=84.2.1",
 ]
 security = [
     "bandit>=1.7.0",
@@ -152,7 +152,7 @@ security = [
 ]
 docs = [
     "zensical>=0.0.33",
-    "mkdocs-material>=9.7.7",
+    "mkdocs-material>=9.8.0",
 ]
 
 [tool.hatch.version]
