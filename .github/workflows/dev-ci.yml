@@ -251,7 +251,7 @@ jobs:
           .venv/bin/pip install -e "apps/backend/[dev]"
 
       - name: Download shard evidence
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: backend-shard-*
           path: shards/
@@ -715,12 +715,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: dev-packages-amd64
           path: dist/
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: dev-image-build-info-amd64
           path: image-info/
