@@ -28,7 +28,7 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    # checkov:skip=CKV_GHA_7: the release captain chooses the channel, whether a candidate goes on to promote, and, for a stable promote, names the draft.
+    # checkov:skip=CKV_GHA_7: the release captain chooses the channel, whether a candidate goes on to promote, for a stable promote names the draft, and whether the promote also publishes the npm CLI.
     inputs:
       channel:
         description: "candidate: build, gate and stage a draft. stable: promote an existing draft (no build)."
@@ -45,6 +45,11 @@ on:
         required: false
         type: boolean
         default: true
+      publish_npm:
+        description: "Also publish the npm CLI (@blkleg/circuitbreaker) when promoting. Leave off until the NPM gates in specs/1.0.0/08-npm-distribution.md have passed and npm trusts this workflow as a publisher."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write    # create GitHub Release, upload assets
@@ -1051,7 +1056,15 @@ jobs:
           node-version: '24.15.0'
           registry-url: 'https://registry.npmjs.org'
 
+      # npm is not a distribution channel until the NPM gates pass (ADR 0006,
+      # the 1.0 support contract), so the publish is opt-in per dispatch. The
+      # tarball is still packed, signed, attested and attached to the release.
+      - name: Note that the npm CLI is not published
+        if: inputs.publish_npm != true
+        run: echo "::notice::publish_npm is off; the npm CLI is attached to the release but not published to npm."
+
       - name: Publish and verify the accepted CLI tarball
+        if: inputs.publish_npm == true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}

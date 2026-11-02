@@ -224,11 +224,14 @@ build-from-source: ## Full power-user path: deps + venv + build (clean machine �
 	$(MAKE) --no-print-directory install
 	$(MAKE) --no-print-directory build
 
+# PUBLISH_NPM=true also publishes the npm CLI on promote; off until the NPM gates pass.
+PUBLISH_NPM ?= false
+
 release-candidate: ## Build, gate and stage a DRAFT for VERSION from HEAD, then promote it once approved on the `release` environment
 	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || (echo "make release-candidate dispatches only from main: the Stage job signs bundles only from main. Current branch: $$(git rev-parse --abbrev-ref HEAD)"; exit 1)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
-	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=true
+	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=true -f publish_npm="$(PUBLISH_NPM)"
 	@echo "Dispatched. When the draft is staged the run waits for your approval on the 'release' environment (gh run watch, or Review deployments on the run page)."
 	@echo "Soak the draft before approving with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' --pattern 'SHA256SUMS*' && install.sh --local-bundle ..."
 
@@ -243,7 +246,7 @@ release-promote: ## Promote the staged draft for VERSION to stable once approved
 	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || (echo "make release-promote dispatches only from main: the Stage job signs bundles only from main. Current branch: $$(git rev-parse --abbrev-ref HEAD)"; exit 1)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first"; exit 1)
-	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=stable -f version="$$(cat VERSION)"
+	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=stable -f version="$$(cat VERSION)" -f publish_npm="$(PUBLISH_NPM)"
 
 # GOV-09 says VERSION is the only hand-edited version. apps/backend/pyproject.toml
 # gets that literally — hatch reads the file — but a package.json and a sentence
