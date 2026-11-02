@@ -17,18 +17,69 @@ next round.
 
 ## [0.4.7] — unreleased
 
+The first signed release, and safer native upgrades. Every release from this
+one on publishes a signed `SHA256SUMS` and build-provenance attestations, and
+both `install.sh` and the Proxmox helper check the signature before they trust
+anything in the bundle. A native upgrade now takes a full snapshot first, keeps
+the release it replaces, and puts that release back if the new one does not
+come up healthy. Installs, upgrades, removals and the mutating `cb` commands
+share one host-wide lock. The npm installer CLI, `@blkleg/circuitbreaker`,
+is built, signed and attached to this release, but not yet published to npm.
+It fixes a root execution in the piped installer that dates back to v0.3.1,
+`cb backup` and `cb restore` on native installs, and a re-run after a fresh
+install that stopped part-way. It also updates backend, agent and frontend
+dependencies for published advisories.
+
+### Fixed
+
+- `cb backup` and `cb restore` work on native installs, Proxmox LXC included.
+  On 0.4.6 both stopped with "Unknown mode 'native'", although the command
+  reference listed them as supported there. They now use the installed
+  runtime and `/etc/circuitbreaker/.env`, and a native restore restarts
+  `circuitbreaker.target`.
+- Re-running the installer after a fresh install stopped part-way now resumes
+  that install and keeps the secrets it had already generated. Before, the
+  `.env` it left behind made the re-run treat the host as an upgrade, and the
+  upgrade's backup then failed against a database that had never been
+  created. The installer counts a host as installed only if it has an install
+  identity, a running backend, or an `.env` beside an initialised database. A
+  fresh install that fails now tells you to re-run the installer, not to
+  restore a release.
+- Native installs on Debian and Ubuntu that fetch PostgreSQL 15 from the
+  PostgreSQL project's apt repository work on minimal images without
+  `lsb_release`: the release codename comes from `/etc/os-release`. The
+  installer also checks that apt.postgresql.org serves that release before
+  adding it, and says so if it does not, or if `postgresql-15` fails to
+  install. Before, apt failed later with an error that named neither cause.
+- `install.sh --version v0.4.5` works. A leading `v` was kept, so the
+  installer asked GitHub for the tag `vv0.4.5` and found nothing.
+- The node hover card opens again after its close button has been used.
+  Closing the card pauses hover for the node underneath until the pointer
+  leaves it. Safari and React could skip that leave event, so the node's card
+  never opened again. The pause now ends on the first pointer movement
+  anywhere off that node.
+- `cb info` run without root no longer prints "Permission denied". `cb` now
+  reads `/etc/circuitbreaker/.env` only when it is readable.
+- In the Proxmox helper, a release that cannot be downloaded or verified no
+  longer leaves an empty, started container behind. A second install from the
+  menu would have orphaned that container. The helper now fetches and checks
+  the release before it creates the container.
+
 ### Changed
 
 - Installs, upgrades, removals and the mutating `cb` commands now take one
   host-wide lifecycle lock, so two of them can no longer run over each other.
   The mutating commands are `restart`, `update`, `backup`, `restore`,
-  `vault-recover` and `migrate upgrade`. A second one stops with exit code 10
-  and changes nothing; read-only commands are unaffected.
+  `vault-recover` and `migrate upgrade`. The scripts that run when a deb, rpm
+  or apk package is installed or upgraded take the same lock. A second
+  operation stops with exit code 10 and changes nothing; read-only commands
+  are unaffected.
 - The lock is root-only. The native, binary and package paths, the native
   installer and `uninstall.sh` of a native or packaged install re-run
   themselves through `sudo` before taking it; piped, use
   `curl ... | sudo bash`. Without `sudo`, or when `sudo` refuses, they stop
-  with exit code 6 before changing anything.
+  with exit code 6 before changing anything. When `cb backup` runs that way,
+  the backup files it creates are handed back to you.
 - Docker mode never uses `sudo`: `install.sh --docker`, a Docker-only
   `uninstall.sh` and the docker and compose branches of the mutating `cb`
   commands run as the invoking user, as before. Run as root they take the
@@ -42,6 +93,96 @@ next round.
   `CB_VERBOSE` and `CB_ASSUME_YES`, and nothing else, so a variable such as
   `CB_BINARY` or `CB_CONFIG_DIR` left in a shell no longer steers a root run.
   This also works under a sudoers rule without `SETENV`.
+- Interrupting an install, upgrade, removal or mutating `cb` command with
+  Ctrl-C or a TERM signal works the same as before until it changes anything.
+  After that, it waits for the running step to finish, keeps the lock until
+  then, and prints one line saying changes had already begun, with a pointer
+  to `cb doctor`.
+- A native upgrade (`install.sh --upgrade`, Proxmox LXC included) can now be
+  undone. Before it replaces anything, it takes a full snapshot of the
+  database, uploads, configuration and vault key into
+  `/var/backups/circuitbreaker`, and it prints where the snapshot is and the
+  `cb restore` command for it. It then moves the running release aside to
+  `/opt/circuitbreaker.previous` and installs the new one. Then it checks that
+  `/readyz` answers and that the installed version is the one requested. If
+  that check fails, the installer puts the previous release back and restarts
+  it. Restoring the database is left to you, with the command it printed.
+  Upgrades from 0.4.6 work: the snapshot is taken with the new release's
+  `cb`, because older ones cannot. This was checked with real 0.4.6 to 0.4.7
+  upgrades in an Ubuntu 22.04 systemd container and in a Proxmox LXC.
+- Each upgrade keeps one previous release tree, and one failed tree when an
+  upgrade is reverted, in place of a new tree per run; uninstalling removes
+  them. Snapshots in `/var/backups/circuitbreaker` are not pruned. Each
+  upgrade adds a full one, so delete the old ones you no longer need. An
+  uninstall keeps them, and `--purge` deletes them with the rest of the data.
+- The database dump a native upgrade takes before migrating is now always
+  attempted, and its failure stops the upgrade with exit code 7. Before, it
+  was skipped with a warning whenever PgBouncer was not running. The backup
+  directory is now private (mode 0700).
+- `install.sh --local-bundle` refuses a tarball that has neither `SHA256SUMS`
+  nor `SHA256SUMS.sig` beside it. It used to warn and install it anyway. To
+  install a bundle you built yourself, pass `--skip-checksum`. That flag has
+  existed since v0.2.8, so scripts can add it without checking the installer
+  version.
+- The Proxmox helper needs Proxmox VE 8 or later to install v0.4.7 and later.
+  It now verifies the release signature on the Proxmox host, which needs
+  OpenSSL 3. Proxmox VE 7 ships OpenSSL 1.1.1 and can install only the
+  pinned, unsigned v0.4.6. The helper always installs the newest release, so
+  Proxmox VE 7 hosts can no longer use it once 0.4.7 is out.
+- The installer's progress line shows the current phase, its elapsed time and,
+  where it can be measured, how far through that phase it is. It no longer
+  shows an overall percentage or an estimated time left. It honours
+  `NO_COLOR`, and `CB_REDUCED_MOTION=1` turns motion off.
+- `cb help` groups commands by task. `cb status`, `cb doctor`, `cb resources`
+  and `cb logs` are restyled. `cb status` lists the application's services
+  apart from the shared nginx and shows when each became active. `cb doctor`
+  counts passed, failed, warning and skipped checks, including the
+  authenticated checks it skipped. Piped output, `NO_COLOR` and `--json`
+  results are unchanged.
+- The web app's styling now builds with Tailwind 4, in place of Tailwind 3.
+  Nothing should look different: the browser suite's visual baselines did not
+  change. If a screen looks wrong after upgrading, please report it.
+
+### Added
+
+- An npm installer CLI, `@blkleg/circuitbreaker`, which provides the
+  `circuitbreaker` command. This release builds it and attaches the tarball,
+  `blkleg-circuitbreaker-0.4.7.tgz`, to the GitHub release, covered by the
+  signed `SHA256SUMS` and its own build-provenance attestation. It is not
+  published to the npm registry: npm is not an installation channel until the
+  CLI has passed its release gates, and a later release will publish it. It needs Linux and Node.js 22
+  (22.22.2 or later), 24 (24.15.0 or later) or 26 and later; Node 23 and 25
+  are not supported. It has one runtime dependency, Sigstore, at a pinned
+  version, and no install scripts. The user guide does not list it as an
+  installation path. `install.sh`, the packages and the mono image remain the
+  supported ways to install.
+- `circuitbreaker install --plan` downloads a release, checks it and reports
+  the result without changing the host or asking for `sudo`. It runs four
+  checks: the Ed25519 signature over `SHA256SUMS`, against a key list that
+  ships in the package; the bundle's SHA-256; build provenance, verified with
+  Sigstore against the project's release workflow on `main`; and a scan of
+  the archive for paths that escape it, unsafe links and unsafe file types.
+  The scan runs before anything is extracted. Downloads go to a private cache,
+  resume where an interrupted one stopped, and honour `HTTPS_PROXY`. A
+  download that fails a check is discarded. The CLI accepts only a release
+  for the version it asked for.
+- On a native install, `circuitbreaker install --yes` and `update --yes` apply
+  a verified release through the same native installer. `update --check` only
+  reports whether a newer release exists. `rollback` returns to the release a
+  native update replaced and keeps your current data unless you add
+  `--restore-data`. `uninstall` keeps data by default; `uninstall --purge`
+  needs the typed phrase `DELETE circuitbreaker` or `--yes`. `history` lists
+  the installs, updates and rollbacks recorded on the host and changes
+  nothing. Other commands (`status`, `doctor`, `logs`, `backup`, `restore` and
+  the rest) are passed to the native `cb` unchanged. Docker and package
+  installs keep their own update tools. Root is requested only at the step
+  that needs it.
+- For scripts, `--json` prints one final JSON result on stdout. For `install`,
+  `update` and `rollback`, `--events=jsonl` writes progress events to stderr
+  and nothing else there. Exit codes are stable. In a terminal, progress shows
+  measured phases and a download bar; `NO_COLOR`, `--no-animation` and
+  `CB_REDUCED_MOTION=1` are honoured. Narrow terminals and terminals without
+  Unicode get a plainer layout.
 
 ### Security
 
@@ -56,6 +197,69 @@ next round.
   own path at the top level, where bash leaves it empty for a piped script.
   The shared re-run (`cb_lifecycle_elevate`) re-runs only the canonical path
   of the file bash is executing, and refuses anything else with exit code 6.
+- Release bundles are signed. Every release from 0.4.7 on publishes
+  `SHA256SUMS.sig`, an Ed25519 signature over `SHA256SUMS`, and GitHub
+  build-provenance attestations for its bundles. `SHA256SUMS` now covers
+  every other release file, the SBOMs included. `install.sh` checks the
+  signature before it trusts any hash, for downloads and for `--local-bundle`
+  when both files sit beside the tarball. The check needs OpenSSL 3; on a
+  host with an older OpenSSL, upgrade it or pass the new `--skip-signature`,
+  which still checks the SHA-256.
+- Without `--version`, the installer accepts an unsigned release only if it
+  is byte-for-byte the published v0.4.6 bundle, pinned by SHA-256, so a forged
+  release tagged `v0.4.6` is refused. An older release needs an explicit
+  `--version X.Y.Z`. A release whose tag differs from the requested version is
+  refused before anything is downloaded. Build provenance is checked when
+  the GitHub CLI (`gh`) is installed and logged in. It is never checked
+  air-gapped, and a failed check never blocks the install. Downloads are
+  unpacked in a private directory.
+- The Proxmox helper verifies the release on the Proxmox host before anything
+  reaches the container. It used to download only the tarball and run the
+  installer from inside it, so every Proxmox container was installed
+  unverified, and a tampered tarball would have brought its own installer.
+  It now downloads `SHA256SUMS` and `SHA256SUMS.sig` too, checks the
+  signature and the hash without network calls, and passes all three files
+  to the installer in the container. A release that fails is refused before
+  the container is created.
+- `install.sh`, `deploy/setup.sh` and `cb` turn shell tracing (`bash -x`) off
+  unless `CB_ALLOW_XTRACE=1` is set. A trace printed the vault key, the JWT
+  secret and every service password into the terminal and any log capturing
+  it.
+- Updated `pyasn1` to 0.6.5 for four high-severity advisories
+  (GHSA-mm57-4v3p-rchx, GHSA-2qm8-x737-gmw5, GHSA-9m75-vc3g-4x39,
+  GHSA-fm9c-5rcf-2q5p): decoding crafted ASN.1 could use quadratic or
+  excessive CPU. `pyasn1` is used by the SNMP stack that SNMP discovery and
+  polling rely on.
+- Updated backend dependencies for newly published advisories: Pillow 13.0.0,
+  dnspython 2.9.1, and certifi 2026.10.23, which drops the compromised emSign
+  root certificates.
+- The agent is built with Go 1.26.10 and `golang.org/x/net` 0.60.0 (with
+  `x/crypto` 0.57.0 and `x/sys` 0.48.0), for ten standard-library
+  vulnerabilities in `net/http`, `crypto/tls`, `crypto/x509` and
+  `net/textproto` that its code can reach. Update your agents along with the
+  server.
+- Updated frontend dependencies: `dompurify` 3.4.17 and `follow-redirects`
+  1.16.2, which ship in the web app, and several build-time packages,
+  including Vite 7.3.7 and `undici`. Moving to Tailwind 4 and lint-staged 17
+  removes `braces`, for which every version carries a high-severity advisory,
+  from the build tooling.
+
+### Documentation
+
+- The security verification checklist has a release-signature section. It
+  covers what `install.sh` checks, when it accepts an unsigned release, and
+  how to verify `SHA256SUMS.sig` by hand with OpenSSL 3. `SECURITY.md` says
+  `SHA256SUMS` now covers the SBOMs.
+- The air-gapped upgrade steps say to copy `SHA256SUMS.sig` along with the
+  tarball and `SHA256SUMS`, when the release has one, and to keep the
+  tarball's release file name.
+- The Proxmox LXC guide requires Proxmox VE 8 or later for v0.4.7 and later.
+  The uninstall guide covers the `sudo` re-run and the lifecycle lock, and its
+  piped example uses `| sudo bash`.
+- The `cb` command reference describes the new terminal output.
+- The roadmap lists `cb-agent` on Windows (starting after v0.5.0) and on Apple
+  silicon Macs, both as previews. The server stays Linux-only.
+- A release bundle signing runbook for maintainers, in `docs/release/`.
 
 ## [0.4.6] — 2026-09-30
 
