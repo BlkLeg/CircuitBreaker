@@ -147,6 +147,62 @@ wait_for_ready() {
   return 1
 }
 
+# A PyInstaller-era starting state on a host without /usr/bin/python3.
+#
+# install.sh's lifecycle journal needs a trusted Python before its first
+# change: the host's /usr/bin/python3, or the bundle's own python/bin/python3.
+# A previous (onefile) bundle has no runtime of its own, so on debian:12,
+# fedora:44 and archlinux — none of which ship python3 — today's install.sh
+# cannot lay down the starting state at all. A real 0.4.6 host never met that:
+# its installer had no journal. So python3 is lent to the previous install
+# only, and taken back before the upgrade, which then runs on a host with no
+# python3 — the case the bundle-interpreter fallback exists for. If something
+# the previous install put on the host depends on python3, a real host would
+# keep it too, so it stays, and the log says which case this run tested.
+JOURNEY_LENT_PYTHON=false
+
+previous_bundle_has_runtime() {
+  tar -tzf "$PREVIOUS" | grep -qE '^(\./)?python/bin/python3$'
+}
+
+lend_python3() {
+  echo "this host has no /usr/bin/python3 and the previous bundle carries no runtime; lending python3 to the previous install"
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 >/dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q python3 >/dev/null
+  elif command -v pacman >/dev/null 2>&1; then
+    pacman -S --noconfirm --needed python >/dev/null
+  else
+    fail "no package manager to lend python3 with"
+  fi
+  [ -x /usr/bin/python3 ] || fail "lending python3 did not produce /usr/bin/python3"
+  JOURNEY_LENT_PYTHON=true
+}
+
+# Removes python3 when nothing else needs it. Returns 1, changing nothing, when
+# something the previous install brought in depends on it.
+reclaim_python3() {
+  if command -v apt-get >/dev/null 2>&1; then
+    # Simulate first: apt would remove every dependent along with python3.
+    # Captured, not piped into `grep -q`: an early grep exit would SIGPIPE the
+    # pipeline under pipefail and read as "nothing else depends on it".
+    local removals others
+    removals="$(apt-get -s remove python3 python3-minimal 2>/dev/null | awk '/^Remv /{print $2}')" || return 1
+    others="$(printf '%s\n' "$removals" \
+      | grep -vE '^(python3|python3-minimal|python3\.[0-9]+|python3\.[0-9]+-minimal|libpython3\.[0-9]+.*)?$' || true)"
+    [ -z "$others" ] || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq python3 python3-minimal >/dev/null
+  elif command -v dnf >/dev/null 2>&1; then
+    rpm -e --test python3 >/dev/null 2>&1 || return 1
+    dnf remove -y -q python3 >/dev/null
+  elif command -v pacman >/dev/null 2>&1; then
+    # pacman refuses, and removes nothing, when another package requires python.
+    pacman -Rns --noconfirm python >/dev/null 2>&1 || return 1
+  fi
+  [ ! -e /usr/bin/python3 ] || fail "python3 was removed but /usr/bin/python3 is still there"
+}
+
 if [ -n "$PREVIOUS" ]; then
   # ───────────────────────────────────────────────────────────────────────────
   section "Install the PREVIOUS release first (upgrade leg)"
@@ -154,6 +210,9 @@ if [ -n "$PREVIOUS" ]; then
   # binary at /opt/circuitbreaker/bin/circuit-breaker, replaced in place by the
   # runtime tree. Everything the fresh-install path asserts below is asserted
   # again after the upgrade; this block only establishes the starting state.
+  if [ ! -x /usr/bin/python3 ] && ! previous_bundle_has_runtime; then
+    lend_python3
+  fi
   set +e
   # --skip-checksum: build output has no SHA256SUMS beside it, and an
   # unverified local bundle is refused unless that is asked for by name.
@@ -174,6 +233,13 @@ if [ -n "$PREVIOUS" ]; then
   esac
   [ ! -d /opt/circuitbreaker/python ] || fail "the previous bundle already carries a runtime tree; this is not an upgrade test"
   PREVIOUS_VERSION="$(cat /opt/circuitbreaker/share/VERSION)"
+  if [ "$JOURNEY_LENT_PYTHON" = true ]; then
+    if reclaim_python3; then
+      echo "python3 removed again: the upgrade runs on a host with no /usr/bin/python3 (bundle interpreter fallback)"
+    else
+      echo "python3 kept: the previous install brought in a package that depends on it, as it would on a real host"
+    fi
+  fi
   echo "previous release ${PREVIOUS_VERSION} installed and ready; upgrading"
 fi
 

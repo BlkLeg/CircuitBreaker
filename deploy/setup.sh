@@ -444,6 +444,23 @@ LIMITS
 # /proc/meminfo is part of procfs, present on every Linux the installer supports,
 # and needs no package. Falls back to 0 rather than empty so the numeric
 # comparisons at the call sites can never be fed a non-integer.
+# Run shell command $2 as service account $1 (postgres), from root.
+#
+# runuser, not su. su runs the PAM account stack, which refuses an expired
+# account, and systemd 262's sysusers creates system accounts with an expiry of
+# 1970-01-02 so they can never log in (Arch: `postgres:!*:20763:::::1:`).
+# `su postgres` there fails with "User account has expired" and initdb never
+# runs. runuser is su for root switching to a service account: same -s/-c
+# interface, no account check. util-linux ships it on every supported
+# distribution; su remains the fallback for a host that has only busybox.
+cb_run_as() {
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -s /bin/sh "$1" -c "$2"
+  else
+    su -s /bin/sh "$1" -c "$2"
+  fi
+}
+
 cb_total_ram_mb() {
   local kb=""
   if [[ -r /proc/meminfo ]]; then
@@ -719,7 +736,7 @@ stage3_configure_postgres() {
   # Initialize database
   if [[ ! -f "${CB_DATA_DIR}/postgres/PG_VERSION" ]]; then
     cb_step "Initializing PostgreSQL database"
-    if ! su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres --encoding=UTF8 --locale=C" >> "$LOG_FILE" 2>&1; then
+    if ! cb_run_as postgres "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres --encoding=UTF8 --locale=C" >> "$LOG_FILE" 2>&1; then
       echo ""
       echo "  Last 20 lines from install log:"
       tail -20 "$LOG_FILE" | sed 's/^/  /'
@@ -770,9 +787,9 @@ stage3_configure_postgres() {
   
   # Create user and database
   cb_step "Creating database user and database"
-  su -s /bin/sh postgres -c "psql -c \"CREATE USER breaker WITH PASSWORD '${CB_DB_PASSWORD}';\"" >> "$LOG_FILE" 2>&1 || true
-  su -s /bin/sh postgres -c "psql -c \"CREATE DATABASE circuitbreaker OWNER breaker;\"" >> "$LOG_FILE" 2>&1 || true
-  su -s /bin/sh postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE circuitbreaker TO breaker;\"" >> "$LOG_FILE" 2>&1 || true
+  cb_run_as postgres "psql -c \"CREATE USER breaker WITH PASSWORD '${CB_DB_PASSWORD}';\"" >> "$LOG_FILE" 2>&1 || true
+  cb_run_as postgres "psql -c \"CREATE DATABASE circuitbreaker OWNER breaker;\"" >> "$LOG_FILE" 2>&1 || true
+  cb_run_as postgres "psql -c \"GRANT ALL PRIVILEGES ON DATABASE circuitbreaker TO breaker;\"" >> "$LOG_FILE" 2>&1 || true
   cb_ok "Database user and database created"
   
   # Verify connection
