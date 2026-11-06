@@ -51,6 +51,20 @@ dependencies for published advisories.
   installer also checks that apt.postgresql.org serves that release before
   adding it, and says so if it does not, or if `postgresql-15` fails to
   install. Before, apt failed later with an error that named neither cause.
+- Fresh native installs on Arch Linux no longer stop at "Preparing database"
+  with "su: User account has expired". systemd 262 creates the `postgres`
+  system account with an expiry date so that nobody can log in as it, and
+  `su` refuses an expired account. The installer and `cb restore` now switch
+  to the PostgreSQL account with `runuser`, which root can use on such an
+  account, and use `su` only where `runuser` is missing. Other distributions
+  will create accounts the same way as they move to systemd 262.
+- A native upgrade works on a host with no `/usr/bin/python3`, such as a
+  minimal Debian or Arch install. The installer's lifecycle journal runs on
+  Python, and on such a host the upgrade stopped with exit code 7 before
+  changing anything. Fresh installs already fell back to the verified Python
+  inside the release bundle. Upgrades now do the same. An upgrade that is
+  reverted also removes the bundle it unpacked, which used to be left in a
+  temporary directory.
 - `install.sh --version v0.4.5` works. A leading `v` was kept, so the
   installer asked GitHub for the tag `vv0.4.5` and found nothing.
 - The node hover card opens again after its close button has been used.
@@ -232,7 +246,8 @@ dependencies for published advisories.
   polling rely on.
 - Updated backend dependencies for newly published advisories: Pillow 13.0.0,
   dnspython 2.9.1, and certifi 2026.10.23, which drops the compromised emSign
-  root certificates.
+  root certificates. Mako, which Alembic uses to render migration scripts, is
+  updated to 1.4.3 for CVE-2026-102991, a medium-severity advisory.
 - The agent is built with Go 1.26.10 and `golang.org/x/net` 0.60.0 (with
   `x/crypto` 0.57.0 and `x/sys` 0.48.0), for ten standard-library
   vulnerabilities in `net/http`, `crypto/tls`, `crypto/x509` and
