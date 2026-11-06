@@ -106,7 +106,14 @@ dev = [
     # the marker so `poetry lock` can resolve without pretending pyinstaller installs on 3.15+.
     "pyinstaller>=6.0.0; python_version < \"3.15\"",
     "moto[s3]>=5.2.3",
-    "pytest>=9.0.3",
+    # Ceiling: pytest 9.2 deprecates `_pytest.python.CallSpec2`, and anyio
+    # below 4.15.1 imports it unconditionally from its pytest plugin. With
+    # filterwarnings=error that PytestRemovedIn10Warning stops the plugin
+    # loading, so pytest cannot start at all. The anyio ceiling above keeps us
+    # on 4.14.x, so pytest has to stay below 9.2 with it. Remove this bound
+    # together with anyio's: test_pytest_ceiling_tracks_the_anyio_ceiling
+    # fails if one moves without the other.
+    "pytest>=9.0.3,<9.2",
     "pytest-cov>=7.1.0",
     "pytest-asyncio>=1.4.0",
     "pytest-xdist>=3.6",
