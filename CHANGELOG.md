@@ -248,11 +248,12 @@ dependencies for published advisories.
   dnspython 2.9.1, and certifi 2026.10.23, which drops the compromised emSign
   root certificates. Mako, which Alembic uses to render migration scripts, is
   updated to 1.4.3 for CVE-2026-102991, a medium-severity advisory.
-- The agent is built with Go 1.26.10 and `golang.org/x/net` 0.60.0 (with
-  `x/crypto` 0.57.0 and `x/sys` 0.48.0), for ten standard-library
+- The agent is built with Go 1.26.10 and `golang.org/x/net` 0.62.0 (with
+  `x/crypto` 0.58.0 and `x/sys` 0.49.0), for ten standard-library
   vulnerabilities in `net/http`, `crypto/tls`, `crypto/x509` and
-  `net/textproto` that its code can reach. Update your agents along with the
-  server.
+  `net/textproto` that its code can reach. `x/net` 0.62.0 also fixes two
+  advisories in its `html` package (CVE-2026-78661, CVE-2026-97045), which
+  the agent does not use. Update your agents along with the server.
 - Updated frontend dependencies: `dompurify` 3.4.17 and `follow-redirects`
   1.16.2, which ship in the web app, and several build-time packages,
   including Vite 7.3.7 and `undici`. Moving to Tailwind 4 and lint-staged 17
