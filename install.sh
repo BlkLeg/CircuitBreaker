@@ -1532,9 +1532,13 @@ _cb_lifecycle_python_is_new_enough() {
 # Resolve the trusted interpreter for this transaction, before its first
 # mutation (ruling R13): /usr/bin/python3 when root owns it and the
 # directories above it, nobody else can write them, and it is 3.9 or newer;
-# otherwise, for a fresh install only, the verified staged bundle's
-# python/bin/python3, which the caller passes as $1. Sets _CB_LIFECYCLE_PYTHON.
-# Returns 0, or 7 before anything has been changed.
+# otherwise the verified staged bundle's python/bin/python3, which the caller
+# passes as $1. R13 first allowed that fallback for a fresh install only, which
+# left every native host without a system python3 (minimal Debian 12, Fedora
+# 41+, Arch) unable to install or update at all. It now covers updates too:
+# the bundle is verified before its interpreter is trusted, and the caller
+# keeps it in place until the transaction's last checkpoint. Sets
+# _CB_LIFECYCLE_PYTHON. Returns 0, or 7 before anything has been changed.
 cb_lifecycle_python() {
   local fresh="${1:-}"
   _cb_lifecycle_forget_exported_state
@@ -2401,6 +2405,14 @@ print("CIRCUITBREAKER_RESULT="+json.dumps(r))' "$CB_LIFECYCLE_OPERATION" "${CB_L
   return "$status"
 }
 
+# Private download and extraction directory (see stage0_download_bundle).
+_cb_remove_private_tmp() {
+  if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
+    rm -rf -- "$CB_PRIVATE_TMP"
+    CB_PRIVATE_TMP=""
+  fi
+}
+
 _cb_on_exit() {
   local status=$?
   trap - ERR
@@ -2417,15 +2429,14 @@ _cb_on_exit() {
     status="$recovery_status"
     _CB_EXIT_REPORTED=true
     cb_install_result "$status" || status=$?
+    _cb_remove_private_tmp
     cb_ui_teardown
     exit "$status"
   fi
   cb_install_result "$status" || { status=$?; _CB_EXIT_REPORTED=true; }
-  # Private download and extraction directory (see stage0_download_bundle).
-  if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
-    rm -rf -- "$CB_PRIVATE_TMP"
-    CB_PRIVATE_TMP=""
-  fi
+  # After cb_install_result: its final checkpoint may still run the bundle's
+  # interpreter from inside this directory (see cb_lifecycle_python in main).
+  _cb_remove_private_tmp
 
   if [[ "${status}" -eq 0 ]] || [[ "${_CB_EXIT_REPORTED:-false}" == "true" ]]; then
     if declare -f cb_ui_teardown >/dev/null 2>&1; then
@@ -3494,11 +3505,13 @@ stage0_install_bundle() {
 
   # Cleanup: the private directory holds the extracted tree and, for a
   # download, the tarball and its SHA256SUMS(.sig). A --local-bundle tarball
-  # lives outside it and is left where the operator put it.
-  if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
-    rm -rf -- "$CB_PRIVATE_TMP"
-    CB_PRIVATE_TMP=""
-  fi
+  # lives outside it and is left where the operator put it. On a host without
+  # a system python3 the lifecycle journal runs the bundle's interpreter from
+  # in here until the last checkpoint, so _cb_on_exit removes it instead.
+  case "${_CB_LIFECYCLE_PYTHON:-}" in
+    "${CB_PRIVATE_TMP:-/nonexistent}"/*) ;;
+    *) _cb_remove_private_tmp ;;
+  esac
   CB_BUNDLE_DIR=""
 }
 
@@ -3752,6 +3765,15 @@ main() {
   local expected_version
   expected_version="$(cat "${CB_BUNDLE_DIR}/share/VERSION")"
   CB_EXPECTED_VERSION="$expected_version"
+  # The lifecycle journal needs a trusted Python, resolved before the first
+  # change (ruling R13). The system python3 comes first; a host without one
+  # falls back to the verified bundle's own runtime, which is why
+  # stage0_install_bundle keeps CB_PRIVATE_TMP while that interpreter is in use.
+  local bundle_python=""
+  if [[ -x "${CB_BUNDLE_DIR}/python/bin/python3" ]]; then
+    bundle_python="${CB_BUNDLE_DIR}/python/bin/python3"
+  fi
+  cb_lifecycle_python "$bundle_python" || exit $?
   cb_lifecycle_install_control_plane "$CB_BUNDLE_DIR/deploy" || exit $?
   local action=install source_version=""
   if [[ "$UPGRADE_MODE" == true ]]; then

@@ -794,9 +794,13 @@ _cb_lifecycle_python_is_new_enough() {
 # Resolve the trusted interpreter for this transaction, before its first
 # mutation (ruling R13): /usr/bin/python3 when root owns it and the
 # directories above it, nobody else can write them, and it is 3.9 or newer;
-# otherwise, for a fresh install only, the verified staged bundle's
-# python/bin/python3, which the caller passes as $1. Sets _CB_LIFECYCLE_PYTHON.
-# Returns 0, or 7 before anything has been changed.
+# otherwise the verified staged bundle's python/bin/python3, which the caller
+# passes as $1. R13 first allowed that fallback for a fresh install only, which
+# left every native host without a system python3 (minimal Debian 12, Fedora
+# 41+, Arch) unable to install or update at all. It now covers updates too:
+# the bundle is verified before its interpreter is trusted, and the caller
+# keeps it in place until the transaction's last checkpoint. Sets
+# _CB_LIFECYCLE_PYTHON. Returns 0, or 7 before anything has been changed.
 cb_lifecycle_python() {
   local fresh="${1:-}"
   _cb_lifecycle_forget_exported_state

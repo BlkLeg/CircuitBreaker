@@ -90,6 +90,10 @@ collect_evidence() {
   { journalctl -u 'circuitbreaker-*' --no-pager -n 400 || true; } > "$EVIDENCE/journal.txt" 2>&1
   { systemctl list-unit-files 'circuitbreaker*' --no-pager || true; } > "$EVIDENCE/unit-files.txt" 2>&1
   cp /var/lib/circuitbreaker/logs/install.log "$EVIDENCE/install.log" 2>/dev/null || true
+  # install.sh writes here until stage0_preflight hands over to install.log, so
+  # a stop before that point (a lifecycle preflight refusal, exit 7) is only
+  # explained in this file: the screen shows the phase, not the reason.
+  cp /tmp/cb-bootstrap.log "$EVIDENCE/cb-bootstrap.log" 2>/dev/null || true
 
   # Rendered configuration, with every value blanked. The SHAPE is the
   # evidence — which keys exist, which paths a unit names, which binary an
@@ -109,7 +113,11 @@ fail() {
   printf '::error::%s\n' "$1" >&2
   section "Diagnostics"
   collect_evidence
-  tail -n 200 "$EVIDENCE/install.log" 2>/dev/null || true
+  if [ -s "$EVIDENCE/install.log" ]; then
+    tail -n 200 "$EVIDENCE/install.log"
+  else
+    tail -n 200 "$EVIDENCE/cb-bootstrap.log" 2>/dev/null || true
+  fi
   cat "$EVIDENCE/systemd-status.txt" 2>/dev/null || true
   tail -n 200 "$EVIDENCE/journal.txt" 2>/dev/null || true
   echo "--- rendered configuration (values redacted) ---"
