@@ -15,14 +15,14 @@ function KnowledgeBasePage({ embedded = false }) {
 
   return (
     <div>
-      {!embedded && <h1 className="tw-text-xl tw-mb-1">Knowledge Base</h1>}
-      <p className="tw-text-sm tw-opacity-70 tw-mb-4">
+      {!embedded && <h1 className="tw:text-xl tw:mb-1">Knowledge Base</h1>}
+      <p className="tw:text-sm tw:opacity-70 tw:mb-4">
         Vendor and device-type hints that discovery applies when naming devices. Entries marked{' '}
         <em>learned</em> were inferred from scans; <em>manual</em> entries were added here. Highest
         seen-count first.
       </p>
 
-      <div role="tablist" aria-label="Knowledge base tables" className="tw-flex tw-gap-2 tw-mb-4">
+      <div role="tablist" aria-label="Knowledge base tables" className="tw:flex tw:gap-2 tw:mb-4">
         {KB_TABS.map((tab) => (
           <button
             key={tab.key}

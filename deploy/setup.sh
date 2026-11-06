@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# `bash -x` would write every secret these scripts handle into the trace: the
+# vault key, JWT secret and database, Redis and NATS credentials from
+# /etc/circuitbreaker/.env. Tracing is switched off unless it is asked for by name.
+if [[ $- == *x* && "${CB_ALLOW_XTRACE:-}" != 1 ]]; then
+  { set +x; } 2>/dev/null
+  echo "Shell tracing (bash -x) is off: it would print the vault key and every service password. Use --verbose, or set CB_ALLOW_XTRACE=1 to trace anyway and treat the output as secret." >&2
+fi
+
 # install.sh exports these before sourcing this file; they are repeated here so
 # that the ~30 package operations below cannot block on an invisible prompt if
 # this file is ever sourced by anything else. See the comment in install.sh for
@@ -152,6 +160,7 @@ EOF
 
 
 stage1_bootstrap() {
+  cb_lifecycle_mark_mutation
   cb_section "User & Directory Setup"
 
   # Create breaker user
@@ -435,6 +444,23 @@ LIMITS
 # /proc/meminfo is part of procfs, present on every Linux the installer supports,
 # and needs no package. Falls back to 0 rather than empty so the numeric
 # comparisons at the call sites can never be fed a non-integer.
+# Run shell command $2 as service account $1 (postgres), from root.
+#
+# runuser, not su. su runs the PAM account stack, which refuses an expired
+# account, and systemd 262's sysusers creates system accounts with an expiry of
+# 1970-01-02 so they can never log in (Arch: `postgres:!*:20763:::::1:`).
+# `su postgres` there fails with "User account has expired" and initdb never
+# runs. runuser is su for root switching to a service account: same -s/-c
+# interface, no account check. util-linux ships it on every supported
+# distribution; su remains the fallback for a host that has only busybox.
+cb_run_as() {
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -s /bin/sh "$1" -c "$2"
+  else
+    su -s /bin/sh "$1" -c "$2"
+  fi
+}
+
 cb_total_ram_mb() {
   local kb=""
   if [[ -r /proc/meminfo ]]; then
@@ -487,7 +513,39 @@ cb_resolve_service_binaries() {
   # answers than calling it before.
 }
 
+# Hold the host lifecycle lock (deploy/lib/lifecycle.sh) for the stages below,
+# every one of which changes the host. install.sh takes it before it sources
+# this file, so here it nests in the same shell (one more level, no second
+# lock); anything else that sources this file and runs a stage takes it
+# afresh, and stops with the library's code (10 while another lifecycle
+# operation holds it) before its first change. The library comes from the
+# bundle this file belongs to unless the caller already loaded it (install.sh
+# inlines it). Contract: specs/install/lifecycle-contract.md §11.
+cb_setup_take_lifecycle_lock() {
+  local rc=0 lib
+  if ! declare -F cb_lifecycle_lock_acquire >/dev/null 2>&1; then
+    lib="$(dirname -- "${BASH_SOURCE[0]}")/lib/lifecycle.sh"
+    if [[ ! -f "$lib" ]]; then
+      echo "deploy/setup.sh: the lifecycle library is missing ($lib); the bundle is incomplete" >&2
+      _CB_EXIT_REPORTED=true
+      exit 7
+    fi
+    # shellcheck source=lib/lifecycle.sh
+    source "$lib"
+  fi
+  cb_lifecycle_lock_acquire "setup.sh" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    # The library has said why; install.sh's exit report must not restate it
+    # as an unexpected failure, and the exit code is the contract's.
+    _CB_EXIT_REPORTED=true
+    exit "$rc"
+  fi
+  # Arming again under install.sh keeps its mark; on its own this is the first arm.
+  cb_lifecycle_arm_interrupt
+}
+
 stage0_preflight() {
+  cb_setup_take_lifecycle_lock
   cb_header
   cb_section "Pre-flight Checks"
 
@@ -574,9 +632,18 @@ stage0_preflight() {
 
   # Existing install detection
   cb_step "Checking for existing installation"
-  if systemctl is-active circuitbreaker-backend &>/dev/null || [[ -f /etc/circuitbreaker/.env ]]; then
+  # Upgrade only over a completed install: its identity (written last), a
+  # running backend, or an .env beside an initialised database (installs from
+  # before the identity existed). A fresh install that stopped part-way has an
+  # .env but none of these, so a re-run resumes it as a fresh install; that
+  # path keeps existing secrets and reuses an existing database.
+  if [[ -f /etc/circuitbreaker/install-identity.json ]] \
+    || systemctl is-active circuitbreaker-backend &>/dev/null \
+    || { [[ -f /etc/circuitbreaker/.env ]] && [[ -f "${CB_DATA_DIR:-/var/lib/circuitbreaker}/postgres/PG_VERSION" ]]; }; then
     UPGRADE_MODE=true
     cb_ok "Existing installation detected — upgrade mode"
+  elif [[ -f /etc/circuitbreaker/.env ]]; then
+    cb_ok "Unfinished fresh install found — resuming it"
   else
     cb_ok "No existing installation — fresh install"
   fi
@@ -669,7 +736,7 @@ stage3_configure_postgres() {
   # Initialize database
   if [[ ! -f "${CB_DATA_DIR}/postgres/PG_VERSION" ]]; then
     cb_step "Initializing PostgreSQL database"
-    if ! su -s /bin/sh postgres -c "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres --encoding=UTF8 --locale=C" >> "$LOG_FILE" 2>&1; then
+    if ! cb_run_as postgres "$PG_BIN_DIR/initdb -D ${CB_DATA_DIR}/postgres --auth-local=peer --auth-host=md5 -U postgres --encoding=UTF8 --locale=C" >> "$LOG_FILE" 2>&1; then
       echo ""
       echo "  Last 20 lines from install log:"
       tail -20 "$LOG_FILE" | sed 's/^/  /'
@@ -720,9 +787,9 @@ stage3_configure_postgres() {
   
   # Create user and database
   cb_step "Creating database user and database"
-  su -s /bin/sh postgres -c "psql -c \"CREATE USER breaker WITH PASSWORD '${CB_DB_PASSWORD}';\"" >> "$LOG_FILE" 2>&1 || true
-  su -s /bin/sh postgres -c "psql -c \"CREATE DATABASE circuitbreaker OWNER breaker;\"" >> "$LOG_FILE" 2>&1 || true
-  su -s /bin/sh postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE circuitbreaker TO breaker;\"" >> "$LOG_FILE" 2>&1 || true
+  cb_run_as postgres "psql -c \"CREATE USER breaker WITH PASSWORD '${CB_DB_PASSWORD}';\"" >> "$LOG_FILE" 2>&1 || true
+  cb_run_as postgres "psql -c \"CREATE DATABASE circuitbreaker OWNER breaker;\"" >> "$LOG_FILE" 2>&1 || true
+  cb_run_as postgres "psql -c \"GRANT ALL PRIVILEGES ON DATABASE circuitbreaker TO breaker;\"" >> "$LOG_FILE" 2>&1 || true
   cb_ok "Database user and database created"
   
   # Verify connection
@@ -1705,6 +1772,11 @@ stage9_install_cb_cli() {
   fi
 
   # Shared identity helpers travel with the bundle when present.
+  if [[ -f /opt/circuitbreaker/deploy/cli/cb_terminal.py ]]; then
+    install -Dm644 /opt/circuitbreaker/deploy/cli/cb_terminal.py \
+      /usr/local/lib/circuitbreaker/cb_terminal.py \
+      || cb_warn "Terminal formatter could not be installed; cb will use the bundled helper"
+  fi
   if [[ -f /opt/circuitbreaker/deploy/cli/cb_resources.py ]]; then
     install -Dm644 /opt/circuitbreaker/deploy/cli/cb_resources.py \
       /usr/local/lib/circuitbreaker/cb_resources.py \
@@ -1716,8 +1788,31 @@ stage9_install_cb_cli() {
       /usr/local/lib/circuitbreaker/install-identity.sh 2>/dev/null || true
     chmod 644 /usr/local/lib/circuitbreaker/install-identity.sh 2>/dev/null || true
   fi
+  stage9_install_lifecycle_control_plane
 
   cb_ok "CB CLI installed"
+}
+
+# The lifecycle control plane: the host lock library, the native state
+# utility that writes operation journals, and the release trust material, in
+# /usr/local/lib/circuitbreaker, outside the release tree that an update
+# replaces and an uninstall removes. Not best-effort like the helpers above:
+# recovering an interrupted operation depends on these tools, so a control
+# plane that cannot be installed fails the install (npm CLI sub-plan 03,
+# ruling R12).
+stage9_install_lifecycle_control_plane() {
+  local deploy=/opt/circuitbreaker/deploy
+  if [[ ! -f "$deploy/lib/lifecycle.sh" ]]; then
+    cb_fail "The bundle has no lifecycle library ($deploy/lib/lifecycle.sh)" \
+      "Re-download the release bundle; this one is incomplete"
+  fi
+  # shellcheck source=lib/lifecycle.sh
+  source "$deploy/lib/lifecycle.sh"
+  if ! cb_lifecycle_install_control_plane "$deploy" /usr/local/lib/circuitbreaker; then
+    cb_fail "Could not install the lifecycle tools in /usr/local/lib/circuitbreaker" \
+      "Check free space and permissions under /usr/local/lib, then re-run the installer"
+  fi
+  cb_detail "Lifecycle tools: /usr/local/lib/circuitbreaker"
 }
 
 stage9_write_install_identity() {
@@ -2132,9 +2227,25 @@ stage2_dependencies() {
       | gpg --yes --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg \
       || cb_fail "Could not fetch the PostgreSQL signing key from postgresql.org" \
                  "Transient network failure, or the host is unreachable. Check: curl -I https://www.postgresql.org — then re-run"
-    echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+    # lsb_release is absent from minimal images; os-release always has the codename.
+    local pg_codename
+    pg_codename="$(lsb_release -cs 2>/dev/null || true)"
+    [[ -n "$pg_codename" ]] || pg_codename="$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}")"
+    [[ -n "$pg_codename" ]] \
+      || cb_fail "Could not tell which ${OS_NAME:-distribution} release this is (no VERSION_CODENAME in /etc/os-release)" \
+                 "Install postgresql-15 yourself, then re-run with --airgap"
+    # PGDG adds a new distro release some time after it ships. Say so here
+    # rather than let apt fail later with an error that names nothing.
+    if ! curl -fsSI --retry 3 --retry-delay 2 --connect-timeout 15 \
+        "http://apt.postgresql.org/pub/repos/apt/dists/${pg_codename}-pgdg/Release" >/dev/null 2>&1; then
+      cb_fail "The PostgreSQL apt repository has no packages for '${pg_codename}' yet (or apt.postgresql.org is unreachable)" \
+              "PostgreSQL 15 comes only from apt.postgresql.org on this distro. Check: curl -I https://apt.postgresql.org/pub/repos/apt/dists/ — on a release it does not serve yet, use the previous LTS or Debian 12"
+    fi
+    echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt ${pg_codename}-pgdg main" > /etc/apt/sources.list.d/pgdg.list
     $PKG_MGR update -y -q >> "$LOG_FILE" 2>&1
-    $PKG_MGR install -y -q postgresql-15 postgresql-client-15 >> "$LOG_FILE" 2>&1
+    $PKG_MGR install -y -q postgresql-15 postgresql-client-15 >> "$LOG_FILE" 2>&1 \
+      || cb_fail "Could not install postgresql-15 from apt.postgresql.org" \
+                 "Check: tail -50 ${LOG_FILE} — then re-run; the install resumes where it stopped"
     PG_BIN_DIR="/usr/lib/postgresql/15/bin"
 
     # Debian/Ubuntu: postgresql-common auto-creates AND starts a default
@@ -2313,6 +2424,8 @@ stage2_dependencies() {
 }
 
 run_upgrade() {
+  cb_setup_take_lifecycle_lock
+  cb_lifecycle_mark_mutation
   cb_phase_begin upgrade_check "Pre-flight checks"
 
   cb_header
@@ -2331,7 +2444,9 @@ run_upgrade() {
   # Backup before upgrade (while services are still running)
   cb_step "Creating pre-upgrade backup"
   local backup_file="${CB_DATA_DIR}/backups/pre-upgrade-$(date +%Y%m%d-%H%M%S).sql"
-  if systemctl is-active circuitbreaker-pgbouncer &>/dev/null; then
+  # pg_dump itself proves connectivity; pool service state is not database health.
+  (
+    umask 077
     # stage1_bootstrap creates ${CB_DATA_DIR}/backups, and run_upgrade never calls it.
     # Upgrading an install that predates that directory made the redirection below fail
     # before pg_dump ever started, which is one of the ways this used to report a
@@ -2345,7 +2460,7 @@ run_upgrade() {
     # is what stage1_bootstrap:137 declares for this path; match it exactly.
     mkdir -p "${CB_DATA_DIR}/backups"
     chown breaker:breaker "${CB_DATA_DIR}/backups"
-    chmod 755 "${CB_DATA_DIR}/backups"
+    chmod 700 "${CB_DATA_DIR}/backups"
     # Port 5432 direct, not pgbouncer on 6432: pgbouncer runs pool_mode = transaction
     # (deploy/config/pgbouncer.ini) and pg_dump needs one session held open for the
     # whole dump, so the pool cannot serve it. 5432 is also what CB_DB_URL points at.
@@ -2358,6 +2473,7 @@ run_upgrade() {
       # Delete the stub first: a zero-byte file sitting alongside real dumps reads as
       # a usable backup months later, which is worse than having none at all.
       rm -f "$backup_file"
+      _CB_FAIL_STATUS=7
       cb_fail "Pre-upgrade backup failed — refusing to upgrade without one" \
               "Check: tail -50 ${LOG_FILE}. Take a verified backup with 'cb backup', then re-run the upgrade."
     fi
@@ -2385,9 +2501,7 @@ run_upgrade() {
     # itself from an unguarded raw echo landing mid-phase.
     declare -f cb_ui_teardown >/dev/null 2>&1 && cb_ui_teardown
     echo "    Roll back with: sudo /opt/circuitbreaker/deploy/scripts/restore.sh ${backup_file}"
-  else
-    cb_warn "Database not running - skipping backup"
-  fi
+  ) || return 7
 
   cb_phase_end backup
 

@@ -33,7 +33,7 @@ On a Proxmox host, or prefer Docker? See [other ways to install](#other-ways-to-
 > **See it before you install it.** [circuitbreaker.blkleg.app](https://circuitbreaker.blkleg.app) walks through what Circuit Breaker does, and the [live demo](https://circuitbreaker.blkleg.app/demo) runs the topology map in your browser. No install, no account.
 
 > **Security notice**
-> 0.4.6. Not fully audited; several 1.0 security acceptance rows are still unevidenced. Run it on a
+> 0.4.7. Not fully audited; several 1.0 security acceptance rows are still unevidenced. Run it on a
 > trusted LAN or behind a VPN. Exposing it directly to the internet is outside the 1.0.0 support
 > boundary, described in [docs/release/1.0.0-support-contract.md](docs/release/1.0.0-support-contract.md).
 

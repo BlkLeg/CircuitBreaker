@@ -37,14 +37,24 @@ echo "==> Building in $IMAGE via $runtime (matching .github/workflows/build.yml)
 # Root inside the container, because the build installs apt packages. That
 # leaves the artifacts owned by root on the host under docker, where container
 # root is host root -- so the build chowns what it touched back to the caller.
-# Under rootless podman container-root already maps to the invoking user, and a
-# chown to a host uid would land on a subuid instead, so it is skipped there.
-chown_to=""
-if [ "$runtime" = "docker" ]; then
-    chown_to="$(id -u):$(id -g)"
+# Rootless podman is different: container root is the invoking user, and a
+# chown to the caller's host uid lands on a subuid instead (seen 2026-09-30:
+# dist/, build/ and apps/frontend/node_modules owned by 525287). There the
+# right target is container 0:0. The runtime's name does not settle which
+# engine this is: Fedora's podman-docker installs podman as `docker`.
+chown_to="$(id -u):$(id -g)"
+if "$runtime" version 2>/dev/null | grep -qi 'podman' \
+    && [ "$("$runtime" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = "true" ]; then
+    chown_to="0:0"
 fi
 
+# label=disable: on an SELinux host (Fedora) the checkout can carry a private
+# container_file_t label from an earlier :Z mount, and a fresh container then
+# gets EACCES reading its own scripts. Disabling labelling for this one build
+# container avoids that without relabelling the developer's whole tree, which
+# :z/:Z would do. Harmless where SELinux is off.
 exec "$runtime" run --rm -i \
+    --security-opt label=disable \
     -v "$REPO_ROOT":/src \
     -w /src \
     -e "CB_CHOWN_TO=$chown_to" \

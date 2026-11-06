@@ -3,7 +3,7 @@
 "Verify the staged release" failed on its first execution expecting an asset
 named `$2`. Its inline Python took the FIRST `tarball_name="..."` in
 install.sh, which is `local tarball_name="$2"` — a parameter of
-`cb_verify_bundle_checksum` — rather than the template install.sh actually
+`cb_check_bundle` (formerly `cb_verify_bundle_checksum`) — rather than the template install.sh actually
 downloads. This runs the step's own `run:` block, byte for byte, in a scratch
 directory holding the real install.sh and a staged dist/release with the two
 tarballs a build produces, so the step is exercised rather than described.

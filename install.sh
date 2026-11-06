@@ -83,8 +83,9 @@ _CB_UI_LOADED=true
 # Palette, taken from the banner so the bar belongs to the same picture.
 _CB_ORANGE=$'\033[38;5;209m'
 _CB_VIOLET=$'\033[38;5;99m'
-_CB_GREEN=$'\033[0;32m'
-_CB_RED=$'\033[0;31m'
+_CB_ACTIVE=$'\033[38;5;141m'
+_CB_GREEN=$'\033[38;5;142m'
+_CB_RED=$'\033[38;5;203m'
 _CB_YELLOW=$'\033[1;33m'
 _CB_BOLD=$'\033[1m'
 _CB_DIM=$'\033[2m'
@@ -93,6 +94,8 @@ _CB_RESET=$'\033[0m'
 CB_UI_MODE="plain"
 _CB_LIVE_ON=false
 _CB_LAST_RENDER=""
+_CB_LAST_DRAW_US=0
+_CB_PHASE_ORDINAL=0
 _CB_START_EPOCH=0
 _CB_OPEN_PHASE=""
 _CB_OPEN_HEADLINE=""
@@ -210,16 +213,25 @@ _cb_log() {
 cb_ui_init() {
   _CB_START_EPOCH="$(date +%s)"
 
-  if [[ "${CB_VERBOSE:-false}" == "true" ]]; then
+  if [[ "${CB_RENDERER_OWNER:-}" == node ]]; then
+    CB_UI_MODE="node"
+  elif [[ "${CB_VERBOSE:-false}" == "true" ]]; then
     CB_UI_MODE="verbose"
   elif [[ "${UNATTENDED:-false}" == "true" ]] \
     || [[ "${CI:-}" == "true" ]] \
-    || [[ -n "${NO_COLOR:-}" ]] \
+    || [[ "${NO_COLOR+x}" == x ]] \
     || [[ "${TERM:-dumb}" == "dumb" ]] \
     || ! _cb_ui_term_at_least 66; then
     CB_UI_MODE="plain"
   else
-    CB_UI_MODE="tty"
+    if [[ "${CB_NO_ANIMATION:-0}" == 1 || "${CB_REDUCED_MOTION:-0}" == 1 ]]; then
+      CB_UI_MODE="static"
+    else
+      CB_UI_MODE="tty"
+    fi
+  fi
+  if [[ "${NO_COLOR+x}" == x || "${TERM:-dumb}" == dumb || ! -t 1 ]]; then
+    _CB_ORANGE=""; _CB_VIOLET=""; _CB_ACTIVE=""; _CB_GREEN=""; _CB_RED=""; _CB_YELLOW=""; _CB_BOLD=""; _CB_DIM=""; _CB_RESET=""
   fi
 
   _cb_log "ui: mode=${CB_UI_MODE}"
@@ -241,26 +253,13 @@ cb_ui_teardown() {
 
 _cb_live_clear() {
   [[ "${_CB_LIVE_ON}" == "true" ]] || return 0
-  # Cursor sits at the end of the timer line. Clear it, step up to the bar line,
-  # clear that. Never `clear`, and never absolute positioning: this runs inside
-  # somebody's scrollback, not on a screen we own.
-  #
-  # This assumes the two lines directly above the cursor are still the bar and
-  # timer this renderer drew — there is no way to confirm that from here. A
-  # terminal has no read-back for "what did I last print", so this function
-  # cannot detect foreign output (a raw `echo`/`printf`, `clear`, a banner)
-  # that landed between the last draw and this call; if that happened, this
-  # rewind erases real output instead of its own. There is no general fix for
-  # that inside the renderer — no heuristic here can distinguish "my own
-  # redraw" from "somebody else's line that happens to be two lines up". The
-  # only honest fix is at the call sites: anything that emits raw output after
-  # a phase is open MUST call cb_ui_teardown first (cb_header, the
-  # stage10_final_output banner, uninstall.sh's closing block all do).
-  # tests/build/test_installer_live_region_discipline.py is the guard that
-  # keeps those call sites honest; it is not a substitute for this function
-  # being able to protect itself, because it can't.
+  # Clear only the owned live line, including any rows reflowed on resize.
+  local cols rows i
+  cols="$(_cb_ui_columns)"
+  (( cols > 0 )) || cols=1
+  rows=$(( (${#_CB_LAST_RENDER} + cols - 1) / cols ))
   printf '\r\033[K'
-  printf '\033[1A\r\033[K'
+  for ((i=1; i<rows; i++)); do printf '\033[1A\r\033[K'; done
   _CB_LIVE_ON=false
   _CB_LAST_RENDER=""
 }
@@ -393,45 +392,62 @@ _cb_render_eta() {
 }
 
 _cb_render_live() {
-  local pct cols width filled empty bar elapsed
-  pct="$(_cb_overall_percent)"
+  local cols elapsed text width filled empty bar
   cols="$(_cb_ui_columns)"
-  width=$(( cols - 28 ))
-  (( width > 32 )) && width=32
-  (( width < 10 )) && width=10
-  filled=$(( (pct * width) / 100 ))
-  empty=$(( width - filled ))
-  elapsed=$(( $(date +%s) - _CB_START_EPOCH ))
-
-  bar=""
-  (( filled > 0 )) && bar+="${_CB_ORANGE}$(printf '█%.0s' $(seq 1 "$filled"))${_CB_RESET}"
-  (( empty > 0 )) && bar+="${_CB_VIOLET}$(printf '░%.0s' $(seq 1 "$empty"))${_CB_RESET}"
-
-  printf '  %s  %3d%%\n' "$bar" "$pct"
-  printf '  %s%s elapsed · %s%s' \
-    "${_CB_DIM}" "$(_cb_human_duration "$elapsed")" "$(_cb_render_eta)" "${_CB_RESET}"
+  elapsed=$(( $(date +%s) - _CB_OPEN_START ))
+  text="Phase ${_CB_PHASE_ORDINAL} — ${_CB_OPEN_HEADLINE} · ${elapsed}s elapsed"
+  # Only the current phase's measured substeps/bytes may have a percentage.
+  # No weighted operation percentage or ETA is inferred from elapsed time.
+  if (( _CB_OPEN_TICKS > 0 || _CB_OPEN_FRACTION > 0 )); then
+    width=16
+    filled=$(( _CB_OPEN_FRACTION * width / 100 )); empty=$(( width - filled ))
+    bar="$(printf '%*s' "$filled" '' | tr ' ' '#')$(printf '%*s' "$empty" '' | tr ' ' '-')"
+    text="${text} · [${bar}] ${_CB_OPEN_FRACTION}% of phase"
+  fi
+  printf '%s' "${text:0:$((cols > 1 ? cols - 1 : 1))}"
 }
 
 # Redraw only when the rendered text actually changed. The timer changes once a
 # second and the percentage only when it crosses an integer, so this is well
 # under the 10 Hz ceiling the design asks for while costing no timer plumbing.
 _cb_live_draw() {
-  [[ "${CB_UI_MODE}" == "tty" ]] || return 0
-  local rendered
-  # _cb_update_eta must run here, in the current shell: _cb_render_live below
-  # is captured with $(...), and anything a subshell assigns is gone the
-  # instant that subshell exits.
-  _cb_update_eta
+  [[ "${CB_UI_MODE}" == "tty" && -n "${_CB_OPEN_PHASE}" ]] || return 0
+  local rendered stamp="${EPOCHREALTIME:-}"
+  stamp="${stamp/./}"
+  [[ "$stamp" =~ ^[0-9]+$ ]] || stamp="$(( $(date +%s) * 1000000 ))"
+  (( stamp - _CB_LAST_DRAW_US >= 125000 )) || return 0
+  _CB_LAST_DRAW_US="$stamp"
   rendered="$(_cb_render_live)"
   [[ "$rendered" == "${_CB_LAST_RENDER}" ]] && return 0
   _cb_live_clear
-  printf '%s' "$rendered"
+  if (( _CB_OPEN_FRACTION > 0 )); then
+    printf '%s%s%s' "$_CB_ORANGE" "$rendered" "$_CB_RESET"
+  else
+    printf '%s%s%s' "$_CB_ACTIVE" "$rendered" "$_CB_RESET"
+  fi
   _CB_LAST_RENDER="$rendered"
   _CB_LIVE_ON=true
 }
 
+_cb_ui_event() {
+  local phase="$1" status="$2"
+  [[ "${CB_LIFECYCLE_OPERATION:-}" =~ ^op-[0-9]{8}-[0-9]{3,9}$ ]] || return 0
+  declare -f cb_lifecycle_emit >/dev/null 2>&1 || return 0
+  case "$phase" in
+    bundle) phase=download ;;
+    files|deps|services) phase=stage ;;
+    upgrade_check) phase=preflight ;;
+    apply_bundle) phase=apply ;;
+    database) phase=migrate ;;
+  esac
+  local -a args=(type=phase "phase=$phase" "status=$status")
+  [[ -z "${3:-}" ]] || args+=("duration_ms=$3")
+  cb_lifecycle_emit "${args[@]}" || true
+}
+
 cb_phase_begin() {
   local key="$1" headline="$2"
+  _CB_PHASE_ORDINAL=$(( _CB_PHASE_ORDINAL + 1 ))
   _CB_OPEN_PHASE="$key"
   _CB_OPEN_HEADLINE="$headline"
   _CB_OPEN_START="$(date +%s)"
@@ -439,11 +455,12 @@ cb_phase_begin() {
   _CB_OPEN_TICKS=0
   _CB_OPEN_TICKS_DONE=0
   _cb_log "phase begin: ${key} — ${headline}"
+  _cb_ui_event "$key" started
 
   case "${CB_UI_MODE}" in
-    tty)
+    tty|static)
       _cb_live_clear
-      printf '  %s▸%s %s\n' "${_CB_ORANGE}" "${_CB_RESET}" "$headline"
+      printf '  %s▸%s %s\n' "${_CB_ACTIVE}" "${_CB_RESET}" "$headline"
       _cb_live_draw
       ;;
     plain|verbose)
@@ -492,9 +509,10 @@ cb_phase_end() {
   _CB_DONE_WEIGHT=$(( _CB_DONE_WEIGHT + ${CB_PHASE_WEIGHTS[${key}]:-0} ))
   _CB_LEDGER+=("${key}|${_CB_OPEN_HEADLINE}|${seconds}")
   _cb_log "phase end: ${key} (${seconds}s)"
+  _cb_ui_event "$key" completed "$(( seconds * 1000 ))"
 
   case "${CB_UI_MODE}" in
-    tty)
+    tty|static)
       _cb_live_clear
       # Reprint the headline as a completed line, replacing the ▸ marker.
       printf '  %s✓%s %-42s %s%s%s\n' \
@@ -582,6 +600,1454 @@ cb_warn() { cb_note "$1"; }
 cb_section() { cb_detail "section: $1"; }
 # --- END INLINED deploy/lib/ui.sh ---
 
+# --- BEGIN INLINED deploy/lib/bundle-signature.sh — regenerate with scripts/ci/sync_installer_ui.py ---
+# shellcheck shell=bash
+# Release bundle signature verification.
+#
+# Shared by release.yml and release-dry-run.yml (sourced), and by install.sh
+# and cb-proxmox-deploy.sh (inlined copies, regenerated by
+# scripts/ci/sync_installer_ui.py). Design:
+# docs/design/2026-09-30-release-bundle-signing-design.md.
+#
+# Needs bash, coreutils and OpenSSL 3; no network.
+
+CB_FIRST_SIGNED_RELEASE="0.4.7"
+
+# The bundles of v0.4.6, the last release published without SHA256SUMS.sig, as
+# "<sha256>  <file name>" copied from that release's SHA256SUMS. On the default
+# (newest-release) path an unsigned release is installed only if its tarball is
+# byte-for-byte one of these. A hash, not a version string: a tag name is
+# whatever the publisher typed, so a version exception would let anyone able to
+# publish a release tag a forged bundle v0.4.6, make it the newest, and have
+# default installs accept it unsigned for as long as that installer is in use.
+# Only the genuine bytes match the hash.
+CB_UNSIGNED_PIN_AMD64="377a62236a792df994e63c54fef38aca2ab76b38246fd4de33b913514f7a35d5  circuit-breaker_0.4.6_linux_amd64.tar.gz"
+CB_UNSIGNED_PIN_ARM64="1c93f507cbac803da6dc6fd0ef3da62083ef87b09bcba3531b7bd61a1624c93f  circuit-breaker_0.4.6_linux_arm64.tar.gz"
+
+# DER SubjectPublicKeyInfo header for an Ed25519 key (RFC 8410). The raw
+# 32-byte public key follows it; OpenSSL reads the pair as a DER public key.
+_CB_ED25519_SPKI_PREFIX='\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'
+
+# deploy/keys/release-bundle-keys.txt, verbatim.
+_cb_embedded_release_keys() {
+  cat <<'CB_RELEASE_KEYS'
+# Trusted Ed25519 keys for Circuit Breaker release bundles (SHA256SUMS.sig).
+# Format: <key-id> <base64 raw 32-byte public key> <first-version> <comment>
+# key-id: first 16 hex characters of sha256(raw public key).
+# install.sh and deploy/lib/bundle-signature.sh embed this file verbatim.
+# Rotation adds a line; a line is removed only on compromise.
+# See docs/release/bundle-signing.md.
+
+5f2aa2afdb764f86 5HA4V+WdSQtRz1ePEjE4t//FSX/5svuPkga9O0pQd40= 0.4.7 release bundle key, created 2026-10-01
+CB_RELEASE_KEYS
+}
+
+# Print "<key-id> <base64 key>" for each trusted key whose id matches its key.
+# $1: optional keys file; the embedded list otherwise. A malformed line is
+# skipped: it can only ever fail to verify, never widen trust.
+cb_release_keys() {
+  local src line key_id key _rest raw_len actual
+  if [[ -n "${1:-}" ]]; then
+    src="$(cat -- "$1")" || return 1
+  else
+    src="$(_cb_embedded_release_keys)"
+  fi
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" || "$line" == \#* ]] && continue
+    read -r key_id key _rest <<<"$line"
+    [[ "$key_id" =~ ^[0-9a-f]{16}$ ]] || continue
+    raw_len="$(printf '%s' "$key" | base64 -d 2>/dev/null | wc -c)" || continue
+    [[ "$raw_len" -eq 32 ]] || continue
+    actual="$(printf '%s' "$key" | base64 -d | sha256sum | cut -c1-16)"
+    [[ "$actual" == "$key_id" ]] || continue
+    printf '%s %s\n' "$key_id" "$key"
+  done <<<"$src"
+}
+
+# Verify SHA256SUMS ($1) against SHA256SUMS.sig ($2) with the trusted keys
+# ($3 optional keys file). Prints the id of the key that verified.
+# 0: verified. 1: no trusted key verifies it. 2: the signature is unreadable,
+# or there are no trusted keys at all.
+cb_verify_sums_signature() {
+  local sums="$1" sig="$2" keys_file="${3:-}" work key_id key tried=0 rc=1
+  work="$(mktemp -d)" || return 2
+  # Whitespace-insensitive: CRLF or trailing blanks from a copy must not
+  # turn a good signature into "unreadable".
+  if ! tr -d ' \t\r\n' <"$sig" | base64 -d >"$work/sig" 2>/dev/null \
+    || [[ "$(wc -c <"$work/sig")" -ne 64 ]]; then
+    rm -rf "$work"
+    return 2
+  fi
+  while read -r key_id key; do
+    tried=$((tried + 1))
+    { printf '%b' "$_CB_ED25519_SPKI_PREFIX"; printf '%s' "$key" | base64 -d; } >"$work/pub.der"
+    if openssl pkeyutl -verify -pubin -inkey "$work/pub.der" -keyform DER -rawin \
+      -in "$sums" -sigfile "$work/sig" >/dev/null 2>&1; then
+      printf '%s\n' "$key_id"
+      rc=0
+      break
+    fi
+  done < <(cb_release_keys "$keys_file")
+  rm -rf "$work"
+  if [[ "$tried" -eq 0 ]]; then
+    return 2
+  fi
+  return "$rc"
+}
+
+# Check one tarball ($2) against its own line in SHA256SUMS ($1). The line is
+# chosen by exact name (./<basename> as release.yml writes it, or a bare
+# <basename> as `sha256sum *` writes it), never with --ignore-missing, so a
+# sums file that does not list this tarball cannot "verify" it.
+# 0: match. 1: mismatch. 3: not listed.
+cb_verify_sums_entry() {
+  local sums="$1" tarball="$2" name expected actual
+  name="$(basename -- "$tarball")"
+  expected="$(awk -v want="${name}" '$2 == "./" want || $2 == want { print $1; exit }' "$sums" 2>/dev/null)" || return 3
+  [[ -n "$expected" ]] || return 3
+  actual="$(sha256sum -- "$tarball" | cut -d' ' -f1)" || return 1
+  [[ "$actual" == "$expected" ]] || return 1
+}
+
+# 0 when release $1 must carry a signature (it is CB_FIRST_SIGNED_RELEASE or
+# later), 1 for earlier releases and for an empty version.
+cb_release_requires_signature() {
+  local v="${1#v}"
+  [[ -n "$v" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$CB_FIRST_SIGNED_RELEASE" "$v" | sort -V | head -n1)" == "$CB_FIRST_SIGNED_RELEASE" ]]
+}
+
+# 0 when tarball $1 is one of the pinned v0.4.6 bundles (CB_UNSIGNED_PIN_*),
+# matched by SHA-256 and file name together; 1 otherwise, or when it cannot be
+# read. Policy (what an unsigned match permits) is the caller's.
+cb_bundle_matches_unsigned_pin() {
+  local tarball="$1" actual pin
+  actual="$(sha256sum -- "$tarball" 2>/dev/null | cut -d' ' -f1)" || return 1
+  [[ -n "$actual" ]] || return 1
+  for pin in "$CB_UNSIGNED_PIN_AMD64" "$CB_UNSIGNED_PIN_ARM64"; do
+    if [[ "${actual}  $(basename -- "$tarball")" == "$pin" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+# --- END INLINED deploy/lib/bundle-signature.sh ---
+
+# The host-wide lifecycle lock (deploy/lib/lifecycle.sh), inlined because a
+# `curl | sudo bash` install has no deploy/lib on the host until the bundle is
+# unpacked, and the lock has to be held before anything is installed or any
+# service is touched. One lock for every entrypoint: an install, an upgrade,
+# uninstall.sh, restore.sh, cb and the npm coordinator's native helper refuse
+# each other with exit 10. specs/install/lifecycle-contract.md §11.
+# --- BEGIN INLINED deploy/lib/lifecycle.sh — regenerate with scripts/ci/sync_installer_ui.py ---
+# shellcheck shell=bash
+# Host-wide lifecycle lock and private state root.
+#
+# One lock serializes every lifecycle mutation on the host: the npm
+# coordinator's native helper, install.sh, deploy/setup.sh, uninstall.sh,
+# deploy/scripts/restore.sh and cb. It sits at a fixed path, independent of
+# install identity, data directory and any npm cache, so nothing a caller
+# chooses can split exclusion; journal records bind the installation identity
+# instead. Contract: specs/install/lifecycle-contract.md. Plan:
+# plans/2026-09-30-v0.4.7-npm-cli-03-lock-journal-events.md (Task 2).
+#
+# Layout, created only by root and never by read-only planning:
+#   /var/lib/circuitbreaker-lifecycle/                0755
+#   /var/lib/circuitbreaker-lifecycle/history.json    0644  redacted index, derived from the journals
+#   /var/lib/circuitbreaker-lifecycle/private/        0700
+#   /var/lib/circuitbreaker-lifecycle/private/lock    0600  flock(2) target; never removed or truncated
+#   /var/lib/circuitbreaker-lifecycle/private/owner   0600  diagnostics only; never authority
+#   /var/lib/circuitbreaker-lifecycle/private/operations/<operation id>/
+#                                      journal.json   0600  authoritative, atomically replaced
+#                                      sequence       0600  the operation's event sequence counter
+#
+# Journals and the index are written only by the native state utility,
+# deploy/scripts/lifecycle-state.py, through cb_lifecycle_begin,
+# cb_lifecycle_checkpoint and cb_lifecycle_state below (Task 3), and
+# cb_lifecycle_emit spends an operation's event sequence (Task 4). The utility
+# runs under a trusted Python 3.9+ interpreter (cb_lifecycle_python), and
+# setup.sh keeps it, this library and the release trust material in the
+# control plane /usr/local/lib/circuitbreaker, outside the release tree an
+# update replaces.
+#
+# The lock is flock(2) on that one inode, held through an open file
+# description. A nested installer/backup/restore call inherits the
+# description (CB_LIFECYCLE_LOCK_FD) together with the operation it belongs to
+# (CB_LIFECYCLE_OPERATION), and proves the descriptor really holds the lock
+# before joining, so a claim in the environment alone grants nothing. Because
+# a flock lasts until every holder of the description has closed it, a parent
+# that dies leaves the lock held until each child it handed it to exits. A
+# helper that must not hold it (a daemon, anything detached) is started
+# through cb_lifecycle_run_unlocked or cb_lifecycle_spawn_unlocked.
+#
+# The lock is root-only, so an entrypoint that is not root first re-runs
+# itself through sudo (cb_lifecycle_elevate) and does the whole operation as
+# root under the lock, rather than escalating step by step past it.
+#
+# Within one shell, acquisitions nest: cb's restore runs its backup in the
+# same process and both take the lock, so each acquire counts a level and only
+# the release that matches the outermost acquire closes the descriptor. The
+# count and the descriptor live in shell variables that are never exported;
+# any copy that arrives through the environment is discarded by every acquire,
+# bind and release, so a child proves a handed-down lock only through the
+# handoff.
+#
+# CB_LIFECYCLE_ROOT relocates the tree for tests over disposable roots. It is
+# honoured only when the effective uid is not 0; as root it is refused.
+#
+# Functions return the lifecycle exit codes below and never exit, and they
+# are safe under `set -Eeuo pipefail` with an ERR trap. Call them in the shell
+# that will run the mutation, not in a $(...) subshell: the descriptor lives
+# in the calling process. Needs bash 4.1+, coreutils or busybox, flock(1) and
+# /proc. Nothing in the owner record or the environment is ever evaluated.
+
+CB_LIFECYCLE_DEFAULT_ROOT="/var/lib/circuitbreaker-lifecycle"
+# Where setup.sh installs this library, the state utility and the release
+# trust material, and the interpreter tried first (ruling R13).
+CB_LIFECYCLE_CONTROL_PLANE="/usr/local/lib/circuitbreaker"
+CB_LIFECYCLE_SYSTEM_PYTHON="/usr/bin/python3"
+# The directory of the file this library was read from (the control plane, a
+# bundle's deploy/lib, or the script it is inlined in), so it finds the
+# utility it was shipped with. Empty when bash read it from no regular file:
+# piped (curl | bash) or from /dev/fd, BASH_SOURCE names no directory of its
+# own, and the caller's working directory is never taken for one.
+_CB_LIFECYCLE_LIB_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  _CB_LIFECYCLE_LIB_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || _CB_LIFECYCLE_LIB_DIR=""
+  case "$_CB_LIFECYCLE_LIB_DIR" in
+    /*) ;;
+    *) _CB_LIFECYCLE_LIB_DIR="" ;;
+  esac
+  case "$_CB_LIFECYCLE_LIB_DIR/" in
+    /dev/* | /proc/*) _CB_LIFECYCLE_LIB_DIR="" ;;
+  esac
+fi
+export -n _CB_LIFECYCLE_LIB_DIR
+
+# packages/cli/src/exit-codes.js; tests/build/test_lifecycle_lock.py keeps them equal.
+CB_LIFECYCLE_EXIT_USAGE=2
+CB_LIFECYCLE_EXIT_PERMISSION=6
+CB_LIFECYCLE_EXIT_PREFLIGHT=7
+CB_LIFECYCLE_EXIT_MANUAL=9
+CB_LIFECYCLE_EXIT_LOCKED=10
+
+# The holding state of this shell. Never exported, never read from the
+# environment: _FD is the descriptor, _ID its dev:inode, _PID the process that
+# opened or joined it ($BASHPID, so a subshell is a different holder) and
+# _DEPTH how many acquisitions in that process are still unreleased.
+_CB_LIFECYCLE_STATE_VARS=(_CB_LIFECYCLE_LOCK_FD _CB_LIFECYCLE_LOCK_ID _CB_LIFECYCLE_LOCK_PID _CB_LIFECYCLE_LOCK_DEPTH)
+# What this shell resolved or last saw for its operation: the interpreter, the
+# journal generation of its last acknowledged write, and whether a checkpoint
+# it sent since went unacknowledged (_UNSURE). Never exported, never read from
+# the environment either, and dropped with the lock.
+_CB_LIFECYCLE_CACHE_VARS=(_CB_LIFECYCLE_PYTHON _CB_LIFECYCLE_GENERATION _CB_LIFECYCLE_GEN_OPERATION _CB_LIFECYCLE_GEN_UNSURE)
+
+# Drop any holding state that is exported: it came from a parent's
+# environment (or was exported by hand), and proves nothing. Every public
+# entry point runs this first.
+_cb_lifecycle_forget_exported_state() {
+  local name
+  for name in "${_CB_LIFECYCLE_STATE_VARS[@]}" "${_CB_LIFECYCLE_CACHE_VARS[@]}"; do
+    if [[ "$(declare -p "$name" 2>/dev/null || true)" =~ ^declare\ -[a-zA-Z]*x ]]; then
+      unset "$name"
+    fi
+  done
+}
+
+# Record that this process holds the lock through descriptor $1 (dev:inode $2)
+# at nesting depth $3, keeping the record out of the environment even under
+# `set -a`.
+_cb_lifecycle_set_held() {
+  _CB_LIFECYCLE_LOCK_FD="$1"
+  _CB_LIFECYCLE_LOCK_ID="$2"
+  _CB_LIFECYCLE_LOCK_PID="$BASHPID"
+  _CB_LIFECYCLE_LOCK_DEPTH="$3"
+  export -n "${_CB_LIFECYCLE_STATE_VARS[@]}"
+}
+
+# Succeeds when this very process (not a subshell or child of it) took or
+# joined the lock and has not released every level yet.
+_cb_lifecycle_held_here() {
+  [[ -n "${_CB_LIFECYCLE_LOCK_FD:-}" && "${_CB_LIFECYCLE_LOCK_PID:-}" == "$BASHPID" ]] \
+    && [[ "${_CB_LIFECYCLE_LOCK_DEPTH:-}" =~ ^[1-9][0-9]{0,5}$ ]]
+}
+
+_cb_lifecycle_say() {
+  printf 'lifecycle lock: %s\n' "$*" >&2
+}
+
+# A plain absolute path: no empty, "." or ".." component, no trailing slash,
+# and only characters that need no quoting in a message.
+_cb_lifecycle_plain_path() {
+  local path="$1"
+  (( ${#path} <= 1024 )) || return 1
+  [[ "$path" =~ ^(/[A-Za-z0-9._@+-]+)+$ ]] || return 1
+  [[ "$path/" != */./* && "$path/" != */../* ]]
+}
+
+# Print the state root. Touches nothing on disk.
+cb_lifecycle_root() {
+  local seam="${CB_LIFECYCLE_ROOT:-}"
+  if [[ -z "$seam" ]]; then
+    printf '%s\n' "$CB_LIFECYCLE_DEFAULT_ROOT"
+    return 0
+  fi
+  if [[ "$EUID" -eq 0 ]]; then
+    _cb_lifecycle_say "CB_LIFECYCLE_ROOT is a test seam and is refused as root; the host lock is always $CB_LIFECYCLE_DEFAULT_ROOT"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  if ! _cb_lifecycle_plain_path "$seam"; then
+    _cb_lifecycle_say "CB_LIFECYCLE_ROOT must be a plain absolute path"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  printf '%s\n' "$seam"
+}
+
+# The owners a state path may have: root, and the caller itself when it is not
+# root (the disposable roots of the test seam). An unprivileged caller of the
+# real root is refused before this is ever asked.
+_cb_lifecycle_trusted_uid() {
+  [[ "$1" == 0 ]] || { [[ "$EUID" -ne 0 && "$1" == "$EUID" ]]; }
+}
+
+# lstat $1 into _CB_LC_TYPE (dir, file, link, other), _CB_LC_PERM, _CB_LC_UID,
+# _CB_LC_LINKS and _CB_LC_ID (dev:inode). Returns 1 when it cannot be read.
+_cb_lifecycle_lstat() {
+  local raw mode
+  local -a f
+  raw="$(stat -c '%f %u %h %d:%i' -- "$1" 2>/dev/null)" || return 1
+  read -r -a f <<<"$raw"
+  [[ "${#f[@]}" -eq 4 && "${f[0]}" =~ ^[0-9a-fA-F]{1,8}$ && "${f[1]}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${f[2]}" =~ ^[0-9]+$ && "${f[3]}" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+  mode=$(( 16#${f[0]} ))
+  case $(( mode & 0170000 )) in
+    $(( 0040000 ))) _CB_LC_TYPE=dir ;;
+    $(( 0100000 ))) _CB_LC_TYPE="file" ;;
+    $(( 0120000 ))) _CB_LC_TYPE="link" ;;
+    *) _CB_LC_TYPE=other ;;
+  esac
+  _CB_LC_PERM=$(( mode & 07777 ))
+  _CB_LC_UID="${f[1]}"
+  _CB_LC_LINKS="${f[2]}"
+  _CB_LC_ID="${f[3]}"
+}
+
+# Check one path of the tree. $2 is its role: ancestor, root, private or lock.
+# Returns 0 when it is safe, 1 when it does not exist, and 6 (with a message)
+# when it is a symlink, has an untrusted owner or the wrong type or mode.
+_cb_lifecycle_check() {
+  local path="$1" role="$2" want=dir noun=directory
+  _cb_lifecycle_lstat "$path" || return 1
+  if [[ "$_CB_LC_TYPE" == link ]]; then
+    _cb_lifecycle_say "$path is a symbolic link; refusing to use it"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! _cb_lifecycle_trusted_uid "$_CB_LC_UID"; then
+    _cb_lifecycle_say "$path is owned by uid $_CB_LC_UID, which is not trusted with the host lock"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if [[ "$role" == lock ]]; then
+    want="file"
+    noun="regular file"
+  fi
+  if [[ "$_CB_LC_TYPE" != "$want" ]]; then
+    _cb_lifecycle_say "$path is not a $noun"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  case "$role" in
+    ancestor)
+      # Group- or other-writable lets someone else swap what lies below,
+      # unless the sticky bit is set by root (as on /tmp).
+      if (( _CB_LC_PERM & 022 )) && ! (( (_CB_LC_PERM & 01000) && _CB_LC_UID == 0 )); then
+        _cb_lifecycle_say "$path is writable by group or others"
+        return "$CB_LIFECYCLE_EXIT_PERMISSION"
+      fi
+      ;;
+    root)
+      if (( _CB_LC_PERM & 022 )); then
+        _cb_lifecycle_say "$path is writable by group or others"
+        return "$CB_LIFECYCLE_EXIT_PERMISSION"
+      fi
+      ;;
+    private)
+      if (( (_CB_LC_PERM & 0777) != 0700 )); then
+        _cb_lifecycle_say "$path must be mode 0700 (it is $(printf '%04o' "$_CB_LC_PERM"))"
+        return "$CB_LIFECYCLE_EXIT_PERMISSION"
+      fi
+      ;;
+    lock)
+      if (( _CB_LC_PERM != 0600 )); then
+        _cb_lifecycle_say "$path must be mode 0600 (it is $(printf '%04o' "$_CB_LC_PERM"))"
+        return "$CB_LIFECYCLE_EXIT_PERMISSION"
+      fi
+      if (( _CB_LC_LINKS != 1 )); then
+        _cb_lifecycle_say "$path has more than one name"
+        return "$CB_LIFECYCLE_EXIT_PERMISSION"
+      fi
+      ;;
+  esac
+  return 0
+}
+
+# Make sure $1 (a directory, or the lock file) exists with the right role,
+# creating it with its final mode when it is missing. $3 is the mode to create.
+_cb_lifecycle_ensure() {
+  local path="$1" role="$2" create_mode="$3" rc=0
+  _cb_lifecycle_check "$path" "$role" || rc=$?
+  [[ "$rc" -eq 1 ]] || return "$rc"
+  if [[ ! -w "${path%/*}" ]]; then
+    _cb_lifecycle_say "permission denied: cannot create $path"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  # umask 077 first, so no moment exists where the new path is looser.
+  if [[ "$role" == lock ]]; then
+    ( umask 077 && set -C && : >"$path" ) 2>/dev/null || true
+  else
+    ( umask 077 && mkdir -m "$create_mode" -- "$path" ) 2>/dev/null || true
+  fi
+  rc=0
+  _cb_lifecycle_check "$path" "$role" || rc=$?
+  if [[ "$rc" -eq 1 ]]; then
+    _cb_lifecycle_say "cannot create $path"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  return "$rc"
+}
+
+# Validate every ancestor of root $1, then create or validate the root, the
+# private directory and the lock file. Sets _CB_LC_LOCK_ID to the lock's dev:inode.
+_cb_lifecycle_prepare() {
+  local root="$1" dir="" part rc=0
+  local -a parts
+  IFS=/ read -r -a parts <<<"${root#/}"
+  _cb_lifecycle_check / ancestor || rc=$?
+  if [[ "$rc" -eq 1 ]]; then
+    _cb_lifecycle_say "cannot inspect /"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  for part in "${parts[@]:0:${#parts[@]}-1}"; do
+    if [[ ! -x "${dir:-/}" ]]; then
+      _cb_lifecycle_say "permission denied: cannot enter ${dir:-/}"
+      return "$CB_LIFECYCLE_EXIT_PERMISSION"
+    fi
+    dir="$dir/$part"
+    rc=0
+    _cb_lifecycle_check "$dir" ancestor || rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+      _cb_lifecycle_say "$dir does not exist; the lifecycle state root is not created below a missing directory"
+      return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+    fi
+    [[ "$rc" -eq 0 ]] || return "$rc"
+  done
+  _cb_lifecycle_ensure "$root" root 0755 || return $?
+  if [[ ! -x "$root" ]]; then
+    _cb_lifecycle_say "permission denied: cannot enter $root"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  _cb_lifecycle_ensure "$root/private" private 0700 || return $?
+  if [[ ! -x "$root/private" ]]; then
+    _cb_lifecycle_say "permission denied: cannot enter $root/private"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  _cb_lifecycle_ensure "$root/private/lock" lock 0600 || return $?
+  _CB_LC_LOCK_ID="$_CB_LC_ID"
+}
+
+# The dev:inode an open descriptor refers to, or nothing.
+_cb_lifecycle_fd_id() {
+  stat -L -c '%d:%i' -- "/dev/fd/$1" 2>/dev/null || true
+}
+
+# Succeeds when descriptor $1 is an open file description that holds the lock
+# on $2, whose dev:inode is $3. Only a description that already holds it can
+# take the lock while a fresh description of the same file is refused.
+_cb_lifecycle_fd_holds() {
+  local fd="$1" lock="$2" id="$3" probe
+  [[ "$fd" =~ ^[1-9][0-9]{0,4}$ ]] || return 1
+  (( fd >= 3 )) || return 1
+  [[ "$(_cb_lifecycle_fd_id "$fd")" == "$id" ]] || return 1
+  { exec {probe}<"$lock"; } 2>/dev/null || return 1
+  if flock -n "$probe" 2>/dev/null; then
+    # The lock was free, so $fd held nothing.
+    exec {probe}<&-
+    return 1
+  fi
+  exec {probe}<&-
+  # AppArmor can refuse lock calls on a descriptor opened before a policy
+  # reload (seen in a Proxmox LXC); the kernel still lists this description's locks.
+  flock -n "$fd" 2>/dev/null \
+    || grep -qE '^lock:[[:space:]]+[0-9]+: FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE ' "/proc/$BASHPID/fdinfo/$fd" 2>/dev/null
+}
+
+# The start time of process $1 in clock ticks since boot (field 22 of
+# /proc/PID/stat), which a recycled PID does not share.
+_cb_lifecycle_start_ticks() {
+  local line
+  local -a f
+  [[ "$1" =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+  { IFS= read -r line <"/proc/$1/stat"; } 2>/dev/null || return 1
+  read -r -a f <<<"${line##*) }"
+  [[ "${f[19]:-}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "${f[19]}"
+}
+
+# A lock label names the command, never its arguments: "cb update", "install.sh".
+_cb_lifecycle_valid_label() {
+  (( ${#1} <= 64 )) && [[ "$1" =~ ^[a-z][a-z0-9._-]*( [a-z0-9][a-z0-9._-]*){0,3}$ ]]
+}
+
+# op-YYYYMMDD-NNN with a real calendar date (contract §1, Identifiers).
+_cb_lifecycle_valid_operation() {
+  local y m d days
+  [[ "$1" =~ ^op-([0-9]{4})([0-9]{2})([0-9]{2})-[0-9]{3,9}$ ]] || return 1
+  y=$(( 10#${BASH_REMATCH[1]} ))
+  m=$(( 10#${BASH_REMATCH[2]} ))
+  d=$(( 10#${BASH_REMATCH[3]} ))
+  (( y >= 1 && m >= 1 && m <= 12 && d >= 1 )) || return 1
+  case "$m" in
+    2) if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then days=29; else days=28; fi ;;
+    4 | 6 | 9 | 11) days=30 ;;
+    *) days=31 ;;
+  esac
+  (( d <= days ))
+}
+
+# Read $1/owner into _CB_LC_OWNER_{PID,START,LABEL,SINCE,OPERATION}. Each line
+# is matched against its own shape; nothing is evaluated. Returns 1 when the
+# record is missing or incomplete.
+_cb_lifecycle_read_owner() {
+  local file="$1/owner" line key value n=0
+  _CB_LC_OWNER_PID="" _CB_LC_OWNER_START="" _CB_LC_OWNER_LABEL="" _CB_LC_OWNER_SINCE="" _CB_LC_OWNER_OPERATION=""
+  [[ -f "$file" && ! -L "$file" ]] || return 1
+  {
+    while (( n < 8 )) && IFS= read -r line; do
+      n=$(( n + 1 ))
+      key="${line%%=*}"
+      value="${line#*=}"
+      case "$key" in
+        pid) if [[ "$value" =~ ^[1-9][0-9]{0,9}$ ]]; then _CB_LC_OWNER_PID="$value"; fi ;;
+        start) if [[ "$value" =~ ^[0-9]{1,20}$ ]]; then _CB_LC_OWNER_START="$value"; fi ;;
+        label) if _cb_lifecycle_valid_label "$value"; then _CB_LC_OWNER_LABEL="$value"; fi ;;
+        since) if [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then _CB_LC_OWNER_SINCE="$value"; fi ;;
+        operation) if _cb_lifecycle_valid_operation "$value"; then _CB_LC_OWNER_OPERATION="$value"; fi ;;
+      esac
+    done <"$file"
+  } 2>/dev/null || return 1
+  [[ -n "$_CB_LC_OWNER_PID" && -n "$_CB_LC_OWNER_START" && -n "$_CB_LC_OWNER_LABEL" && -n "$_CB_LC_OWNER_SINCE" ]]
+}
+
+# Atomically replace $1/owner: this process, $2 label, $3 operation, $4 since.
+# Diagnostics only: the lock decides, never this record.
+_cb_lifecycle_write_owner() {
+  local private="$1" label="$2" operation="$3" since="$4" me="$BASHPID" ticks tmp
+  ticks="$(_cb_lifecycle_start_ticks "$me")" || return 1
+  # Only a lock holder writes here, so a leftover temporary is a crashed holder's.
+  rm -f -- "$private"/.owner.* 2>/dev/null || true
+  tmp="$(mktemp "$private/.owner.XXXXXX" 2>/dev/null)" || return 1
+  if ! printf 'pid=%s\nstart=%s\neuid=%s\nlabel=%s\nsince=%s\noperation=%s\n' \
+      "$me" "$ticks" "$EUID" "$label" "$since" "$operation" >"$tmp" 2>/dev/null \
+    || ! chmod 600 -- "$tmp" 2>/dev/null \
+    || ! mv -f -- "$tmp" "$private/owner" 2>/dev/null; then
+    rm -f -- "$tmp" 2>/dev/null || true
+    return 1
+  fi
+}
+
+# Say who holds the lock, as far as the owner record shows it.
+_cb_lifecycle_report_holder() {
+  local private="$1" what
+  if _cb_lifecycle_read_owner "$private"; then
+    what="pid $_CB_LC_OWNER_PID, $_CB_LC_OWNER_LABEL, since $_CB_LC_OWNER_SINCE${_CB_LC_OWNER_OPERATION:+, operation $_CB_LC_OWNER_OPERATION}"
+    if [[ "$(_cb_lifecycle_start_ticks "$_CB_LC_OWNER_PID" || true)" == "$_CB_LC_OWNER_START" ]]; then
+      _cb_lifecycle_say "another lifecycle operation holds the host lock ($what)"
+    else
+      _cb_lifecycle_say "another lifecycle operation holds the host lock; the process that took it ($what) has exited and a process it started still holds it"
+    fi
+  else
+    _cb_lifecycle_say "another lifecycle operation holds the host lock; its owner is not recorded"
+  fi
+  _cb_lifecycle_say "nothing was changed; run this again once it has finished"
+}
+
+# Join a lock handed down by a parent: CB_LIFECYCLE_LOCK_FD must hold the lock
+# itself, and CB_LIFECYCLE_OPERATION must be the operation the lock's owner
+# bound (both empty when it bound none).
+_cb_lifecycle_inherit() {
+  local private="$1" lock="$2" id="$3" fd="${CB_LIFECYCLE_LOCK_FD:-}" operation="${CB_LIFECYCLE_OPERATION:-}"
+  if [[ -n "$operation" ]] && ! _cb_lifecycle_valid_operation "$operation"; then
+    return 1
+  fi
+  _cb_lifecycle_fd_holds "$fd" "$lock" "$id" || return 1
+  _cb_lifecycle_read_owner "$private" || return 1
+  [[ "$_CB_LC_OWNER_OPERATION" == "$operation" ]] || return 1
+  _cb_lifecycle_set_held "$fd" "$id" 1
+  export CB_LIFECYCLE_LOCK_FD="$fd" CB_LIFECYCLE_OPERATION="$operation"
+}
+
+# Nest one more level on the lock this process already holds. The caller's
+# operation context must still be the one the lock is bound to, exactly as a
+# child's would; a different one is refused with 10 and changes nothing.
+_cb_lifecycle_reenter() {
+  local private="$1" lock="$2" id="$3" operation="${CB_LIFECYCLE_OPERATION:-}"
+  if ! _cb_lifecycle_fd_holds "$_CB_LIFECYCLE_LOCK_FD" "$lock" "$id"; then
+    return 1
+  fi
+  if ! _cb_lifecycle_read_owner "$private" || [[ "$_CB_LC_OWNER_OPERATION" != "$operation" ]]; then
+    _cb_lifecycle_say "this process holds the host lock for another operation context (CB_LIFECYCLE_OPERATION); nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_LOCKED"
+  fi
+  _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "$id" $(( _CB_LIFECYCLE_LOCK_DEPTH + 1 ))
+}
+
+# The variables a re-run through sudo carries from the operator's environment,
+# besides HOME and the CB_LIFECYCLE_ELEVATED marker: terminal display, and the
+# documented operator switches that must survive the re-run. CB_AIRGAP keeps
+# `CB_AIRGAP=true bash install.sh` from making any outbound call as root;
+# CB_VERBOSE is install.sh's documented environment form of --verbose;
+# CB_ASSUME_YES is restore.sh's documented consent given in advance. Nothing
+# else is carried: the paths, binaries and identity files that steer cb, the
+# installers and restore.sh, secrets, and the CB_LIFECYCLE_ROOT test seam all
+# stay behind, and as root they come only from root's own configuration.
+CB_LIFECYCLE_ELEVATE_CARRY=(TERM NO_COLOR CB_AIRGAP CB_VERBOSE CB_ASSUME_YES)
+
+# Print the canonical path of $1 when it names a regular file outside /dev and
+# /proc: absolute, with every symlink resolved. Returns 1 for anything else,
+# including an empty or missing path.
+_cb_lifecycle_canonical_file() {
+  local path="${1:-}" resolved=""
+  [[ -n "$path" ]] || return 1
+  if command -v realpath >/dev/null 2>&1; then
+    resolved="$(realpath -- "$path" 2>/dev/null)" || resolved=""
+  fi
+  if [[ -z "$resolved" ]] && command -v readlink >/dev/null 2>&1; then
+    resolved="$(readlink -f -- "$path" 2>/dev/null)" || resolved=""
+  fi
+  case "$resolved" in
+    /dev/* | /proc/*) return 1 ;;
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [[ -f "$resolved" ]] || return 1
+  printf '%s\n' "$resolved"
+}
+
+# Return 0 when canonical path $1 is a file this shell ($$, the script's own
+# process even from a subshell) holds open. Bash keeps the script it runs open
+# for as long as it runs (on fd 255, or lower under a small descriptor limit),
+# so this is how a path is proven to be the script being executed; a script
+# read from a pipe holds no such file. The kernel reports each open file by its
+# resolved path, as _cb_lifecycle_canonical_file prints it.
+_cb_lifecycle_shell_has_open() {
+  local want="$1" fd target
+  for fd in "/proc/$$/fd/"*; do
+    target="$(readlink -- "$fd" 2>/dev/null)" || continue
+    if [[ "$target" == "$want" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Make sure this lifecycle entrypoint runs as root before it takes the lock:
+# the lock is root-only, and an entrypoint that escalated step by step through
+# sudo would make root changes without it. Not root, this re-runs script $1
+# with arguments $2... through sudo, so it never returns.
+#
+# $1 must be the script bash is running, captured at its top level, where
+# BASH_SOURCE is empty when bash reads the script from a pipe (inside a
+# function it is the word "bash", which names whatever ./bash sits in the
+# working directory). It is re-run, by its canonical path, only when it
+# resolves to an absolute regular file that this shell holds open as the
+# script it executes; otherwise nothing is re-run and it returns 6.
+#
+# The re-run gets sudo's own reset environment plus, through env(1), the
+# CB_LIFECYCLE_ELEVATED marker, HOME (a Docker install is found through the
+# operator's home, which sudo may reset) and the CB_LIFECYCLE_ELEVATE_CARRY
+# allowlist. They are arguments to env, not sudo settings, so a sudoers rule
+# without SETENV does not refuse them. A re-run that is still not root has met
+# a sudo that does not elevate, and goes on only over the CB_LIFECYCLE_ROOT
+# test seam, whose lock is the disposable one (a real sudo makes it root, where
+# the seam is refused). Returns 0 as root, or 6 (with a message) when it cannot
+# elevate: no script file to re-run (read from a pipe), a path that is not the
+# running script, no sudo, or sudo refused. Call it before anything is changed.
+cb_lifecycle_elevate() {
+  local script="${1:-}" self="" name
+  local -a carry=()
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  if [[ "$EUID" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "${CB_LIFECYCLE_ELEVATED:-}" == 1 ]]; then
+    if [[ -n "${CB_LIFECYCLE_ROOT:-}" ]]; then
+      return 0
+    fi
+    _cb_lifecycle_say "sudo did not run this as root; nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if [[ -z "$script" ]]; then
+    _cb_lifecycle_say "this needs root and was read from a pipe, so it cannot re-run itself; pipe it to 'sudo bash' instead. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  self="$(_cb_lifecycle_canonical_file "$script")" || self=""
+  if [[ -z "$self" ]] || ! _cb_lifecycle_shell_has_open "$self"; then
+    _cb_lifecycle_say "refusing to re-run a file that is not the script being run (a script read from a pipe cannot re-run itself); run it with sudo instead. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    _cb_lifecycle_say "this needs root and sudo is not installed; run it as root. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! sudo -v; then
+    _cb_lifecycle_say "sudo refused; run it again with sudo. Nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  carry=("CB_LIFECYCLE_ELEVATED=1" "HOME=${HOME:-}")
+  for name in "${CB_LIFECYCLE_ELEVATE_CARRY[@]}"; do
+    if [[ -n "${!name:-}" ]]; then
+      carry+=("${name}=${!name}")
+    fi
+  done
+  exec sudo -- env "${carry[@]}" bash "$self" "$@"
+}
+
+# Take the host lifecycle lock for the command named by label $1 (for
+# example "cb update"; never its arguments). Joins the lock instead when this
+# shell already holds it (one more nesting level, released by its own
+# cb_lifecycle_lock_release) or a parent handed it down. On success the
+# descriptor is exported for nested calls in CB_LIFECYCLE_LOCK_FD.
+# Returns 0, 2 (usage), 6 (permission or an unsafe tree), 7 (the state root
+# cannot be prepared) or 10 (another operation holds the lock), always before
+# the caller has changed anything.
+cb_lifecycle_lock_acquire() {
+  local label="${1:-}" root private lock id fd rc=0 since
+  _cb_lifecycle_forget_exported_state
+  if ! _cb_lifecycle_valid_label "$label"; then
+    _cb_lifecycle_say "internal error: a lock label is a plain command name"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  root="$(cb_lifecycle_root)" || return $?
+  if [[ -z "${CB_LIFECYCLE_ROOT:-}" && "$EUID" -ne 0 ]]; then
+    _cb_lifecycle_say "permission denied: the host lifecycle lock is root-only; run this command with sudo"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if ! command -v flock >/dev/null 2>&1; then
+    _cb_lifecycle_say "flock(1) is required (util-linux or busybox)"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  _cb_lifecycle_prepare "$root" || return $?
+  private="$root/private"
+  lock="$private/lock"
+  id="$_CB_LC_LOCK_ID"
+
+  if _cb_lifecycle_held_here; then
+    _cb_lifecycle_reenter "$private" "$lock" "$id" || rc=$?
+    [[ "$rc" -eq 1 ]] || return "$rc"
+    rc=0
+  fi
+  if [[ -n "${CB_LIFECYCLE_LOCK_FD:-}" ]]; then
+    if _cb_lifecycle_inherit "$private" "$lock" "$id"; then
+      return 0
+    fi
+    _cb_lifecycle_say "ignoring an unproven lock handoff (CB_LIFECYCLE_LOCK_FD); taking the lock normally"
+  fi
+
+  if ! { exec {fd}<"$lock"; } 2>/dev/null; then
+    _cb_lifecycle_say "permission denied: cannot open $lock"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if [[ "$(_cb_lifecycle_fd_id "$fd")" != "$id" ]]; then
+    exec {fd}<&-
+    _cb_lifecycle_say "$lock changed while it was being opened"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  flock -n "$fd" 2>/dev/null || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    exec {fd}<&-
+    if [[ "$rc" -eq 1 ]]; then
+      _cb_lifecycle_report_holder "$private"
+      return "$CB_LIFECYCLE_EXIT_LOCKED"
+    fi
+    _cb_lifecycle_say "flock(1) failed on $lock (status $rc)"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if ! _cb_lifecycle_write_owner "$private" "$label" "" "$since"; then
+    exec {fd}<&-
+    _cb_lifecycle_say "cannot record the lock owner in $private"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  _cb_lifecycle_set_held "$fd" "$id" 1
+  export CB_LIFECYCLE_LOCK_FD="$fd" CB_LIFECYCLE_OPERATION=""
+}
+
+# Bind the held lock to operation $1, so nested calls join that operation
+# only. Only the process that took the lock binds, once; binding the same
+# operation again is a no-op. Returns 0, 2 (misuse) or 7 (cannot record it).
+cb_lifecycle_lock_bind_operation() {
+  local operation="${1:-}" me="$BASHPID" root private lock ticks
+  if ! _cb_lifecycle_valid_operation "$operation"; then
+    _cb_lifecycle_say "internal error: $(printf '%q' "$operation") is not an operation ID"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  root="$(cb_lifecycle_root)" || return $?
+  private="$root/private"
+  lock="$private/lock"
+  _cb_lifecycle_forget_exported_state
+  if ! { _cb_lifecycle_held_here && _cb_lifecycle_lstat "$lock" \
+      && _cb_lifecycle_fd_holds "$_CB_LIFECYCLE_LOCK_FD" "$lock" "$_CB_LC_ID"; }; then
+    _cb_lifecycle_say "internal error: binding an operation needs the held lock"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  ticks="$(_cb_lifecycle_start_ticks "$me" || true)"
+  if ! _cb_lifecycle_read_owner "$private" || [[ "$_CB_LC_OWNER_PID" != "$me" || "$_CB_LC_OWNER_START" != "$ticks" ]]; then
+    _cb_lifecycle_say "internal error: only the process that took the lock binds its operation"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  if [[ -n "$_CB_LC_OWNER_OPERATION" && "$_CB_LC_OWNER_OPERATION" != "$operation" ]]; then
+    _cb_lifecycle_say "internal error: the lock is bound to $_CB_LC_OWNER_OPERATION already"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  if ! _cb_lifecycle_write_owner "$private" "$_CB_LC_OWNER_LABEL" "$operation" "$_CB_LC_OWNER_SINCE"; then
+    _cb_lifecycle_say "cannot record the lock owner in $private"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  export CB_LIFECYCLE_OPERATION="$operation"
+}
+
+# Release one nesting level. Only the release matching this process's
+# outermost acquire closes its copy of the lock descriptor; an inner one
+# (cb restore's in-process backup, say) leaves the lock and the handoff
+# variables exactly as they were. The lock file stays (one stable inode), and
+# the lock is free once no other process still holds a copy: a child that
+# inherited the descriptor keeps it held until it exits.
+cb_lifecycle_lock_release() {
+  local fd id
+  _cb_lifecycle_forget_exported_state
+  if _cb_lifecycle_held_here && (( _CB_LIFECYCLE_LOCK_DEPTH > 1 )); then
+    _cb_lifecycle_set_held "$_CB_LIFECYCLE_LOCK_FD" "${_CB_LIFECYCLE_LOCK_ID:-}" $(( _CB_LIFECYCLE_LOCK_DEPTH - 1 ))
+    return 0
+  fi
+  # The outermost level here, or a subshell's inherited copy, which is its own.
+  fd="${_CB_LIFECYCLE_LOCK_FD:-}" id="${_CB_LIFECYCLE_LOCK_ID:-}"
+  if [[ "$fd" =~ ^[1-9][0-9]{0,4}$ ]] && (( fd >= 3 )) && [[ -n "$id" && "$(_cb_lifecycle_fd_id "$fd")" == "$id" ]]; then
+    exec {fd}<&-
+  fi
+  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" "${_CB_LIFECYCLE_CACHE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION
+}
+
+# In a subshell that is about to exec something that must not hold the lock:
+# close the descriptor and drop the handoff variables. The event descriptor
+# goes too, since an unlocked helper has no operation to emit for. Its stdout
+# and stderr stay as the caller left them: the coordinator stops reading the
+# step's output shortly after the step exits (packages/cli/src/events.js,
+# NATIVE_DRAIN_MS), so a daemon that keeps them loses what it writes later
+# and should be given its own log by the caller.
+_cb_lifecycle_drop_lock() {
+  local fd
+  if _cb_lifecycle_event_fd_valid; then
+    fd="$CB_LIFECYCLE_EVENT_FD"
+    exec {fd}>&-
+  fi
+  for fd in "${_CB_LIFECYCLE_LOCK_FD:-}" "${CB_LIFECYCLE_LOCK_FD:-}"; do
+    if [[ "$fd" =~ ^[1-9][0-9]{0,4}$ ]] && (( fd >= 3 )); then
+      exec {fd}<&-
+    fi
+  done
+  unset "${_CB_LIFECYCLE_STATE_VARS[@]}" "${_CB_LIFECYCLE_CACHE_VARS[@]}" CB_LIFECYCLE_LOCK_FD CB_LIFECYCLE_OPERATION \
+    CB_LIFECYCLE_EVENT_FD
+}
+
+# Run a command in the foreground without the lock, so that nothing it leaves
+# running (a daemon it forks, for example) holds it after this process exits.
+cb_lifecycle_run_unlocked() {
+  ( _cb_lifecycle_drop_lock && exec "$@" )
+}
+
+# Start a command in the background without the lock; $! is its PID. Use this
+# rather than `cb_lifecycle_run_unlocked ... &`, whose background subshell
+# would hold the descriptor for as long as the command runs.
+cb_lifecycle_spawn_unlocked() {
+  ( _cb_lifecycle_drop_lock && exec "$@" ) &
+}
+
+# --- The native state utility (Task 3) ---------------------------------------------------------
+
+# Whether uid $1 may own a program this library runs: root only when $2 is
+# set, otherwise the state tree's rule (root, and the caller when not root).
+_cb_lifecycle_program_owner() {
+  if [[ -n "${2:-}" ]]; then
+    [[ "$1" == 0 ]]
+  else
+    _cb_lifecycle_trusted_uid "$1"
+  fi
+}
+
+# Succeeds when every directory above $1 is a directory a trusted uid owns
+# ($2 as for _cb_lifecycle_program_owner) that neither group nor others can
+# write, unless it is sticky and root's (as /tmp is).
+_cb_lifecycle_safe_dirs() {
+  local path="$1" only_root="${2:-}" dir="" part
+  local -a parts
+  IFS=/ read -r -a parts <<<"${path#/}"
+  for part in "" "${parts[@]:0:${#parts[@]}-1}"; do
+    [[ -z "$part" ]] || dir="$dir/$part"
+    _cb_lifecycle_lstat "${dir:-/}" || return 1
+    [[ "$_CB_LC_TYPE" == dir ]] || return 1
+    _cb_lifecycle_program_owner "$_CB_LC_UID" "$only_root" || return 1
+    if (( _CB_LC_PERM & 022 )) && ! (( (_CB_LC_PERM & 01000) && _CB_LC_UID == 0 )); then
+      return 1
+    fi
+  done
+}
+
+# Succeeds when $1 is a program this library may run: a regular file (or a
+# symlink a trusted uid owns, to one) with a trusted owner, not writable by
+# group or others, below safe directories. $2 set: root must own all of it.
+_cb_lifecycle_trusted_program() {
+  local path="$1" only_root="${2:-}" real
+  [[ "$path" == /* ]] || return 1
+  _cb_lifecycle_safe_dirs "$path" "$only_root" || return 1
+  _cb_lifecycle_lstat "$path" || return 1
+  real="$path"
+  if [[ "$_CB_LC_TYPE" == link ]]; then
+    _cb_lifecycle_program_owner "$_CB_LC_UID" "$only_root" || return 1
+    real="$(readlink -f -- "$path" 2>/dev/null)" || return 1
+    [[ "$real" == /* ]] || return 1
+    _cb_lifecycle_safe_dirs "$real" "$only_root" || return 1
+    _cb_lifecycle_lstat "$real" || return 1
+  fi
+  [[ "$_CB_LC_TYPE" == file ]] || return 1
+  _cb_lifecycle_program_owner "$_CB_LC_UID" "$only_root" || return 1
+  (( (_CB_LC_PERM & 022) == 0 ))
+}
+
+_cb_lifecycle_python_is_new_enough() {
+  "$1" -I -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1
+}
+
+# Resolve the trusted interpreter for this transaction, before its first
+# mutation (ruling R13): /usr/bin/python3 when root owns it and the
+# directories above it, nobody else can write them, and it is 3.9 or newer;
+# otherwise the verified staged bundle's python/bin/python3, which the caller
+# passes as $1. R13 first allowed that fallback for a fresh install only, which
+# left every native host without a system python3 (minimal Debian 12, Fedora
+# 41+, Arch) unable to install or update at all. It now covers updates too:
+# the bundle is verified before its interpreter is trusted, and the caller
+# keeps it in place until the transaction's last checkpoint. Sets
+# _CB_LIFECYCLE_PYTHON. Returns 0, or 7 before anything has been changed.
+cb_lifecycle_python() {
+  local fresh="${1:-}"
+  _cb_lifecycle_forget_exported_state
+  if _cb_lifecycle_trusted_program "$CB_LIFECYCLE_SYSTEM_PYTHON" root \
+    && _cb_lifecycle_python_is_new_enough "$CB_LIFECYCLE_SYSTEM_PYTHON"; then
+    _CB_LIFECYCLE_PYTHON="$CB_LIFECYCLE_SYSTEM_PYTHON"
+  elif [[ -n "$fresh" ]] && _cb_lifecycle_trusted_program "$fresh" && _cb_lifecycle_python_is_new_enough "$fresh"; then
+    _CB_LIFECYCLE_PYTHON="$fresh"
+  else
+    _cb_lifecycle_say "no trusted Python 3.9 or newer: $CB_LIFECYCLE_SYSTEM_PYTHON must be root's, not writable by group or others, and at least 3.9${fresh:+ (and so must $fresh)}"
+    _cb_lifecycle_say "nothing was changed"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  export -n _CB_LIFECYCLE_PYTHON
+}
+
+# Find the state utility and require that it is a trusted file. The library
+# and the utility speak one protocol, so the copy shipped beside the file this
+# library was read from comes first: next to it (the control plane), in its
+# bundle's deploy/scripts, or in deploy/scripts below the script it is inlined
+# in. The control plane comes last, and is the only place looked at when the
+# library was read from no file (piped). A copy that is not trusted is passed
+# over, never run. Sets _CB_LC_UTILITY. Returns 0, or 7 naming every copy
+# passed over.
+_cb_lifecycle_find_utility() {
+  local dir="${_CB_LIFECYCLE_LIB_DIR:-}" candidate scripts="" passed=""
+  if [[ -n "$dir" && -d "$dir/../scripts" ]]; then
+    scripts="$(cd -P -- "$dir/../scripts" 2>/dev/null && pwd)" || scripts=""
+  fi
+  for candidate in "${dir:+$dir/lifecycle-state.py}" "${scripts:+$scripts/lifecycle-state.py}" \
+      "${dir:+$dir/deploy/scripts/lifecycle-state.py}" "$CB_LIFECYCLE_CONTROL_PLANE/lifecycle-state.py"; do
+    [[ "$candidate" == /* && -e "$candidate" ]] || continue
+    if _cb_lifecycle_trusted_program "$candidate"; then
+      _CB_LC_UTILITY="$candidate"
+      return 0
+    fi
+    passed+="${passed:+, }$candidate"
+  done
+  if [[ -n "$passed" ]]; then
+    _cb_lifecycle_say "no trusted lifecycle state utility: $passed is not trusted (its owner, its mode or a directory above it); refusing to run it"
+  else
+    _cb_lifecycle_say "the lifecycle state utility (lifecycle-state.py) is not installed"
+  fi
+  return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+}
+
+# $1 as a JSON string. Byte by byte under LC_ALL=C, so UTF-8 passes through
+# untouched (the utility refuses anything that is not UTF-8) and every
+# control byte becomes a \u escape.
+_cb_lifecycle_json_string() {
+  local LC_ALL=C s="$1" out="" c code i
+  for (( i = 0; i < ${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      '"') out+='\"' ;;
+      '\') out+='\\' ;;
+      [[:cntrl:]])
+        printf -v code '%d' "'$c"
+        printf -v c '\\u%04x' "$code"
+        out+="$c"
+        ;;
+      *) out+="$c" ;;
+    esac
+  done
+  printf '"%s"' "$out"
+}
+
+# The JSON request for utility request $1 from key=value arguments. Values
+# are strings, except expected_generation.
+_cb_lifecycle_request() {
+  local json arg key value
+  json="{\"request\":$(_cb_lifecycle_json_string "$1")"
+  shift
+  for arg in "$@"; do
+    key="${arg%%=*}"
+    value="${arg#*=}"
+    if [[ "$arg" != *=* || ! "$key" =~ ^[a-z][a-z0-9_]{0,63}$ ]]; then
+      _cb_lifecycle_say "internal error: a state request takes key=value arguments"
+      return "$CB_LIFECYCLE_EXIT_USAGE"
+    fi
+    if [[ "$key" == expected_generation ]]; then
+      if [[ ! "$value" =~ ^[1-9][0-9]{0,15}$ ]]; then
+        _cb_lifecycle_say "internal error: expected_generation is a positive integer"
+        return "$CB_LIFECYCLE_EXIT_USAGE"
+      fi
+      json+=",\"$key\":$value"
+    elif [[ "$key" == "done" || "$key" == total || "$key" == duration_ms ]]; then
+      if [[ ! "$value" =~ ^(0|[1-9][0-9]{0,15})$ ]]; then
+        _cb_lifecycle_say "internal error: $key is a count"
+        return "$CB_LIFECYCLE_EXIT_USAGE"
+      fi
+      json+=",\"$key\":$value"
+    else
+      json+=",\"$key\":$(_cb_lifecycle_json_string "$value")"
+    fi
+  done
+  printf '%s}' "$json"
+}
+
+# Run state utility request $1 (inspect, begin, checkpoint, emit or list) with
+# key=value members; its acknowledgement lines go to stdout and its exit code
+# is returned. Prefer cb_lifecycle_begin and cb_lifecycle_checkpoint for
+# writes: they bind the lock and track the generation.
+#
+# The utility writes a request's event to the event descriptor itself, once
+# the record is durable and while it still holds its writer lock, so that
+# every holder of the lock (this shell, a subshell, a child it handed the lock
+# to) puts its events on the descriptor in sequence order. It sees the
+# descriptor only when this library accepts it, and checks it again itself.
+cb_lifecycle_state() {
+  local request="${1:-}" json events="" rc=0
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  _cb_lifecycle_forget_exported_state
+  if [[ -z "${_CB_LIFECYCLE_PYTHON:-}" ]]; then
+    cb_lifecycle_python || return $?
+  fi
+  _cb_lifecycle_find_utility || return $?
+  json="$(_cb_lifecycle_request "$request" "$@")" || return $?
+  if _cb_lifecycle_event_fd_valid; then
+    events="$CB_LIFECYCLE_EVENT_FD"
+  fi
+  CB_LIFECYCLE_EVENT_FD="$events" "$_CB_LIFECYCLE_PYTHON" -I -B "$_CB_LC_UTILITY" <<<"$json" || rc=$?
+  return "$rc"
+}
+
+# Read an acknowledgement into _CB_LC_ACK_{OPERATION,GENERATION}, each line
+# matched against its own shape; warnings go to stderr. Nothing in it is ever
+# evaluated, and its `event` line is not emitted again: the utility has
+# written it to the descriptor already.
+_cb_lifecycle_read_ack() {
+  local line key value
+  _CB_LC_ACK_OPERATION="" _CB_LC_ACK_GENERATION=""
+  while IFS= read -r line; do
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      operation_id) if _cb_lifecycle_valid_operation "$value"; then _CB_LC_ACK_OPERATION="$value"; fi ;;
+      generation) if [[ "$value" =~ ^[1-9][0-9]{0,15}$ ]]; then _CB_LC_ACK_GENERATION="$value"; fi ;;
+      warning) printf 'lifecycle state: warning: %s\n' "$value" >&2 ;;
+    esac
+  done <<<"$1"
+}
+
+# Remember generation $2 of operation $1 as this shell's last acknowledged
+# view; $3 set means a checkpoint is now in flight, unacknowledged until
+# remembered again.
+_cb_lifecycle_remember_generation() {
+  _CB_LIFECYCLE_GEN_OPERATION="$1"
+  _CB_LIFECYCLE_GENERATION="$2"
+  _CB_LIFECYCLE_GEN_UNSURE="${3:-}"
+  export -n _CB_LIFECYCLE_GEN_OPERATION _CB_LIFECYCLE_GENERATION _CB_LIFECYCLE_GEN_UNSURE
+}
+
+# Whether CB_LIFECYCLE_EVENT_FD names a descriptor events may go to: 3 or
+# above, not the lock, and a pipe, socket or file.
+_cb_lifecycle_event_fd_valid() {
+  local fd="${CB_LIFECYCLE_EVENT_FD:-}"
+  [[ "$fd" =~ ^[1-9][0-9]{0,4}$ ]] && (( fd >= 3 )) || return 1
+  [[ "$fd" != "${_CB_LIFECYCLE_LOCK_FD:-}" && "$fd" != "${CB_LIFECYCLE_LOCK_FD:-}" ]] || return 1
+  [[ -p "/dev/fd/$fd" || -S "/dev/fd/$fd" || -f "/dev/fd/$fd" ]]
+}
+
+# Emit one progress, phase or diagnostic event of the operation the lock is
+# bound to (ruling R15): key=value members type (phase, progress or
+# diagnostic) and that type's members, phase status [duration_ms], phase done
+# [total] unit, or level message [code]. The state utility spends the
+# operation's next sequence on it and writes it to the descriptor under its
+# writer lock, so events and checkpoints of nested native processes share one
+# rising sequence and reach the descriptor in that order. Without a valid
+# CB_LIFECYCLE_EVENT_FD nothing is emitted and nothing is written. Events are
+# presentation: only a malformed event (2) is an error, and any other failure
+# to emit one returns 0 so it never stops the operation.
+cb_lifecycle_emit() {
+  local op="${CB_LIFECYCLE_OPERATION:-}" out rc=0
+  _cb_lifecycle_forget_exported_state
+  _cb_lifecycle_event_fd_valid || return 0
+  if ! _cb_lifecycle_valid_operation "$op"; then
+    _cb_lifecycle_say "internal error: an event needs the operation the lock is bound to"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  out="$(cb_lifecycle_state emit operation_id="$op" "$@")" || rc=$?
+  if [[ "$rc" -eq "$CB_LIFECYCLE_EXIT_USAGE" ]]; then
+    return "$rc"
+  fi
+  return 0
+}
+
+# Start an operation under the lock this shell holds: the utility allocates
+# its ID, writes its first durable record and emits its checkpoint event, then
+# the lock is bound to it. Members are key=value: kind, action,
+# adapter, and optionally plan_digest, identity_digest, source_version,
+# source_artifact_digest, target_version, target_artifact_digest,
+# recovery_operation_id, recovery_manifest_digest and evidence_check,
+# evidence_result, evidence_detail. Returns the utility's code: 9 while an
+# unfinished transaction (or, for a transaction, a record that requires
+# inspection) exists, 7 when the record cannot be made durable.
+cb_lifecycle_begin() {
+  local out rc=0
+  _cb_lifecycle_forget_exported_state
+  if ! _cb_lifecycle_held_here; then
+    _cb_lifecycle_say "internal error: an operation begins in the shell that holds the lock"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  if [[ -z "${_CB_LIFECYCLE_PYTHON:-}" ]]; then
+    cb_lifecycle_python || return $?
+  fi
+  out="$(cb_lifecycle_state begin "$@")" || rc=$?
+  _cb_lifecycle_read_ack "$out"
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  if [[ -z "$_CB_LC_ACK_OPERATION" || "$_CB_LC_ACK_GENERATION" != 1 ]]; then
+    _cb_lifecycle_say "internal error: the state utility did not acknowledge the operation"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  cb_lifecycle_lock_bind_operation "$_CB_LC_ACK_OPERATION" || return $?
+  _cb_lifecycle_remember_generation "$_CB_LC_ACK_OPERATION" 1
+}
+
+# Record the next durable checkpoint of the operation the lock is bound to:
+# key=value members state, and optionally step, cause, outcome, error_code
+# with error_reason, recovery_operation_id with recovery_manifest_digest, and
+# evidence_*. The utility emits the checkpoint event only once the record is
+# durable.
+#
+# Under the held lock only this operation's own writers can move its journal:
+# this shell, a subshell of it, or a child it handed the lock to (cb update ->
+# restore.sh), whose view of the generation dies with it. So each checkpoint
+# first learns the journal's current generation, and names it as the expected
+# one: a writer that slips in between still makes this one stale (9). The one
+# thing this shell cannot learn is whether a checkpoint it sent that went
+# unacknowledged (7, or no answer) landed anyway. While the journal still has
+# the generation this shell last saw, nothing landed and it goes on. Once the
+# journal has moved past it, the record may be its own, so this and every
+# later checkpoint of the operation from this shell is stale (9) and the
+# caller stops before its next change, as for any failed checkpoint.
+cb_lifecycle_checkpoint() {
+  local op="${CB_LIFECYCLE_OPERATION:-}" out rc=0 current
+  _cb_lifecycle_forget_exported_state
+  if ! _cb_lifecycle_valid_operation "$op"; then
+    _cb_lifecycle_say "internal error: a checkpoint needs the operation the lock is bound to"
+    return "$CB_LIFECYCLE_EXIT_USAGE"
+  fi
+  if [[ -z "${_CB_LIFECYCLE_PYTHON:-}" ]]; then
+    cb_lifecycle_python || return $?
+  fi
+  out="$(cb_lifecycle_state inspect operation_id="$op")" || return $?
+  _cb_lifecycle_read_ack "$out"
+  current="$_CB_LC_ACK_GENERATION"
+  if [[ -z "$current" || "$_CB_LC_ACK_OPERATION" != "$op" ]]; then
+    _cb_lifecycle_say "internal error: the state utility did not report $op"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  if [[ "${_CB_LIFECYCLE_GEN_OPERATION:-}" == "$op" && -n "${_CB_LIFECYCLE_GEN_UNSURE:-}" \
+    && "$current" != "${_CB_LIFECYCLE_GENERATION:-}" ]]; then
+    _cb_lifecycle_say "$op is at generation $current, past the $_CB_LIFECYCLE_GENERATION this shell last saw, and its last checkpoint here was not acknowledged: that record may be its own, so this checkpoint is stale; inspect the operation before changing anything"
+    return "$CB_LIFECYCLE_EXIT_MANUAL"
+  fi
+  _cb_lifecycle_remember_generation "$op" "$current" in-flight
+  out="$(cb_lifecycle_state checkpoint operation_id="$op" expected_generation="$current" "$@")" || rc=$?
+  _cb_lifecycle_read_ack "$out"
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  if [[ "$_CB_LC_ACK_OPERATION" != "$op" || -z "$_CB_LC_ACK_GENERATION" ]]; then
+    _cb_lifecycle_say "internal error: the state utility did not acknowledge the checkpoint"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  _cb_lifecycle_remember_generation "$op" "$_CB_LC_ACK_GENERATION"
+  if [[ " $* " == *" state=applying "* ]]; then cb_lifecycle_mark_mutation; fi
+}
+
+# INT and TERM at the lock boundary (Task 5b). An entrypoint arms this once,
+# right after it takes the lock, and marks its first change of the host:
+#
+#   cb_lifecycle_arm_interrupt          # installs the INT and TERM traps
+#   cb_lifecycle_mark_mutation          # the next change is the first one
+#
+# A signal that arrives first has changed nothing: the trap exits 130 (INT) or
+# 143 (TERM), which runs the entrypoint's own EXIT trap (its staging cleanup)
+# and closes the lock descriptor with the process. One that arrives after the
+# mark prints that the operation was interrupted after changes began and
+# exits the same way, leaving the host for `cb doctor` to inspect. Either way
+# an orchestrated operation (CB_LIFECYCLE_OPERATION) records the interruption
+# as the contract's section 4 defines it: `interrupted`, closed with outcome
+# interrupted, before the mark; `recovery_required` with cause interrupted
+# after it. Bash runs a trap only once its foreground command has finished, so
+# a child still mutating is waited for and the lock stays held until it exits;
+# `wait` covers background children. The trap string ends in `exit`, which the
+# library's functions never do. Arming again, as a nested acquire does, keeps
+# the mark. Only INT and TERM reach it, so no other
+# failure's status changes, and an existing ERR or EXIT trap is left alone.
+cb_lifecycle_arm_interrupt() {
+  _CB_LIFECYCLE_MUTATED="${_CB_LIFECYCLE_MUTATED-}"
+  trap 'cb_lifecycle_interrupted INT; exit 130' INT
+  trap 'cb_lifecycle_interrupted TERM; exit 143' TERM
+}
+
+cb_lifecycle_mark_mutation() {
+  _CB_LIFECYCLE_MUTATED=1
+}
+
+# The body of the traps above, for signal name $1. Always returns 0.
+cb_lifecycle_interrupted() {
+  trap '' INT TERM
+  wait 2>/dev/null || true
+  if [[ -n "${_CB_LIFECYCLE_MUTATED:-}" ]]; then
+    printf '%s\n' "Interrupted by $1 after changes began. Run 'cb doctor' (or re-run the command) to inspect what was changed." >&2
+    if _cb_lifecycle_valid_operation "${CB_LIFECYCLE_OPERATION:-}"; then
+      cb_lifecycle_checkpoint state=recovery_required cause=interrupted error_code=INTERRUPTED \
+        "error_reason=interrupted by $1 after changes began" || true
+    fi
+  elif _cb_lifecycle_valid_operation "${CB_LIFECYCLE_OPERATION:-}"; then
+    cb_lifecycle_checkpoint state=interrupted cause=interrupted outcome=interrupted || true
+  fi
+  return 0
+}
+
+# Install the control plane from bundle deploy directory $1 into $2 (default
+# /usr/local/lib/circuitbreaker): this library, the state utility and the
+# release trust material (bundle-signature.sh, which embeds the release
+# bundle keys). Outside the release tree, so replacing or removing the server
+# never removes its recovery tools. Every source is checked before anything
+# is written, and each file is replaced by an atomic rename. Directory 0755,
+# files 0644, the utility 0755, all root's when run as root. Returns 0, 6 or 7.
+cb_lifecycle_install_control_plane() {
+  local src="${1:-}" dest="${2:-$CB_LIFECYCLE_CONTROL_PLANE}" item from name perm tmp
+  local -a items=("lib/lifecycle.sh lifecycle.sh 644" "scripts/lifecycle-state.py lifecycle-state.py 755" \
+    "lib/bundle-signature.sh bundle-signature.sh 644" \
+    "lib/release-retention.sh release-retention.sh 644" "scripts/rollback-release.sh rollback-release.sh 755")
+  for item in "${items[@]}"; do
+    read -r from name perm <<<"$item"
+    if [[ ! -f "$src/$from" || -L "$src/$from" ]]; then
+      _cb_lifecycle_say "cannot install the lifecycle control plane: $src/$from is missing"
+      return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+    fi
+  done
+  if [[ -L "$dest" ]] || { [[ -e "$dest" ]] && [[ ! -d "$dest" ]]; }; then
+    _cb_lifecycle_say "$dest is not a directory; refusing to install into it"
+    return "$CB_LIFECYCLE_EXIT_PERMISSION"
+  fi
+  if [[ ! -d "$dest" ]] && ! ( umask 022 && mkdir -p -- "$dest" ) 2>/dev/null; then
+    _cb_lifecycle_say "cannot create $dest"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  if ! chmod 755 -- "$dest" 2>/dev/null || { [[ "$EUID" -eq 0 ]] && ! chown 0:0 -- "$dest" 2>/dev/null; }; then
+    _cb_lifecycle_say "cannot make $dest root's, mode 0755"
+    return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+  fi
+  for item in "${items[@]}"; do
+    read -r from name perm <<<"$item"
+    if ! tmp="$(mktemp "$dest/.$name.XXXXXX" 2>/dev/null)"; then
+      _cb_lifecycle_say "cannot write in $dest"
+      return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+    fi
+    if ! cp -- "$src/$from" "$tmp" 2>/dev/null || ! chmod "$perm" -- "$tmp" 2>/dev/null \
+      || { [[ "$EUID" -eq 0 ]] && ! chown 0:0 -- "$tmp" 2>/dev/null; } \
+      || ! mv -f -- "$tmp" "$dest/$name" 2>/dev/null; then
+      rm -f -- "$tmp" 2>/dev/null || true
+      _cb_lifecycle_say "cannot install $dest/$name"
+      return "$CB_LIFECYCLE_EXIT_PREFLIGHT"
+    fi
+  done
+}
+# --- END INLINED deploy/lib/lifecycle.sh ---
+
+# --- BEGIN INLINED deploy/lib/release-retention.sh — regenerate with scripts/ci/sync_installer_ui.py ---
+# shellcheck shell=bash
+# Native release retention. Caller holds the lifecycle lock through health.
+# Data recovery remains an explicit cb restore; no migration reversal is inferred.
+CB_PREVIOUS_RELEASE=/opt/circuitbreaker.previous
+# Root-owned, so rollback can trust the snapshot it restores; a HOME-relative
+# default could land under a user's home when sudo keeps HOME.
+CB_UPDATE_SNAPSHOT_DIR=/var/backups/circuitbreaker
+_CB_RELEASE_MOVED=false
+_CB_RELEASE_STOPPED=false
+_CB_RELEASE_BACKUP=""
+
+cb_release_stop_writers() {
+  local worker
+  for worker in discovery notification telemetry integration monitor_scheduler monitor_poll monitor_probe_dispatch; do
+    systemctl stop "circuitbreaker-worker@${worker}" || return 7
+  done
+  systemctl stop circuitbreaker-backend || return 7
+}
+
+# Remove earlier trees under one path prefix (the previous, retained or failed
+# release) so each update keeps one of each instead of a full release per run.
+_cb_release_prune() {
+  local tree
+  for tree in "$1"*; do
+    [[ -e "$tree" || -L "$tree" ]] || continue
+    rm -rf -- "$tree" || return 7
+  done
+}
+
+cb_release_prepare() {
+  [[ "${UPGRADE_MODE:-false}" == true ]] || return 0
+  [[ -d /opt/circuitbreaker && ! -L /opt/circuitbreaker ]] || return 7
+  # Capture with the OLD runtime and schema, before stage0 installs new files.
+  # The staged bundle's cb drives it: an installed cb older than 0.4.7 has no
+  # native snapshot route and never reports the path on fd 4.
+  local reference cli=/usr/local/bin/cb
+  [[ -n "${CB_BUNDLE_DIR:-}" && -f "$CB_BUNDLE_DIR/deploy/cli/cb" ]] && cli="$CB_BUNDLE_DIR/deploy/cli/cb"
+  reference="$(mktemp)" || return 7
+  chmod 600 "$reference"
+  mkdir -p "$CB_UPDATE_SNAPSHOT_DIR" && chmod 700 "$CB_UPDATE_SNAPSHOT_DIR" || return 7
+  if ! CB_BACKUP_DIR="$CB_UPDATE_SNAPSHOT_DIR" bash "$cli" backup 4>"$reference"; then
+    rm -f -- "$reference"
+    echo 'Pre-update snapshot failed; release was not replaced.' >&2
+    return 7
+  fi
+  IFS= read -r _CB_RELEASE_BACKUP < "$reference" || true
+  rm -f -- "$reference"
+  [[ -n "$_CB_RELEASE_BACKUP" && -s "$_CB_RELEASE_BACKUP" ]] || return 7
+  printf 'Backup: %s\nRestore manually: sudo cb restore %q\n' "$_CB_RELEASE_BACKUP" "$_CB_RELEASE_BACKUP"
+  _CB_RELEASE_STOPPED=true
+  cb_release_stop_writers || return $?
+  # The release about to move aside supersedes the older one; the older
+  # snapshot itself stays in the snapshot directory.
+  _cb_release_prune "$CB_PREVIOUS_RELEASE" || return 7
+  mv -T -- /opt/circuitbreaker "$CB_PREVIOUS_RELEASE" || return 7
+  _CB_RELEASE_MOVED=true
+  if [[ -f /etc/circuitbreaker/install-identity.json ]]; then
+    _cb_lifecycle_trusted_program /etc/circuitbreaker/install-identity.json || return 7
+    cp -- /etc/circuitbreaker/install-identity.json "$CB_PREVIOUS_RELEASE/.cb-install-identity.json" || return 7
+    chmod 644 "$CB_PREVIOUS_RELEASE/.cb-install-identity.json" || return 7
+  fi
+  (umask 077; printf '%s\n' "$_CB_RELEASE_BACKUP" > "$CB_PREVIOUS_RELEASE/.cb-backup-reference") || return 7
+  # Rollback applies only while the release this one was replaced by is installed.
+  (umask 077; printf '%s\n' "${CB_EXPECTED_VERSION:-}" > "$CB_PREVIOUS_RELEASE/.cb-replaced-by") || return 7
+}
+
+cb_release_restore_identity() {
+  local saved=/opt/circuitbreaker/.cb-install-identity.json tmp
+  [[ -f "$saved" ]] || return 0
+  _cb_lifecycle_trusted_program "$saved" || return 9
+  tmp="$(mktemp /etc/circuitbreaker/.install-identity.XXXXXXXX)" || return 9
+  if ! cp -- "$saved" "$tmp" || ! chmod 644 "$tmp" || ! mv -T -- "$tmp" /etc/circuitbreaker/install-identity.json; then
+    rm -f -- "$tmp"
+    return 9
+  fi
+}
+
+# Ready on /readyz and running the expected release. The API reports its
+# version only to authenticated callers, so the version is the installed
+# tree's: the services were just restarted from /opt/circuitbreaker.
+cb_release_health() {
+  local expected="$1" attempt installed
+  [[ "$expected" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 7
+  installed="$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null)" || installed=""
+  if [[ "$installed" != "$expected" ]]; then
+    echo "Installed release is ${installed:-unknown}, expected $expected." >&2
+    return 7
+  fi
+  for ((attempt=0; attempt<60; attempt++)); do
+    if curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8000/api/v1/readyz >/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "Readiness/version check failed for $expected." >&2
+  return 7
+}
+
+cb_release_revert_failed() {
+  if [[ "$_CB_RELEASE_MOVED" != true ]]; then
+    [[ "$_CB_RELEASE_STOPPED" == true ]] || return 0
+    systemctl restart circuitbreaker.target circuitbreaker-backend || return 9
+    cb_release_health "$(cat /opt/circuitbreaker/share/VERSION)" || return 9
+    return 8
+  fi
+  # Retain the failed tree for diagnosis instead of deleting changed state.
+  cb_release_stop_writers || return 9
+  _cb_release_prune /opt/circuitbreaker.failed. || return 9
+  local failed
+  failed="$(mktemp -d /opt/circuitbreaker.failed.XXXXXXXX)" || return 9
+  rmdir "$failed" || return 9
+  if [[ -e /opt/circuitbreaker ]]; then
+    [[ ! -L /opt/circuitbreaker ]] || return 9
+    mv -T -- /opt/circuitbreaker "$failed" || return 9
+  fi
+  mv -T -- "$CB_PREVIOUS_RELEASE" /opt/circuitbreaker || return 9
+  _CB_RELEASE_MOVED=false
+  cb_release_restore_identity || return 9
+  systemctl daemon-reload || return 9
+  systemctl restart circuitbreaker.target circuitbreaker-backend || return 9
+  printf 'Previous release restored. Database restoration is manual: sudo cb restore %q\n' "$_CB_RELEASE_BACKUP" >&2
+  local previous
+  previous="$(cat /opt/circuitbreaker/share/VERSION)" || return 9
+  cb_release_health "$previous" || return 9
+  return 8
+}
+# --- END INLINED deploy/lib/release-retention.sh ---
+
+# Take the lifecycle lock for this run, labelled $1, or stop with the
+# library's exit code (10 while another lifecycle operation holds it, 6 for a
+# permission failure, 7 when the state root cannot be prepared). Called before
+# the first change on every path, so a refusal leaves the host untouched. The
+# lock is released when this process (and every child it handed it to) exits;
+# deploy/setup.sh, sourced into this shell, nests its own acquisitions on it.
+cb_take_lifecycle_lock() {
+  local rc=0
+  cb_lifecycle_lock_acquire "$1" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    exit "$rc"
+  fi
+  # INT/TERM: before the first change (marked below) it only exits 130/143.
+  cb_lifecycle_arm_interrupt
+}
+
 # GitHub repo for release downloads
 CB_GITHUB_REPO="BlkLeg/CircuitBreaker"
 CB_RELEASE_API="https://api.github.com/repos/${CB_GITHUB_REPO}/releases"
@@ -620,6 +2086,7 @@ case "$_cb_verbose_from_env" in
 esac
 unset _cb_verbose_from_env
 export CB_VERBOSE
+CB_NPM_RESULT=false
 UNATTENDED=false
 UPGRADE_MODE=false
 NO_TLS=false
@@ -627,6 +2094,19 @@ FORCE_DEPS=false
 DOCKER_AVAILABLE=false
 INSTALL_DOCKER=true
 SKIP_CHECKSUM=false
+SKIP_SIGNATURE=false
+# The pinned v0.4.6 bundles (CB_UNSIGNED_PIN_*) live in the inlined
+# bundle-signature library above, shared with cb-proxmox-deploy.sh. Without
+# --version, an unsigned release is installed only if its tarball is one of
+# them; an older release the operator names with --version may still be
+# installed unsigned (see cb_unsigned_release_allowed).
+# True only when the operator passed --version; CB_VERSION is later overwritten
+# from the release tag, which is not operator intent.
+CB_VERSION_EXPLICIT=false
+# Private (0700) temp dir holding the downloaded tarball, its SHA256SUMS and
+# SHA256SUMS.sig, and the extracted bundle; removed by stage0_install_bundle
+# once the tree is installed, and by _cb_on_exit on every other exit path.
+CB_PRIVATE_TMP=""
 DOCKER_MODE=false
 
 # UI Functions
@@ -712,6 +2192,7 @@ cb_logo() {
 }
 
 cb_header() {
+  [[ "${CB_RENDERER_OWNER:-}" != node ]] || return 0
   # Tear the live region down before `clear` (and before the headline/box it
   # prints below). `clear` wipes the whole screen, which already destroys the
   # bar/timer line, but _CB_LIVE_ON never learns that: it is only cleared by
@@ -726,6 +2207,10 @@ cb_header() {
   # this script can produce. TERM is unset in exactly the environments
   # --unattended exists for: Proxmox LXC provisioning, cloud-init, Ansible, CI,
   # and `ssh host 'bash install.sh'` without -t.
+  if [[ ! -t 1 || "${NO_COLOR+x}" == x || "${TERM:-dumb}" == dumb ]]; then
+    printf '\nCircuit Breaker Installer\n\n'
+    return 0
+  fi
   clear 2>/dev/null || true
 
   # cb_ui_teardown above shows the cursor again (it's the same call the EXIT
@@ -737,17 +2222,15 @@ cb_header() {
   # cb_logo needs 64 columns. Narrower than that and every line of it wraps into
   # rubble; a piped or TTY-less install has no width to ask about at all. Both
   # fall back to the box, which fits in 46.
-  if cb_term_at_least 66; then
+  local rows
+  rows="$(tput lines 2>/dev/null || true)"
+  [[ "$rows" =~ ^[0-9]+$ ]] || rows="${LINES:-24}"
+  if cb_term_at_least 66 && [[ "$rows" =~ ^[0-9]+$ && "$rows" -ge 30 ]]; then
     cb_logo
     return 0
   fi
 
-  echo -e "${CYAN}${BOLD}"
-  echo "  ╔══════════════════════════════════════════╗"
-  echo "  ║         Circuit Breaker Installer        ║"
-  echo "  ║                 $(cb_version)                 ║"
-  echo "  ╚══════════════════════════════════════════╝"
-  echo -e "${RESET}"
+  printf '\nCircuit Breaker Installer  %s\n\n' "$(cb_version)"
 }
 
 # Read-only diagnostics run automatically by cb_fail, populated before each
@@ -822,6 +2305,13 @@ cb_fail() {
     echo -e "  ${YELLOW}→  $2${RESET}"
   fi
 
+  # A refusal before anything ran (cb_require_root) has no progress, no log
+  # and nothing to re-run verbosely: its own message is the whole answer.
+  if [[ "${_CB_FAIL_BEFORE_START:-false}" == true ]]; then
+    echo ""
+    exit "${_CB_FAIL_STATUS:-1}"
+  fi
+
   # The context the quiet screen withheld, at the only moment it matters.
   if declare -f cb_ui_ledger >/dev/null 2>&1; then
     cb_ui_ledger
@@ -877,14 +2367,82 @@ _cb_note_err() {
   _CB_ERR_AT="${file:-install.sh}:${line} in ${func}(): ${text:-${command}} (exit ${status})"
 }
 
+# Final authoritative child result; progress events never grant mutation authority.
+cb_install_result() {
+  local status="$1" outcome=committed state=committed error_code="" current="${CB_EXPECTED_VERSION:-}" recovery=false
+  if [[ -z "${CB_LIFECYCLE_OPERATION:-}" ]]; then
+    # Stopped at a check before any operation began: nothing was changed. Tell
+    # the npm coordinator so, or it can only report that no result arrived.
+    if [[ "$status" -ne 0 && "${CB_NPM_RESULT:-false}" == true ]]; then
+      local action=install
+      [[ "${UPGRADE_MODE:-false}" == true ]] && action=update
+      /usr/bin/python3 -I -c 'import json,sys
+action,target=sys.argv[1:]
+print("CIRCUITBREAKER_RESULT="+json.dumps(dict(schema_version=1,operation_id=None,action=action,outcome="refused",current_version=None,target_version=target or None,recovery_available=False,error=dict(code="PREFLIGHT",reason="The installer stopped at a check before changing anything; its output above says why."))))' "$action" "${CB_EXPECTED_VERSION:-}" 2>/dev/null || true
+    fi
+    return 0
+  fi
+  [[ -n "${_CB_RELEASE_BACKUP:-}" ]] && recovery=true
+  case "$status" in
+    0) cb_lifecycle_checkpoint state=committed outcome=committed || { status=9; outcome=recovery_required; } ;;
+    8) outcome=recovered; current="${CB_LIFECYCLE_SOURCE_VERSION:-}"; error_code=RECOVERED
+       cb_lifecycle_checkpoint state=recovered outcome=recovered error_code=RECOVERED "error_reason=previous release restored; data restore is manual" || { status=9; outcome=recovery_required; } ;;
+    *) outcome=recovery_required; current=""; error_code=MANUAL
+       # A fresh install has nothing to restore: a re-run resumes it (setup.sh treats
+       # an install without its identity as unfinished, not as an upgrade).
+       local reason="installer stopped; inspect retained release and restore instructions"
+       [[ "${CB_LIFECYCLE_ACTION:-install}" == install ]] && reason="fresh install stopped; re-run the installer to resume it"
+       cb_lifecycle_checkpoint state=recovery_required cause=apply_failed error_code=MANUAL "error_reason=$reason" || true
+       cb_lifecycle_checkpoint state=recovery_required cause=apply_failed outcome=manual error_code=MANUAL "error_reason=$reason" || true ;;
+  esac
+  if [[ "${CB_NPM_RESULT:-false}" == true ]]; then
+    /usr/bin/python3 -I -c 'import json,sys
+op,action,outcome,current,target,recovery,code=sys.argv[1:]
+r=dict(schema_version=1,operation_id=op,action=action,outcome=outcome,current_version=current or None,target_version=target or None,recovery_available=recovery=="true")
+if outcome != "committed": r["error"]=dict(code=code or "MANUAL",reason="Re-run the same install command to resume it." if action=="install" and outcome=="recovery_required" else "Inspect history and the printed backup/restore instructions.")
+print("CIRCUITBREAKER_RESULT="+json.dumps(r))' "$CB_LIFECYCLE_OPERATION" "${CB_LIFECYCLE_ACTION:-install}" "$outcome" "$current" "${CB_EXPECTED_VERSION:-}" "$recovery" "$error_code"
+  fi
+  return "$status"
+}
+
+# Private download and extraction directory (see stage0_download_bundle).
+_cb_remove_private_tmp() {
+  if [[ -n "${CB_PRIVATE_TMP:-}" ]]; then
+    rm -rf -- "$CB_PRIVATE_TMP"
+    CB_PRIVATE_TMP=""
+  fi
+}
+
 _cb_on_exit() {
   local status=$?
   trap - ERR
+  if [[ "$status" -eq 0 && -n "${CB_EXPECTED_VERSION:-}" ]]; then
+    cb_lifecycle_checkpoint state=checking || status=$?
+  fi
+  if [[ "$status" -eq 0 && -n "${CB_EXPECTED_VERSION:-}" ]]; then
+    cb_release_health "$CB_EXPECTED_VERSION" || status=$?
+  fi
+  if [[ "$status" -ne 0 && "${_CB_RELEASE_STOPPED:-false}" == true ]]; then
+    local recovery_status=0
+    cb_lifecycle_checkpoint state=recovering || true
+    cb_release_revert_failed || recovery_status=$?
+    status="$recovery_status"
+    _CB_EXIT_REPORTED=true
+    cb_install_result "$status" || status=$?
+    _cb_remove_private_tmp
+    cb_ui_teardown
+    exit "$status"
+  fi
+  cb_install_result "$status" || { status=$?; _CB_EXIT_REPORTED=true; }
+  # After cb_install_result: its final checkpoint may still run the bundle's
+  # interpreter from inside this directory (see cb_lifecycle_python in main).
+  _cb_remove_private_tmp
 
   if [[ "${status}" -eq 0 ]] || [[ "${_CB_EXIT_REPORTED:-false}" == "true" ]]; then
     if declare -f cb_ui_teardown >/dev/null 2>&1; then
       cb_ui_teardown
     fi
+    if [[ "$status" -ne 0 ]]; then exit "$status"; fi
     return 0
   fi
   _CB_EXIT_REPORTED=true
@@ -924,8 +2482,8 @@ cb_arm_exit_report() {
   set -E
   trap '_cb_note_err "$?" "${BASH_COMMAND}" "${BASH_SOURCE[0]:-}" "${LINENO}" "${FUNCNAME[0]:-main}"' ERR
   trap 'exit 129' HUP
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  trap 'cb_lifecycle_interrupted INT; exit 130' INT
+  trap 'cb_lifecycle_interrupted TERM; exit 143' TERM
   trap '_cb_on_exit' EXIT
 }
 
@@ -1019,18 +2577,44 @@ cb_render_template() {
   printf '%s\n' "$content" > "$dest"
 }
 
-cb_require_native_root() {
+# Re-run this installer through sudo when it is not root, before it takes the
+# host lifecycle lock or changes anything (cb_lifecycle_elevate, in the inlined
+# lifecycle library), from the file captured at the top level in
+# CB_INSTALL_SELF. Read from a pipe there is no file to re-run, so the operator
+# is told to pipe it to sudo instead, with their own arguments. $1 names the
+# install for the message ("native installation"); the rest are the
+# installer's arguments. A refusal exits 6, the lifecycle contract's
+# permission code, reported without the progress ledger, log or re-run footer:
+# nothing ran.
+cb_require_root() {
+  local what="$1" rc=0 quoted="" hint
+  shift
   if [[ $EUID -eq 0 ]]; then
     return 0
   fi
-
-  if command -v sudo >/dev/null 2>&1 && [[ -f "${BASH_SOURCE[0]}" ]]; then
-    echo -e "  ${CYAN}▸${RESET} Elevating privileges with sudo for native installation..."
-    exec sudo -E bash "${BASH_SOURCE[0]}" "$@"
+  if [[ -n "${CB_INSTALL_SELF:-}" && "${CB_LIFECYCLE_ELEVATED:-}" != 1 ]]; then
+    echo -e "  ${CYAN}▸${RESET} Elevating privileges with sudo for ${what}..."
   fi
+  cb_lifecycle_elevate "${CB_INSTALL_SELF:-}" "$@" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    if [[ $# -gt 0 ]]; then
+      printf -v quoted ' %q' "$@"
+    fi
+    if [[ -n "${CB_INSTALL_SELF:-}" ]]; then
+      hint="Run: sudo bash $(printf '%q' "${CB_INSTALL_SELF}")${quoted}"
+    else
+      printf -v hint 'Run: %s' \
+        "curl -fsSL https://raw.githubusercontent.com/${CB_GITHUB_REPO}/main/install.sh | sudo bash${quoted:+ -s --${quoted}}"
+    fi
+    # cb_fail prints with echo -e; doubled, a backslash from %q survives it.
+    _CB_FAIL_STATUS="$rc"
+    _CB_FAIL_BEFORE_START=true
+    cb_fail "Root privileges required for ${what}" "${hint//\\/\\\\}"
+  fi
+}
 
-  cb_fail "Root privileges required for native installation" \
-    "Run: curl -fsSL https://raw.githubusercontent.com/${CB_GITHUB_REPO}/main/install.sh | sudo bash"
+cb_require_native_root() {
+  cb_require_root "native installation" "$@"
 }
 
 docker_target_user() {
@@ -1120,7 +2704,12 @@ cb_install_docker_if_missing() {
 
   "${root_prefix[@]}" systemctl enable --now docker >/dev/null 2>&1 || cb_fail "Failed to start Docker daemon" "Check: sudo systemctl status docker"
 
-  if [[ $EUID -eq 0 ]]; then
+  if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    # Re-run through sudo for the host lifecycle lock: the operator who ran
+    # it still manages the stack, so they join the docker group as before.
+    usermod -aG docker "${SUDO_USER}" >/dev/null 2>&1 || true
+    cb_warn "Added ${SUDO_USER} to docker group. Run 'newgrp docker' or re-login if compose fails with permission errors."
+  elif [[ $EUID -eq 0 ]]; then
     cb_warn "Docker installed as root; compose commands will run as root in this session"
   else
     local current_user
@@ -1333,6 +2922,11 @@ CB_DATA_DIR=/data
 CB_INSTALL_DIR=${install_dir}
 CB_COMPOSE_FILE=${install_dir}/docker-compose.yml
 EOF
+    # Written as root (the installer re-runs itself through sudo for the host
+    # lifecycle lock), read by the operator's own `cb`: hand the tree back.
+    if [[ "${target_user}" != "$(id -un)" ]]; then
+      chown -R "${target_user}:" "${host_identity_dir}" 2>/dev/null || true
+    fi
     # Install host cb from checkout when available.
     local repo_cb
     repo_cb="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)/cb"
@@ -1341,10 +2935,28 @@ EOF
         || sudo install -Dm755 "$repo_cb" /usr/local/bin/cb 2>/dev/null \
         || cb_warn "Could not install /usr/local/bin/cb — copy ${repo_cb} manually"
       local resources_src="${repo_cb%/cb}/deploy/cli/cb_resources.py"
+      local terminal_src="${repo_cb%/cb}/deploy/cli/cb_terminal.py"
+      if [[ -f "$terminal_src" ]]; then
+        install -Dm644 "$terminal_src" /usr/local/lib/circuitbreaker/cb_terminal.py 2>/dev/null \
+          || sudo install -Dm644 "$terminal_src" /usr/local/lib/circuitbreaker/cb_terminal.py 2>/dev/null \
+          || cb_warn "Could not install cb_terminal.py — copy ${terminal_src} to /usr/local/lib/circuitbreaker/"
+      fi
       if [[ -f "$resources_src" ]]; then
         install -Dm644 "$resources_src" /usr/local/lib/circuitbreaker/cb_resources.py 2>/dev/null \
           || sudo install -Dm644 "$resources_src" /usr/local/lib/circuitbreaker/cb_resources.py 2>/dev/null \
           || cb_warn "Could not install cb_resources.py — copy ${resources_src} to /usr/local/lib/circuitbreaker/"
+      fi
+      # The lifecycle control plane the host cb locks and journals through:
+      # the files cb_lifecycle_install_control_plane (deploy/lib/lifecycle.sh)
+      # installs for native hosts. Not best-effort like the helpers above.
+      local plane_src="${repo_cb%/cb}/deploy" plane_item plane_dest
+      if [[ -f "${plane_src}/lib/lifecycle.sh" ]]; then
+        for plane_item in lib/lifecycle.sh:644 scripts/lifecycle-state.py:755 lib/bundle-signature.sh:644 lib/release-retention.sh:644 scripts/rollback-release.sh:755; do
+          plane_dest="/usr/local/lib/circuitbreaker/$(basename "${plane_item%%:*}")"
+          install -Dm"${plane_item##*:}" "${plane_src}/${plane_item%%:*}" "$plane_dest" 2>/dev/null \
+            || sudo install -Dm"${plane_item##*:}" "${plane_src}/${plane_item%%:*}" "$plane_dest" 2>/dev/null \
+            || cb_fail "Could not install ${plane_dest}" "Re-run the installer as root"
+        done
       fi
     fi
   fi
@@ -1502,78 +3114,146 @@ cb_pick_release() {
   esac
 }
 
-# Verify a downloaded bundle against the release's SHA256SUMS asset.
+# The history of why verification fails closed (the 404 on a never-published
+# ".sha256" asset, and why `--ignore-missing` is not used) lives above
+# cb_verify_sums_entry in the inlined library.
+# Download one release asset to <dest-dir>/<name> ($3, a private directory). 0: downloaded. 1: the release
+# does not publish it (the caller decides whether that is fatal). A failed
+# download stops the install: it is a network fault, not a verdict.
 #
-# $1 is the release JSON from the GitHub API, $2 the tarball's asset name; the
-# tarball itself is expected at /tmp/$2, where the caller downloaded it.
-#
-# This used to fetch "${tarball_url}.sha256", an asset no release has ever
-# published: release.yml builds one SHA256SUMS for the whole release
-# (`find . -maxdepth 1 -type f ! -name SHA256SUMS -exec sha256sum {} +`) and
-# uploads it alongside the artifacts. The fetch therefore 404'd every time --
-# and because the verification hung off an `elif curl ...` with no `else`, that
-# 404 skipped the check without printing a word. Every `curl | bash` install
-# unpacked and ran an unverified tarball as root while reporting success. So
-# this function fails closed: anything short of a matching hash stops the
-# install, and only --skip-checksum may waive it.
-cb_verify_bundle_checksum() {
-  local release_json="$1"
-  local tarball_name="$2"
+# The `|| true` keeps a truncated or proxy-mangled API body (jq exits 2) from
+# ending the install silently under `set -euo pipefail`; it falls through to
+# "not published", which cb_check_bundle then refuses out loud.
+cb_fetch_release_asset() {
+  local release_json="$1" name="$2" dest_dir="$3" url
+  url=$(printf '%s' "$release_json" | jq -r --arg n "$name" '.assets[] | select(.name==$n) | .browser_download_url' 2>/dev/null || true)
+  if [[ -z "$url" ]] || [[ "$url" == "null" ]]; then
+    return 1
+  fi
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 -o "${dest_dir}/${name}" "$url" \
+    || cb_fail "Could not download ${name} for release v${CB_VERSION}" \
+               "Check internet connectivity and re-run"
+}
+
+# Build provenance (GitHub attestation). Reported, never required: an
+# air-gapped host cannot reach Sigstore, and the signature has already
+# decided. Only called after a signature verified.
+cb_check_attestation() {
+  local tarball="$1"
+  if [[ "$CB_AIRGAP" == "true" ]]; then
+    cb_ok "Build provenance not checked (air-gapped)"
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+    cb_ok "Build provenance not checked (install and log in to the GitHub CLI to check it)"
+    return 0
+  fi
+  if gh attestation verify "$tarball" --repo "${CB_GITHUB_REPO}" >/dev/null 2>&1; then
+    cb_ok "Build provenance verified (GitHub attestation)"
+  else
+    cb_warn "Build provenance could not be verified with gh (offline, or this release has no attestation); the signature above still verified"
+  fi
+}
+
+# Whether a downloaded release with no SHA256SUMS.sig may be installed.
+# $1 version, $2 tarball.
+# - The tarball is one of the pinned v0.4.6 bundles (CB_UNSIGNED_PIN_*),
+#   matched by SHA-256 and file name: those exact bytes are known good.
+# - Or the operator asked for an older release with --version. Only a
+#   canonical X.Y.Z (no leading zeros, no v: --version and the tag each have
+#   their one v stripped) qualifies, because non-canonical forms (0.4.6.1,
+#   00.4.7) mis-order under version sorting.
+# Everything else must be signed.
+cb_unsigned_release_allowed() {
+  local v="$1" tarball="$2"
+  if cb_bundle_matches_unsigned_pin "$tarball"; then
+    return 0
+  fi
+  [[ "$CB_VERSION_EXPLICIT" == "true" ]] || return 1
+  [[ "$v" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || return 1
+  ! cb_release_requires_signature "$v"
+}
+
+# Decide whether a bundle may be installed: signature first, then hash.
+# $1 tarball, $2 SHA256SUMS path or "", $3 SHA256SUMS.sig path or "",
+# $4 origin (download|local), $5 release version or "" (local).
+# Implements the behaviour table in
+# docs/design/2026-09-30-release-bundle-signing-design.md.
+cb_check_bundle() {
+  local tarball="$1" sums="$2" sig="$3" origin="$4" version="$5"
+  local key_id rc name refetch tried signed=false
+  name="$(basename -- "$tarball")"
+  if [[ "$origin" == "download" ]]; then
+    refetch="Download SHA256SUMS and SHA256SUMS.sig again from https://github.com/${CB_GITHUB_REPO}/releases/tag/v${version}"
+  else
+    refetch="Copy the release's SHA256SUMS and SHA256SUMS.sig next to the bundle"
+  fi
 
   if [[ "$SKIP_CHECKSUM" == "true" ]]; then
-    cb_warn "Skipping SHA256 verification (--skip-checksum)"
+    cb_warn "Skipping bundle verification (--skip-checksum): neither the signature nor the SHA256 of ${name} is checked"
     return 0
   fi
 
+  if [[ -z "$sums" ]]; then
+    if [[ "$origin" == "local" ]] && [[ -z "$sig" ]]; then
+      # An unverified install is always the operator's explicit choice.
+      cb_fail "No SHA256SUMS or SHA256SUMS.sig next to ${tarball}: the bundle cannot be verified" \
+        "${refetch}. For a bundle you built yourself, pass --skip-checksum"
+    fi
+    cb_fail "No SHA256SUMS for ${name}" \
+      "${refetch}, or pass --skip-checksum only for a bundle you already trust"
+  fi
+
+  if [[ -n "$sig" ]] && [[ "$SKIP_SIGNATURE" != "true" ]]; then
+    cb_step "Verifying release signature"
+    local ssl_version
+    ssl_version="$(openssl version 2>/dev/null || true)"
+    if [[ ! "$ssl_version" =~ ^OpenSSL\ ([0-9]+)\. ]] || (( BASH_REMATCH[1] < 3 )); then
+      cb_fail "OpenSSL 3 is required to verify the release signature (found: ${ssl_version:-no openssl})" \
+        "Upgrade OpenSSL to 3.x, or pass --skip-signature only for a bundle you already trust"
+    fi
+    tried="$(cb_release_keys | cut -d' ' -f1 | paste -sd, -)"
+    if key_id="$(cb_verify_sums_signature "$sums" "$sig")"; then
+      cb_ok "Signature verified (key ${key_id})"
+      signed=true
+    else
+      rc=$?
+      if [[ -z "$tried" ]]; then
+        cb_fail "This installer trusts no release keys" \
+          "Use an install.sh from a release that ships its trusted key list, or pass --skip-signature only for a bundle you already trust"
+      fi
+      if (( rc == 2 )); then
+        cb_fail "SHA256SUMS.sig is unreadable" "${refetch}. Keys tried: ${tried}"
+      fi
+      cb_fail "SHA256SUMS signature does not verify — the release files may have been tampered with" \
+        "${refetch}. Keys tried: ${tried}. Pass --skip-signature only for a bundle you already trust"
+    fi
+  elif [[ "$SKIP_SIGNATURE" == "true" ]]; then
+    cb_warn "Skipping signature verification (--skip-signature); the SHA256 is still checked"
+  elif [[ "$origin" == "download" ]] && ! cb_unsigned_release_allowed "$version" "$tarball"; then
+    cb_fail "Release v${version} publishes no SHA256SUMS.sig" \
+      "Every release from v${CB_FIRST_SIGNED_RELEASE} on is signed, and an unsigned newest release is accepted only if it is the genuine v0.4.6 bundle; refusing this one. For a deliberate older install pass --version <x> (x below ${CB_FIRST_SIGNED_RELEASE}, without a leading v), or pass --skip-signature only for a bundle you already trust"
+  elif [[ "$origin" == "download" ]]; then
+    cb_warn "Release v${version} predates bundle signing (v${CB_FIRST_SIGNED_RELEASE}); checking its SHA256 only"
+  else
+    cb_warn "No SHA256SUMS.sig next to the bundle; checking its SHA256 only"
+  fi
+
   cb_step "Verifying checksum"
-
-  # `|| true` for the same reason as docker_target_home's getent: `echo` cannot
-  # fail, so this pipeline's status is jq's, and jq exits 2 on a body it cannot
-  # parse — a truncated or proxy-mangled response that still arrived with a 200,
-  # which is exactly what `curl -fsSL` hands back. As a bare assignment under
-  # `set -euo pipefail` that ended the install on this line, so the cb_fail
-  # below never ran and the operator could not tell whether an unverifiable
-  # bundle had been refused or the installer had simply crashed. Stopping is
-  # correct here — this function is deliberately fail-closed — but it has to
-  # stop *out loud*. An unparseable body leaves checksum_url empty and falls
-  # into the same branch as a release that publishes no SHA256SUMS at all.
-  local checksum_url
-  checksum_url=$(echo "$release_json" | jq -r '.assets[] | select(.name=="SHA256SUMS") | .browser_download_url' || true)
-  if [[ -z "$checksum_url" ]] || [[ "$checksum_url" == "null" ]]; then
-    cb_fail "Could not determine the SHA256SUMS asset for release v${CB_VERSION}" \
-      "The release publishes none, or the API response could not be parsed. Refusing to install a bundle that cannot be verified — pass --skip-checksum only for a bundle you already trust"
-  fi
-
-  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 -o /tmp/cb-SHA256SUMS "$checksum_url" \
-    || cb_fail "Could not download SHA256SUMS for release v${CB_VERSION}" \
-               "Check internet connectivity and re-run, or pass --skip-checksum only for a bundle you already trust"
-
-  # Pick out the one line covering our tarball and check that line alone.
-  #
-  # Deliberately not `sha256sum --ignore-missing -c SHA256SUMS`: that flag
-  # exits 0 when *none* of the listed files are present, so a SHA256SUMS that
-  # simply never mentions our tarball would "verify" — swapping in a foreign
-  # bundle plus an authentic checksum file for some other release defeats it.
-  # Selecting the line first turns "not listed" into its own failure. The
-  # comparison is on awk's second field rather than a substring, because
-  # SHA256SUMS also lists ./<tarball>.asc, which contains the tarball name.
-  #
-  # release.yml runs its `find . -maxdepth 1` from dist/release/, so every
-  # entry is written in ./<name> form; the check runs from /tmp, where the
-  # bundle was downloaded, so those relative paths resolve.
-  local expected_line
-  expected_line=$(awk -v want="./${tarball_name}" '$2 == want { print; exit }' /tmp/cb-SHA256SUMS)
-  rm -f /tmp/cb-SHA256SUMS
-  if [[ -z "$expected_line" ]]; then
-    cb_fail "Release v${CB_VERSION} publishes no checksum for ${tarball_name}" \
-      "Refusing to install a bundle that cannot be verified — pass --skip-checksum only for a bundle you already trust"
-  fi
-
-  if (cd /tmp && printf '%s\n' "$expected_line" | sha256sum -c - >/dev/null 2>&1); then
+  if cb_verify_sums_entry "$sums" "$tarball"; then
     cb_ok "SHA256 checksum verified"
   else
-    cb_fail "SHA256 mismatch — the bundle may be corrupted or tampered with" \
-      "Re-run to download it again, or pass --skip-checksum only for a bundle you already trust"
+    rc=$?
+    if (( rc == 3 )); then
+      cb_fail "${name} is not listed in SHA256SUMS" \
+        "The bundle must keep its release file name (circuit-breaker_<version>_linux_<arch>.tar.gz) and come from the same release as SHA256SUMS"
+    fi
+    cb_fail "SHA256 mismatch — ${name} may be corrupted or tampered with" \
+      "Download it again, or pass --skip-checksum only for a bundle you already trust"
+  fi
+
+  if [[ "$signed" == "true" ]]; then
+    cb_check_attestation "$tarball"
   fi
 }
 
@@ -1588,10 +3268,23 @@ stage0_download_bundle() {
     fi
     CB_BUNDLE_TARBALL="$CB_LOCAL_BUNDLE"
     cb_ok "Local bundle: $CB_LOCAL_BUNDLE"
+    local local_dir local_sums="" local_sig=""
+    local_dir="$(dirname -- "$CB_LOCAL_BUNDLE")"
+    [[ -f "${local_dir}/SHA256SUMS" ]] && local_sums="${local_dir}/SHA256SUMS"
+    [[ -f "${local_dir}/SHA256SUMS.sig" ]] && local_sig="${local_dir}/SHA256SUMS.sig"
+    cb_check_bundle "$CB_LOCAL_BUNDLE" "$local_sums" "$local_sig" local ""
   else
     # Query GitHub for release
     cb_step "Querying GitHub for release"
     local release_json
+    # What --version named, if anything. CB_VERSION is overwritten from the
+    # release tag below; this keeps the operator's request to check it against.
+    local requested="$CB_VERSION"
+    # An empty --version would pick from the channel while still counting as
+    # explicit, and only a version the operator named may install unsigned.
+    if [[ "$CB_VERSION_EXPLICIT" == "true" ]] && [[ -z "$requested" ]]; then
+      cb_fail "--version needs a release version" "For example: --version 0.4.7"
+    fi
     if [[ -n "$CB_VERSION" ]]; then
       release_json=$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "${CB_RELEASE_API}/tags/v${CB_VERSION}" 2>/dev/null) \
         || cb_fail "Release v${CB_VERSION} not found" "Check: https://github.com/${CB_GITHUB_REPO}/releases"
@@ -1625,6 +3318,20 @@ stage0_download_bundle() {
     if [[ -z "$CB_VERSION" ]] || [[ "$CB_VERSION" == "null" ]]; then
       cb_fail "Failed to parse release version" "GitHub API may be rate-limited"
     fi
+    # The tag names the files written below, and with --version it decides
+    # whether an older release may be installed unsigned
+    # (cb_unsigned_release_allowed). GitHub answers tags/vX with vX, so a tag
+    # that is not a release version, or another release than the one asked
+    # for, is not its answer: refused before anything is downloaded. Same
+    # rules as the npm CLI's resolveTarget.
+    if [[ ! "$CB_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+      cb_fail "The release answer names a tag that is not a release version" \
+        "Release tags look like v1.2.3; check that nothing between this host and GitHub rewrites HTTPS answers"
+    fi
+    if [[ -n "$requested" ]] && [[ "$CB_VERSION" != "$requested" ]]; then
+      cb_fail "Asked for release v${requested} but GitHub answered with v${CB_VERSION}" \
+        "The release answer may have been tampered with; check that nothing between this host and GitHub rewrites HTTPS answers"
+    fi
     cb_ok "Release: v${CB_VERSION}"
 
     local tarball_name="circuit-breaker_${CB_VERSION}_linux_${ARCH}.tar.gz"
@@ -1643,12 +3350,18 @@ stage0_download_bundle() {
     asset_size="$(printf '%s' "$release_json" \
       | jq -r --arg n "$tarball_name" '.assets[] | select(.name==$n) | .size')"
 
-    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "$tarball_url" -o "/tmp/${tarball_name}" &
+    # Private (0700) directory, not a predictable /tmp name another local user
+    # could pre-create or swap between the check and the extraction. It holds
+    # the tarball, SHA256SUMS, SHA256SUMS.sig and the extracted tree, and is
+    # removed by stage0_install_bundle, or by _cb_on_exit on any other exit.
+    CB_PRIVATE_TMP="$(mktemp -d)"
+    local tarball_path="${CB_PRIVATE_TMP}/${tarball_name}"
+    curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 15 "$tarball_url" -o "$tarball_path" &
     local curl_pid=$!
     if [[ "$asset_size" =~ ^[0-9]+$ ]] && (( asset_size > 0 )); then
       while kill -0 "$curl_pid" 2>/dev/null; do
         local got pct
-        got="$(stat -c '%s' "/tmp/${tarball_name}" 2>/dev/null || echo 0)"
+        got="$(stat -c '%s' "$tarball_path" 2>/dev/null || echo 0)"
         pct=$(( (got * 100) / asset_size ))
         # Clamped to 99: cb_progress takes a decimal fraction, so "0.100" would
         # parse as 0.10 and the bar would jump BACKWARDS to 10% on the last
@@ -1660,11 +3373,20 @@ stage0_download_bundle() {
       done
     fi
     wait "$curl_pid" || cb_fail "Download failed" "$tarball_url"
-    cb_ok "Downloaded $(du -h "/tmp/${tarball_name}" | cut -f1)"
+    cb_ok "Downloaded $(du -h "$tarball_path" | cut -f1)"
 
-    cb_verify_bundle_checksum "$release_json" "$tarball_name"
+    local sums_path="" sig_path=""
+    if [[ "$SKIP_CHECKSUM" != "true" ]]; then
+      if cb_fetch_release_asset "$release_json" SHA256SUMS "$CB_PRIVATE_TMP"; then
+        sums_path="${CB_PRIVATE_TMP}/SHA256SUMS"
+      fi
+      if [[ "$SKIP_SIGNATURE" != "true" ]] && cb_fetch_release_asset "$release_json" SHA256SUMS.sig "$CB_PRIVATE_TMP"; then
+        sig_path="${CB_PRIVATE_TMP}/SHA256SUMS.sig"
+      fi
+    fi
+    cb_check_bundle "$tarball_path" "$sums_path" "$sig_path" download "$CB_VERSION"
 
-    CB_BUNDLE_TARBALL="/tmp/${tarball_name}"
+    CB_BUNDLE_TARBALL="$tarball_path"
   fi
 
   # Extract bundle
@@ -1680,12 +3402,17 @@ stage0_download_bundle() {
   # permitted"), which otherwise aborts extraction outright. Dropping both is
   # safe because stage0_install_bundle unconditionally chowns/chmods every
   # subtree it copies from here.
+  #
+  # Extracted inside CB_PRIVATE_TMP (created here for --local-bundle, whose
+  # tarball lives elsewhere), never a fixed /tmp path.
   cb_step "Extracting bundle"
-  rm -rf /tmp/cb-bundle
-  mkdir -p /tmp/cb-bundle
-  tar -xzf "$CB_BUNDLE_TARBALL" -C /tmp/cb-bundle --no-same-owner --no-same-permissions \
+  if [[ -z "${CB_PRIVATE_TMP:-}" ]]; then
+    CB_PRIVATE_TMP="$(mktemp -d)"
+  fi
+  CB_BUNDLE_DIR="${CB_PRIVATE_TMP}/bundle"
+  mkdir -- "$CB_BUNDLE_DIR"
+  tar -xzf "$CB_BUNDLE_TARBALL" -C "$CB_BUNDLE_DIR" --no-same-owner --no-same-permissions \
     || cb_fail "Bundle extraction failed" "Tarball may be corrupted: $CB_BUNDLE_TARBALL — re-run to re-download"
-  CB_BUNDLE_DIR="/tmp/cb-bundle"
   # PBS is the release layout. PyInstaller onefile (root-level binary, no
   # python/) stays installable for one cycle so the journey can prove the
   # upgrade every existing native host will perform; Task 8 removes it.
@@ -1776,11 +3503,16 @@ stage0_install_bundle() {
     cb_ok "Agent binaries installed"
   fi
 
-  # Cleanup
-  rm -rf /tmp/cb-bundle
-  if [[ -z "$CB_LOCAL_BUNDLE" ]] && [[ -n "${CB_BUNDLE_TARBALL:-}" ]]; then
-    rm -f "$CB_BUNDLE_TARBALL"
-  fi
+  # Cleanup: the private directory holds the extracted tree and, for a
+  # download, the tarball and its SHA256SUMS(.sig). A --local-bundle tarball
+  # lives outside it and is left where the operator put it. On a host without
+  # a system python3 the lifecycle journal runs the bundle's interpreter from
+  # in here until the last checkpoint, so _cb_on_exit removes it instead.
+  case "${_CB_LIFECYCLE_PYTHON:-}" in
+    "${CB_PRIVATE_TMP:-/nonexistent}"/*) ;;
+    *) _cb_remove_private_tmp ;;
+  esac
+  CB_BUNDLE_DIR=""
 }
 
 
@@ -1813,6 +3545,7 @@ show_help() {
   echo "  --force-deps           Force reinstall dependencies in upgrade mode"
   echo "  --docker               Compose-only deployment (installs Docker if missing)"
   echo "  --skip-checksum        Skip SHA256 bundle verification (for a local bundle you already trust)"
+  echo "  --skip-signature       Skip the release signature check (SHA256 is still checked)"
   echo "  --airgap               Offline install: make no outbound request at all."
   echo "                         Installs no packages, adds no repository, downloads"
   echo "                         nothing. Requires --local-bundle and every dependency"
@@ -1826,6 +3559,11 @@ show_help() {
 # Preserve original args: the parser below consumes $@, but
 # cb_require_native_root must re-exec with the full flag set under sudo.
 CB_ORIG_ARGS=("$@")
+# The file this installer runs from, for that re-exec. Captured here at the top
+# level, where BASH_SOURCE is empty when the script is read from a pipe
+# (`curl ... | bash`). Inside a function it would be the word "bash" instead,
+# which names whatever ./bash sits in the working directory.
+CB_INSTALL_SELF="${BASH_SOURCE[0]:-}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -1854,7 +3592,9 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --version)
-      CB_VERSION="$2"
+      # One leading v is dropped: the release API is queried for tags/v<version>.
+      CB_VERSION="${2#v}"
+      CB_VERSION_EXPLICIT=true
       shift 2
       ;;
     --channel)
@@ -1889,8 +3629,21 @@ while [[ $# -gt 0 ]]; do
       DOCKER_MODE=true
       shift
       ;;
+    --npm-result)
+      CB_NPM_RESULT=true
+      CB_RENDERER_OWNER=node
+      shift
+      ;;
+    --no-animation)
+      CB_NO_ANIMATION=1
+      shift
+      ;;
     --skip-checksum)
       SKIP_CHECKSUM=true
+      shift
+      ;;
+    --skip-signature)
+      SKIP_SIGNATURE=true
       shift
       ;;
     --help)
@@ -1956,12 +3709,32 @@ CB_BUNDLE_DIR=""
 # ============================================================================
 
 main() {
+  # `bash -x` would write every secret these scripts handle into the trace: the
+  # vault key, JWT secret and database, Redis and NATS credentials from
+  # /etc/circuitbreaker/.env. Tracing is switched off unless it is asked for by name.
+  if [[ $- == *x* && "${CB_ALLOW_XTRACE:-}" != 1 ]]; then
+    { set +x; } 2>/dev/null
+    echo "Shell tracing (bash -x) is off: it would print the vault key and every service password. Use --verbose, or set CB_ALLOW_XTRACE=1 to trace anyway and treat the output as secret." >&2
+  fi
   if [[ "${DOCKER_MODE}" == "true" ]]; then
+    # The Docker install runs as the invoking user and never elevates. Root
+    # (or the CB_LIFECYCLE_ROOT test seam) takes the host lock; without it the
+    # install runs unlocked, silently.
+    if [[ $EUID -eq 0 || -n "${CB_LIFECYCLE_ROOT:-}" ]]; then
+      cb_take_lifecycle_lock "install.sh docker"
+    fi
+    cb_lifecycle_mark_mutation
     stage_docker_deploy
     exit 0
   fi
 
   cb_require_native_root "$@"
+
+  if [[ "${UPGRADE_MODE}" == "true" ]]; then
+    cb_take_lifecycle_lock "install.sh upgrade"
+  else
+    cb_take_lifecycle_lock "install.sh"
+  fi
 
   # Set and truncate before cb_ui_init: _cb_log no-ops on an empty LOG_FILE,
   # and cb_ui_init's own "ui: mode=" line plus everything stage0_bootstrap_
@@ -1989,7 +3762,32 @@ main() {
   stage0_download_bundle
   cb_phase_end bundle
 
+  local expected_version
+  expected_version="$(cat "${CB_BUNDLE_DIR}/share/VERSION")"
+  CB_EXPECTED_VERSION="$expected_version"
+  # The lifecycle journal needs a trusted Python, resolved before the first
+  # change (ruling R13). The system python3 comes first; a host without one
+  # falls back to the verified bundle's own runtime, which is why
+  # stage0_install_bundle keeps CB_PRIVATE_TMP while that interpreter is in use.
+  local bundle_python=""
+  if [[ -x "${CB_BUNDLE_DIR}/python/bin/python3" ]]; then
+    bundle_python="${CB_BUNDLE_DIR}/python/bin/python3"
+  fi
+  cb_lifecycle_python "$bundle_python" || exit $?
+  cb_lifecycle_install_control_plane "$CB_BUNDLE_DIR/deploy" || exit $?
+  local action=install source_version=""
+  if [[ "$UPGRADE_MODE" == true ]]; then
+    action=update
+    source_version="$(cat /opt/circuitbreaker/share/VERSION)"
+  fi
+  CB_LIFECYCLE_ACTION="$action"
+  CB_LIFECYCLE_SOURCE_VERSION="$source_version"
+  cb_lifecycle_begin kind=legacy "action=$action" adapter=native "source_version=$source_version" "target_version=$expected_version" || exit $?
+  cb_lifecycle_mark_mutation
+  cb_release_prepare || exit $?
+
   cb_phase_begin files "Installing files"
+  cb_lifecycle_mark_mutation
   stage0_install_bundle
   cb_phase_end files
 

@@ -26,7 +26,7 @@ export default function IpConflictAlert({ conflictContext, onInspect }) {
       title="Another asset uses this address"
       body={
         <span>
-          <span className="tw-font-mono tw-text-xs">
+          <span className="tw:font-mono tw:text-xs">
             {name}
             {ip ? ` · ${ip}` : ''}
           </span>

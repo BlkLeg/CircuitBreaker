@@ -165,7 +165,7 @@ gh run download --repo BlkLeg/CircuitBreaker \
   -n dev-packages-amd64 \
   -R "$(gh run list --repo BlkLeg/CircuitBreaker --workflow dev-ci.yml --branch dev --json databaseId --jq '.[0].databaseId')" \
   --dir ./dev-packages
-bash install.sh --local-bundle ./dev-packages/circuit-breaker_*_linux_amd64.tar.gz --unattended --no-tls
+bash install.sh --local-bundle ./dev-packages/circuit-breaker_*_linux_amd64.tar.gz --unattended --no-tls --skip-checksum
 ```
 
 This is the same tarball path `curl | bash` installs from a release — it just

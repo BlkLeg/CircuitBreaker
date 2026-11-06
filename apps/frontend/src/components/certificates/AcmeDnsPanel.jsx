@@ -148,7 +148,7 @@ export default function AcmeDnsPanel({ acmeDns, onSaved }) {
   return (
     <div style={S.panel}>
       <div style={S.header}>
-        <KeyRound size={16} className="tw-text-cb-primary" aria-hidden="true" />
+        <KeyRound size={16} className="tw:text-cb-primary" aria-hidden="true" />
         <span style={S.title}>Let&apos;s Encrypt DNS-01</span>
       </div>
       <p style={S.description}>

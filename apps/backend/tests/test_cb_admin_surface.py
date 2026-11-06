@@ -231,7 +231,22 @@ def test_no_admin_command_is_reimplemented_in_bash(script):
 
 
 @pytest.mark.parametrize("script", [_ROOT_CLI, _NATIVE_CLI])
-def test_the_help_text_lists_the_admin_commands(script):
-    text = script.read_text()
+def test_the_help_text_lists_the_admin_commands(script, tmp_path):
+    """What `cb help` prints, not how the script prints it.
+
+    This once matched `echo ...` lines in the source, so rewriting the help
+    with printf failed it while the help still listed every command.
+    """
+    result = subprocess.run(
+        ["bash", str(script), "help"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "NO_COLOR": "1", "TERM": "dumb"},
+    )
+    assert result.returncode == 0, result.stderr
     for group in ADMIN_GROUPS:
-        assert re.search(rf"echo .*\b{group}\b", text), f"{script} help does not mention {group}"
+        assert re.search(rf"^\s+{group}\b", result.stdout, flags=re.MULTILINE), (
+            f"`{script.name} help` does not list {group}"
+        )

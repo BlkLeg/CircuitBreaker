@@ -35,6 +35,13 @@ release-followup.yml (on dev)
 | `make release-stage-only` | Stop at the draft (`promote=false`), e.g. to soak it for a while |
 | `make release-promote` | Publish an already-staged draft (`channel=stable`). Must run on the **same commit** the draft was built from |
 
+Promote publishes the npm CLI (`@blkleg/circuitbreaker`) only when the
+dispatch sets `publish_npm=true` (`make release-candidate PUBLISH_NPM=true`).
+It defaults to off because npm is not a distribution channel until the NPM
+gates pass and npm trusts release.yml as a publisher; off, the `.tgz` is still
+signed and attached to the release. `test_npm_publish_is_opt_in_per_dispatch`
+holds the default.
+
 Approving is the moment to soak if you want to: `gh release download vX
 --pattern '*linux_amd64.tar.gz'` then `install.sh --local-bundle <tarball>
 --unattended --no-tls`. The approval can wait days; nothing re-builds.
@@ -112,6 +119,7 @@ dependency bump or an agent change still needs `npx playwright test` or
 - New `workflow_dispatch` inputs need the `# checkov:skip=CKV_GHA_7` comment
   or the required Checkov check goes red.
 - Only `promote` may declare `environment: release`.
+- The Stage job declares `environment: release-signing` (the bundle key; `main` only, no reviewers); `release` stays promote-only. Setup and rotation: `docs/release/bundle-signing.md`.
 - The change only takes effect for releases dispatched from a ref that
   contains it; a fix on `dev` does nothing until it reaches `main`.
 

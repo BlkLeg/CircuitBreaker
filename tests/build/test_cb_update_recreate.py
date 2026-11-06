@@ -29,6 +29,7 @@ the shipped mono container, far smaller than a real snapshot.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -60,6 +61,28 @@ def _missing_identity(tmp_path: Path) -> str:
     return str(tmp_path / "no-install-identity.json")
 
 
+# cb re-runs a mutating command through sudo to take the root-only host
+# lifecycle lock (cb_lifecycle_elevate). This sudo never escalates: the re-run
+# executes as this same user over a disposable lock root (CB_LIFECYCLE_ROOT),
+# and anything else is refused.
+_SUDO_STUB = """#!/bin/sh
+[ "$1" = "-v" ] && exit 0
+while [ $# -gt 0 ]; do
+  case "$1" in --) shift; break ;; -*) shift ;; *) break ;; esac
+done
+case "$*" in
+  "env CB_LIFECYCLE_ELEVATED=1 "*) exec "$@" ;;
+esac
+echo "sudo (test stub) refuses to run: $*" >&2
+exit 1
+"""
+
+
+def _lock_env(tmp_path: Path) -> dict[str, str]:
+    """A disposable lock root unprivileged; as root the seam is refused, and the host lock is used."""
+    return {} if os.geteuid() == 0 else {"CB_LIFECYCLE_ROOT": str(tmp_path / "lifecycle")}
+
+
 def _harness(
     tmp_path: Path, *, env_file: bool, healthy: bool, docker_fail: str = ""
 ) -> tuple[Path, dict[str, str]]:
@@ -89,6 +112,7 @@ def _harness(
         f'#!/bin/sh\necho "curl $*" >> "{log}"\nexit {0 if healthy else 1}\n'
     )
     (stubs / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    (stubs / "sudo").write_text(_SUDO_STUB)
     for stub in stubs.iterdir():
         stub.chmod(0o755)
 
@@ -110,6 +134,7 @@ def _harness(
         "CB_CONFIG_DIR": str(conf_dir),
         "CB_IDENTITY_PATH": _missing_identity(tmp_path),
         "CB_TEST_DOCKER_FAIL": docker_fail,
+        **_lock_env(tmp_path),
     }
     return log, env
 
@@ -467,6 +492,7 @@ def _run_restore(tmp_path: Path, free_kb: str) -> tuple[subprocess.CompletedProc
     log = tmp_path / "calls.log"
     (stubs / "docker").write_text(_RESTORE_DOCKER_STUB)
     (stubs / "sleep").write_text("#!/bin/sh\nexit 0\n")
+    (stubs / "sudo").write_text(_SUDO_STUB)
     for stub in stubs.iterdir():
         stub.chmod(0o755)
 
@@ -489,6 +515,7 @@ def _run_restore(tmp_path: Path, free_kb: str) -> tuple[subprocess.CompletedProc
             "CB_IDENTITY_PATH": _missing_identity(tmp_path),
             "CB_TEST_LOG": str(log),
             "CB_TEST_FREE_KB": free_kb,
+            **_lock_env(tmp_path),
         },
         capture_output=True,
         text=True,

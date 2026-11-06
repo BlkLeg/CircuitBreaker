@@ -254,8 +254,8 @@ export default function PrivacyPage() {
 function PageHeader() {
   return (
     <div className="page-header">
-      <div className="tw-flex tw-items-center tw-gap-3">
-        <ShieldCheck className="tw-text-cb-primary" size={24} />
+      <div className="tw:flex tw:items-center tw:gap-3">
+        <ShieldCheck className="tw:text-cb-primary" size={24} />
         <h2>Privacy</h2>
       </div>
     </div>

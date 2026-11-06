@@ -6,7 +6,11 @@ Install Circuit Breaker inside a new LXC container on your Proxmox VE host. The 
 
 ## Prerequisites
 
-- **Proxmox VE 7 or later** on the host
+- **Proxmox VE 8 or later** on the host to install v0.4.7 and later. The helper verifies the
+  release signature on the host before anything reaches the container, and that needs OpenSSL 3,
+  which Proxmox VE 8 and newer ship. Proxmox VE 7 (OpenSSL 1.1.1) can still install v0.4.6, the
+  last unsigned release, which the helper accepts only by its published SHA-256; since the helper
+  always installs the newest release, that holds only while v0.4.6 is the newest.
 - Outbound internet access from the PVE host (to reach GitHub and the Debian template mirror)
 
 ---

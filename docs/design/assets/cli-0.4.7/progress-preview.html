@@ -1,0 +1,121 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Circuit Breaker — download progress</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          'canvas': '#111114',
+          'terminal': '#19191d',
+          'text-base': '#e4e4e7',
+          'muted': '#98989f',
+          'cb-orange': '#ff875f',
+          'cb-purple': '#af87ff',
+          'cb-violet': '#875fff',
+          'cb-shade': '#444444',
+          'cb-success': '#b8bb26',
+          'cb-danger': '#fb4934'
+        },
+        fontFamily: {
+          mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+        }
+      }
+    }
+  }
+</script>
+<style>
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none !important;
+    }
+  }
+  .spinner {
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+<div class="bg-canvas m-0 p-0 font-mono text-text-base antialiased flex items-center justify-center min-h-screen">
+  <div class="w-full max-w-4xl p-4 sm:p-8" data-sd-id="1">
+    <div class="bg-terminal rounded-lg shadow-2xl overflow-hidden border border-cb-shade/30" data-sd-id="2">
+      <div class="flex items-center px-4 py-3 border-b border-cb-shade/30 bg-terminal/80" data-sd-id="3">
+        <div class="flex space-x-2" data-sd-id="4">
+          <div class="w-3 h-3 rounded-full bg-cb-shade" data-sd-id="5"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade" data-sd-id="6"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade" data-sd-id="7"></div>
+        </div>
+        <div class="mx-auto text-xs text-muted" data-sd-id="8">cb update</div>
+      </div>
+      <div class="p-6 sm:p-10 overflow-x-auto" data-sd-id="9">
+<pre class="text-[10px] sm:text-xs leading-tight mb-8 whitespace-pre" data-sd-id="10">          <span class="text-cb-purple" data-sd-id="11">.--------------------------------------------.</span>
+          <span class="text-cb-purple" data-sd-id="12">| <span class="opacity-60" data-sd-id="13">&gt; topology --live          24 up  31 links</span> |</span>
+          <span class="text-cb-purple" data-sd-id="14">|                                            |</span>
+          <span class="text-cb-purple" data-sd-id="15">|    <span class="text-cb-orange" data-sd-id="16">o---o---o</span>                  <span class="text-cb-orange" data-sd-id="17">o---o---o</span>    |</span>
+          <span class="text-cb-purple" data-sd-id="18">|     <span class="text-cb-orange" data-sd-id="19">\  |  /</span>                    <span class="text-cb-orange" data-sd-id="20">\  |  /</span>     |</span>
+          <span class="text-cb-purple" data-sd-id="21">|        <span class="text-cb-orange" data-sd-id="22">o--------</span><span class="text-cb-violet" data-sd-id="23">##########</span><span class="text-cb-orange" data-sd-id="24">--------o</span>        |</span>
+          <span class="text-cb-purple" data-sd-id="25">|       <span class="text-cb-orange" data-sd-id="26">/      </span><span class="text-cb-violet" data-sd-id="27">#</span><span class="text-cb-shade" data-sd-id="28">##############</span><span class="text-cb-violet" data-sd-id="29">#</span><span class="text-cb-orange" data-sd-id="30">      \</span>       |</span>
+          <span class="text-cb-purple" data-sd-id="31">|      <span class="text-cb-orange" data-sd-id="32">o     </span><span class="text-cb-violet" data-sd-id="33">#</span><span class="text-cb-shade" data-sd-id="34">##################</span><span class="text-cb-violet" data-sd-id="35">#</span><span class="text-cb-orange" data-sd-id="36">     o</span>      |</span>
+          <span class="text-cb-purple" data-sd-id="37">|     <span class="text-cb-orange" data-sd-id="38">/     </span><span class="text-cb-violet" data-sd-id="39">#</span><span class="text-cb-shade" data-sd-id="40">####################</span><span class="text-cb-violet" data-sd-id="41">#</span><span class="text-cb-orange" data-sd-id="42">     \</span>     |</span>
+          <span class="text-cb-purple" data-sd-id="43">|    <span class="text-cb-orange" data-sd-id="44">o    </span><span class="text-cb-violet" data-sd-id="45">(#</span><span class="text-cb-shade" data-sd-id="46">######################</span><span class="text-cb-violet" data-sd-id="47">#)</span><span class="text-cb-orange" data-sd-id="48">    o</span>    |</span>
+          <span class="text-cb-purple" data-sd-id="49">|         <span class="text-cb-violet" data-sd-id="50">(#</span><span class="text-cb-shade" data-sd-id="51">######################</span><span class="text-cb-violet" data-sd-id="52">#)</span>         |   <span class="opacity-60" data-sd-id="53">~</span></span>
+          <span class="text-cb-purple" data-sd-id="54">'----------<span class="text-cb-violet" data-sd-id="55">#</span><span class="text-cb-shade" data-sd-id="56">######################</span><span class="text-cb-violet" data-sd-id="57">#</span>----------'  <span class="opacity-60" data-sd-id="58">(_)</span></span>
+  <span class="opacity-60" data-sd-id="59">------------------</span><span class="text-cb-violet" data-sd-id="60">#</span><span class="text-cb-shade" data-sd-id="61">########################</span><span class="text-cb-violet" data-sd-id="62">#</span><span class="opacity-60" data-sd-id="63">------------------</span>
+                   <span class="text-cb-violet" data-sd-id="64">============================</span>
+              <span class="text-cb-violet" data-sd-id="65">#</span><span class="text-cb-shade" data-sd-id="66">####################################</span><span class="text-cb-violet" data-sd-id="67">#</span>
+          <span class="text-cb-violet" data-sd-id="68">#</span><span class="text-cb-shade" data-sd-id="69">############################################</span><span class="text-cb-violet" data-sd-id="70">#</span>
+        <span class="text-cb-violet" data-sd-id="71">#</span><span class="text-cb-shade" data-sd-id="72">################################################</span><span class="text-cb-violet" data-sd-id="73">#</span>
+       <span class="text-cb-violet" data-sd-id="74">#</span><span class="text-cb-shade" data-sd-id="75">##################################################</span><span class="text-cb-violet" data-sd-id="76">#</span>
+
+<span class="font-bold text-cb-orange" data-sd-id="77">                  C I R C U I T _ B R E A K E R</span>
+<span class="opacity-60" data-sd-id="78">                         CLI        v0.4.7</span>
+</pre>
+
+        <div class="mb-6 text-sm" data-sd-id="79">
+          <div class="flex justify-between items-baseline mb-1" data-sd-id="80">
+            <span class="font-bold text-text-base" data-sd-id="81">UPDATE <span class="text-muted font-normal ml-2">native / linux-amd64</span></span>
+          </div>
+          <div class="flex flex-col text-text-base" data-sd-id="84">
+            <span data-sd-id="85">0.4.6 → 0.4.7</span>
+            <span class="text-muted mt-1">Expected target v0.4.7; current v0.4.6 still running.</span>
+          </div>
+        </div>
+
+        <div class="space-y-3 mb-6 text-sm" data-sd-id="87">
+          <div class="flex justify-between">
+            <span class="text-cb-success">✓ Preflight and compatibility completed</span>
+            <span class="text-muted">0.8s</span>
+          </div>
+          <div>
+            <div class="flex items-center text-cb-purple mb-1">
+              <span class="inline-block w-4 text-center mr-1 spinner">⠋</span>
+              <span>Phase 2 / 6 — Download release</span>
+            </div>
+            <div class="pl-5 text-muted mb-1">
+              52.0 / 84.0 MiB · 62% · 6.5 MiB/s · elapsed 8s
+            </div>
+            <div class="pl-5 font-mono">
+              <span class="text-text-base">[</span><span class="text-cb-orange">████████████████████</span><span class="text-muted">░░░░░░░░░░░░</span><span class="text-text-base">]</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-8 text-xs text-muted space-y-1" data-sd-id="104">
+          <div data-sd-id="106">Log: /var/log/circuitbreaker/install.log</div>
+          <div>Next: verify → backup → apply → health</div>
+        </div>
+      </div>
+    </div>
+    <div class="mt-6 text-center text-sm text-muted">
+      Sample data · design preview
+    </div>
+  </div>
+
+</div>
+</body></html>

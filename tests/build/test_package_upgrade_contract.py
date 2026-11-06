@@ -52,6 +52,7 @@ REMOVE_ARGS_PREREMOVE = [["remove"], ["0"]]
 
 
 def _run(script: Path, args: list[str], env: dict[str, str], cwd: Path):
+    env = {**env, "CB_LIFECYCLE_ROOT": str(cwd / "lifecycle")}
     return subprocess.run(
         ["bash", str(script), *args],
         env={**os.environ, **env},
@@ -692,7 +693,7 @@ def _run_postinstall(tmp_path: Path, args: list[str], *, enabled: str, active: s
     # service user as already present, which is the branch a real upgrade takes.
     _stub(bin_dir, "id", "exit 0\n")
     for tool in ("useradd", "mkdir", "chown", "chmod", "cp"):
-        _stub(bin_dir, tool, "exit 0\n")
+        _stub(bin_dir, tool, f'case "$*" in *"/lifecycle"*) exec /usr/bin/{tool} "$@" ;; esac\nexit 0\n')
     _stub(bin_dir, "openssl", "echo stub-secret\n")
     stamp = tmp_path / "unit-state"
     if enabled is not None:

@@ -359,8 +359,8 @@ export default function MonitorsListTab() {
   return (
     <div className="page">
       <div className="page-header">
-        <div className="tw-flex tw-items-center tw-gap-3">
-          <Activity className="tw-text-cb-primary" size={24} />
+        <div className="tw:flex tw:items-center tw:gap-3">
+          <Activity className="tw:text-cb-primary" size={24} />
           <h2>Monitors</h2>
           {lastCheck && <span className="mon-uptime">last check {formatAgo(lastCheck, now)}</span>}
         </div>

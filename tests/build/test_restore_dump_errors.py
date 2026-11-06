@@ -153,6 +153,30 @@ def _write_snapshot(tmp_path: Path, sql: str) -> Path:
     return archive
 
 
+# restore.sh re-runs itself through sudo to take the root-only host lifecycle lock
+# (deploy/lib/lifecycle.sh, cb_lifecycle_elevate). This sudo never escalates: the
+# re-run executes as this same user, keeping the test's whole environment (and the
+# seam), which a real sudo would reset to the elevation's allowlist; `sudo -v`
+# answers CB_TEST_SUDO_V_RC, and anything else is refused.
+_SUDO_STUB = """#!/bin/sh
+if [ "$1" = "-v" ]; then
+  exit "${CB_TEST_SUDO_V_RC:-0}"
+fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+case "$*" in
+  "env CB_LIFECYCLE_ELEVATED=1 "*) exec "$@" ;;
+esac
+echo "sudo (test stub) refuses to run: $*" >&2
+exit 1
+"""
+
+
 def _harness(tmp_path: Path) -> dict[str, str]:
     stubs = tmp_path / "stubs"
     stubs.mkdir()
@@ -161,6 +185,7 @@ def _harness(tmp_path: Path) -> dict[str, str]:
     (stubs / "psql").write_text(PSQL_STUB)
     (stubs / "jq").write_text(JQ_STUB)
     (stubs / "rsync").write_text(RSYNC_STUB)
+    (stubs / "sudo").write_text(_SUDO_STUB)
     for stub in stubs.iterdir():
         stub.chmod(0o755)
 
@@ -176,6 +201,9 @@ def _harness(tmp_path: Path) -> dict[str, str]:
         "CB_DATA_DIR": str(tmp_path / "data"),
         "CB_TEST_PSQL_LOG": str(tmp_path / "psql-argv.log"),
         "CB_TEST_PSQL_STDIN": str(tmp_path / "psql-stdin.sql"),
+        # restore.sh takes the host lifecycle lock first: a disposable root
+        # unprivileged, the host's own lock as root (the seam is refused there).
+        **({} if os.geteuid() == 0 else {"CB_LIFECYCLE_ROOT": str(tmp_path / "lifecycle")}),
     }
 
 

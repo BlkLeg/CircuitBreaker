@@ -28,7 +28,7 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
-    # checkov:skip=CKV_GHA_7: the release captain chooses the channel, whether a candidate goes on to promote, and, for a stable promote, names the draft.
+    # checkov:skip=CKV_GHA_7: the release captain chooses the channel, whether a candidate goes on to promote, for a stable promote names the draft, and whether the promote also publishes the npm CLI.
     inputs:
       channel:
         description: "candidate: build, gate and stage a draft. stable: promote an existing draft (no build)."
@@ -45,6 +45,11 @@ on:
         required: false
         type: boolean
         default: true
+      publish_npm:
+        description: "Also publish the npm CLI (@blkleg/circuitbreaker) when promoting. Leave off until the NPM gates in specs/1.0.0/08-npm-distribution.md have passed and npm trusts this workflow as a publisher."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write    # create GitHub Release, upload assets
@@ -116,6 +121,11 @@ jobs:
 
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
+
+      # tests/build checks the CLI's installed dependency tree for install-time
+      # scripts (NPM-10), so Tier 0 needs it; --ignore-scripts for the same reason.
+      - name: Install CLI deps
+        run: cd packages/cli && npm ci --ignore-scripts
 
       - name: Tier 0 — static gates
         env:
@@ -461,6 +471,16 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.channel == 'candidate'
     needs: [version, build, artifact-smoke, tier2, installer-journey, image-merge, runtime-parity]
     runs-on: ubuntu-22.04
+    # The release-bundle key is a secret of this environment, whose deployment
+    # branch rule allows main only (docs/release/bundle-signing.md). It has no
+    # reviewers: approval happens once, on `release`, before promote.
+    environment: release-signing
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      security-events: write
+      attestations: write
     steps:
       - uses: actions/checkout@v5
 
@@ -549,6 +569,35 @@ jobs:
           echo "21653debfeccb278576ffdd85b5dbe8cd44fcb820cae71e887a6ac2efb399d37  /tmp/syft.tar.gz" | sha256sum -c
           sudo tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
           syft version
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.15.0'
+
+      - name: Pack and accept the exact npm CLI candidate
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --prefix packages/cli
+          node --test packages/cli/test/*.test.js
+          npm audit --omit=dev --audit-level=high --prefix packages/cli
+          cd packages/cli
+          npm pack --ignore-scripts --pack-destination ../../dist/release
+          cd ../..
+          scripts/ci/cli_packed_smoke.sh "dist/release/blkleg-circuitbreaker-$(cat VERSION).tgz"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.22.2'
+
+      - name: Accept the same tarball on the minimum Node runtime
+        run: |
+          node --test packages/cli/test/*.test.js
+          scripts/ci/cli_packed_smoke.sh "dist/release/blkleg-circuitbreaker-$(cat VERSION).tgz"
+
+      - name: Generate CLI dependency SBOM
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: syft scan dir:packages/cli --output "cyclonedx-json=dist/release/circuit-breaker_${VERSION}_sbom-cli.cdx.json"
 
       - name: Generate source SBOMs
         env:
@@ -669,6 +718,7 @@ jobs:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          set -euo pipefail
           if [ -z "${GPG_PRIVATE_KEY}" ]; then
             echo "GPG_PRIVATE_KEY not set — skipping GPG signing"
             exit 0
@@ -678,18 +728,85 @@ jobs:
           gpgconf --kill gpg-agent
 
           cd dist/release/
-          for f in *.tar.gz *.deb *.rpm *.apk *.pkg.tar.zst *.AppImage *.json; do
+          for f in *.tgz *.tar.gz *.deb *.rpm *.apk *.pkg.tar.zst *.AppImage *.json; do
             [ -f "$f" ] && [[ "$f" != *.asc ]] || continue
             gpg --batch --yes --pinentry-mode loopback \
                 --passphrase "${GPG_PASSPHRASE}" \
                 --armor --detach-sign "$f"
           done
 
-          # Regenerate SHA256SUMS (now includes .asc + SBOM files) then sign it
-          find . -maxdepth 1 -type f ! -name SHA256SUMS -exec sha256sum {} + > SHA256SUMS
+      # The one SHA256SUMS that is published and signed: every file attached
+      # to the release, including the SBOMs and .asc files written above, and
+      # never SHA256SUMS or its own signatures.
+      - name: Write the final SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd dist/release/
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -exec sha256sum {} + > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: GPG sign SHA256SUMS
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GPG_PRIVATE_KEY}" ]; then
+            echo "GPG_PRIVATE_KEY not set — skipping the GPG signature of SHA256SUMS"
+            exit 0
+          fi
+          cd dist/release/
           gpg --batch --yes --pinentry-mode loopback \
               --passphrase "${GPG_PASSPHRASE}" \
               --armor --detach-sign SHA256SUMS
+
+      # Required: a release is never staged unsigned. The key exists only in
+      # this step, in a 0600 file removed before the step ends.
+      - name: Sign SHA256SUMS with the release bundle key
+        env:
+          RELEASE_BUNDLE_SIGNING_KEY: ${{ secrets.RELEASE_BUNDLE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::release bundles are signed only from main; this run is on ${GITHUB_REF}. Cut the candidate from main (the release-signing environment enforces the same rule)."
+            exit 1
+          fi
+          if [ -z "${RELEASE_BUNDLE_SIGNING_KEY}" ]; then
+            echo "::error::RELEASE_BUNDLE_SIGNING_KEY is empty. It is a secret of the release-signing environment (docs/release/bundle-signing.md); a release is never staged unsigned."
+            exit 1
+          fi
+          umask 077
+          keyfile="$(mktemp)"
+          trap 'rm -f "${keyfile}"' EXIT
+          printf '%s\n' "${RELEASE_BUNDLE_SIGNING_KEY}" > "${keyfile}"
+          scripts/ci/sign_release_sums.sh "${keyfile}" dist/release/SHA256SUMS dist/release/SHA256SUMS.sig
+          rm -f "${keyfile}"
+
+      # Against the COMMITTED key list, so a secret that does not match the
+      # public key install.sh trusts fails here, not on users' hosts.
+      - name: Verify SHA256SUMS.sig against the trusted keys
+        run: |
+          set -euo pipefail
+          source deploy/lib/bundle-signature.sh
+          # rc 2: no usable trusted key, or an unreadable signature; rc 1: no
+          # trusted key verifies it. Both stop the release.
+          rc=0
+          key_id="$(cb_verify_sums_signature dist/release/SHA256SUMS dist/release/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt)" || rc=$?
+          if [ "${rc}" -eq 2 ]; then
+            echo "::error::deploy/keys/release-bundle-keys.txt holds no usable key, or the new SHA256SUMS.sig is unreadable"
+            exit 1
+          elif [ "${rc}" -ne 0 ]; then
+            echo "::error::the new SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt: the release-signing secret and the committed public key do not match"
+            exit 1
+          fi
+          echo "SHA256SUMS signed by trusted key ${key_id}"
+
+      - name: Attest build provenance for the bundles
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            dist/release/circuit-breaker_*_linux_*.tar.gz
+            dist/release/blkleg-circuitbreaker-*.tgz
 
       - name: Remove bundle directory from release artifacts
         run: rm -rf dist/release/bundle
@@ -828,6 +945,7 @@ jobs:
       # to verify is reported as "release not found".
       contents: write
       packages: read
+      attestations: read
     outputs:
       image_digest: ${{ steps.candidate.outputs.image_digest }}
       prerelease: ${{ steps.candidate.outputs.prerelease }}
@@ -876,6 +994,37 @@ jobs:
           assert live == recorded, "the draft's SHA256SUMS no longer matches candidate.json"
           print(f"{len(live)} assets verified")
           PY
+      # The signed path, proven against the real key and the real draft
+      # assets before anyone is asked to approve.
+      - name: Verify the draft's signature, bundle hashes and provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/signed && cd /tmp/signed
+          gh release download "v${VERSION}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'SHA256SUMS' --pattern 'SHA256SUMS.sig' \
+            --pattern "circuit-breaker_${VERSION}_linux_*.tar.gz"
+          source "${GITHUB_WORKSPACE}/deploy/lib/bundle-signature.sh"
+          rc=0
+          key_id="$(cb_verify_sums_signature SHA256SUMS SHA256SUMS.sig "${GITHUB_WORKSPACE}/deploy/keys/release-bundle-keys.txt")" || rc=$?
+          if [ "${rc}" -eq 2 ]; then
+            echo "::error::deploy/keys/release-bundle-keys.txt holds no usable key, or the draft's SHA256SUMS.sig is unreadable"
+            exit 1
+          elif [ "${rc}" -ne 0 ]; then
+            echo "::error::the draft's SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt"
+            exit 1
+          fi
+          echo "draft signed by trusted key ${key_id}"
+          checked=0
+          for tarball in circuit-breaker_"${VERSION}"_linux_*.tar.gz; do
+            cb_verify_sums_entry SHA256SUMS "${tarball}" \
+              || { echo "::error::${tarball} does not match the signed SHA256SUMS"; exit 1; }
+            gh attestation verify "${tarball}" --repo "${GITHUB_REPOSITORY}"
+            checked=$((checked + 1))
+          done
+          [ "${checked}" -ge 2 ] || { echo "::error::expected the amd64 and arm64 tarballs, verified ${checked}"; exit 1; }
       - name: Assert release readiness
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -899,8 +1048,46 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.15.0'
+          registry-url: 'https://registry.npmjs.org'
+
+      # npm is not a distribution channel until the NPM gates pass (ADR 0006,
+      # the 1.0 support contract), so the publish is opt-in per dispatch. The
+      # tarball is still packed, signed, attested and attached to the release.
+      - name: Note that the npm CLI is not published
+        if: inputs.publish_npm != true
+        run: echo "::notice::publish_npm is off; the npm CLI is attached to the release but not published to npm."
+
+      - name: Publish and verify the accepted CLI tarball
+        if: inputs.publish_npm == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.promote-verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          # Trusted publishing requires npm >=11.5.1; never use an npm token.
+          npm install --global --ignore-scripts npm@11.5.1
+          mkdir -p /tmp/npm-candidate
+          gh release download "v${VERSION}" --dir /tmp/npm-candidate \
+            --pattern "blkleg-circuitbreaker-${VERSION}.tgz" \
+            --pattern SHA256SUMS --pattern SHA256SUMS.sig
+          source deploy/lib/bundle-signature.sh
+          cb_verify_sums_signature /tmp/npm-candidate/SHA256SUMS /tmp/npm-candidate/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt
+          cb_verify_sums_entry /tmp/npm-candidate/SHA256SUMS "/tmp/npm-candidate/blkleg-circuitbreaker-${VERSION}.tgz"
+          gh attestation verify "/tmp/npm-candidate/blkleg-circuitbreaker-${VERSION}.tgz" --repo "${GITHUB_REPOSITORY}"
+          scripts/ci/cli_packed_smoke.sh "/tmp/npm-candidate/blkleg-circuitbreaker-${VERSION}.tgz"
+          tag=latest
+          [ "${PRERELEASE}" != true ] || tag=next
+          node scripts/ci/cli_publish.mjs "/tmp/npm-candidate/blkleg-circuitbreaker-${VERSION}.tgz" \
+            "${VERSION}" "$tag" /tmp/npm-candidate/npm-publication.json
+          gh release upload "v${VERSION}" /tmp/npm-candidate/npm-publication.json --clobber
+
       - name: Retag the candidate's image digest
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -966,8 +1153,24 @@ jobs:
           gh release download "v${VERSION}" \
             --repo "${GITHUB_REPOSITORY}" \
             --pattern "circuit-breaker_${VERSION}_linux_amd64.tar.gz" \
-            --pattern "SHA256SUMS"
+            --pattern "SHA256SUMS" \
+            --pattern "SHA256SUMS.sig"
           ls -lh
+
+      - name: Verify the published signature
+        run: |
+          set -euo pipefail
+          source deploy/lib/bundle-signature.sh
+          rc=0
+          key_id="$(cb_verify_sums_signature published/SHA256SUMS published/SHA256SUMS.sig deploy/keys/release-bundle-keys.txt)" || rc=$?
+          if [ "${rc}" -eq 2 ]; then
+            echo "::error::deploy/keys/release-bundle-keys.txt holds no usable key, or the published SHA256SUMS.sig is unreadable"
+            exit 1
+          elif [ "${rc}" -ne 0 ]; then
+            echo "::error::the published SHA256SUMS.sig does not verify against deploy/keys/release-bundle-keys.txt"
+            exit 1
+          fi
+          echo "published release signed by trusted key ${key_id}"
 
       - name: Verify the published tarball against the published checksums
         env:

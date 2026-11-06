@@ -15,11 +15,11 @@ const PRESET_COLORS = [
 ];
 
 const chipBase =
-  'tw-inline-flex tw-items-center tw-gap-1 tw-rounded tw-px-2 tw-py-0.5 tw-text-xs tw-font-medium tw-border tw-border-cb-border';
+  'tw:inline-flex tw:items-center tw:gap-1 tw:rounded-sm tw:px-2 tw:py-0.5 tw:text-xs tw:font-medium tw:border tw:border-cb-border';
 
 /* Match EntityTable editable input for contrast and theme */
 const tagInputClass =
-  'tw-min-w-[6rem] tw-w-24 tw-bg-cb-bg tw-border tw-border-cb-border tw-text-cb-text tw-rounded tw-px-2 tw-py-1 tw-text-sm focus:tw-outline-none focus:tw-ring-1 focus:tw-ring-cb-primary placeholder:tw-text-cb-muted';
+  'tw:min-w-[6rem] tw:w-24 tw:bg-cb-bg tw:border tw:border-cb-border tw:text-cb-text tw:rounded-sm tw:px-2 tw:py-1 tw:text-sm tw:focus:outline-hidden tw:focus:ring-1 tw:focus:ring-cb-primary tw:placeholder:text-cb-muted';
 
 function TagsCell({
   tags = [],
@@ -75,14 +75,14 @@ function TagsCell({
 
   if (disabled) {
     return (
-      <span className="tw-text-cb-muted tw-text-sm">
+      <span className="tw:text-cb-muted tw:text-sm">
         {(tags || []).length ? (tags || []).join(', ') : '—'}
       </span>
     );
   }
 
   return (
-    <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-1.5 tw-min-w-0" data-tags-cell>
+    <div className="tw:flex tw:flex-wrap tw:items-center tw:gap-1.5 tw:min-w-0" data-tags-cell>
       {(tags || []).map((name) => {
         const meta = tagMap.get(name);
         const isDark =
@@ -94,7 +94,7 @@ function TagsCell({
         return (
           <span
             key={name}
-            className={`${chipBase} tw-relative`}
+            className={`${chipBase} tw:relative`}
             style={{
               backgroundColor: meta?.color ? `${meta.color}22` : undefined,
               borderColor: meta?.color || 'var(--color-cb-border)',
@@ -104,7 +104,7 @@ function TagsCell({
             {name}
             <button
               type="button"
-              className="tw-ml-1 tw-leading-none tw-p-0.5 tw-rounded tw-border tw-border-transparent tw-bg-transparent hover:tw-bg-cb-border/40 hover:tw-border-cb-border tw-text-current tw-opacity-80 hover:tw-opacity-100 tw-cursor-pointer tw-text-xs"
+              className="tw:ml-1 tw:leading-none tw:p-0.5 tw:rounded-sm tw:border tw:border-transparent tw:bg-transparent tw:hover:bg-cb-border/40 tw:hover:border-cb-border tw:text-current tw:opacity-80 tw:hover:opacity-100 tw:cursor-pointer tw:text-xs"
               onClick={(e) => {
                 e.stopPropagation();
                 handleRemove(name);
@@ -115,7 +115,7 @@ function TagsCell({
             </button>
             <button
               type="button"
-              className="tw-ml-0.5 tw-p-0.5 tw-rounded tw-border tw-border-cb-border tw-bg-cb-bg/80 hover:tw-bg-cb-border/30 tw-cursor-pointer tw-leading-none"
+              className="tw:ml-0.5 tw:p-0.5 tw:rounded-sm tw:border tw:border-cb-border tw:bg-cb-bg/80 tw:hover:bg-cb-border/30 tw:cursor-pointer tw:leading-none"
               onClick={(e) => {
                 e.stopPropagation();
                 setColorPickerFor((prev) => (prev === name ? null : name));
@@ -124,22 +124,22 @@ function TagsCell({
               title="Set color"
             >
               <span
-                className="tw-inline-block tw-w-2.5 tw-h-2.5 tw-rounded-full tw-border tw-border-cb-border"
+                className="tw:inline-block tw:w-2.5 tw:h-2.5 tw:rounded-full tw:border tw:border-cb-border"
                 style={{ backgroundColor: meta?.color || 'var(--color-cb-text-muted)' }}
               />
             </button>
             {colorPickerFor === name && (
               <fieldset
                 ref={pickerRef}
-                className="tw-absolute tw-left-0 tw-top-full tw-mt-1 tw-z-10 tw-p-2 tw-rounded tw-shadow-lg tw-bg-cb-surface tw-border tw-border-cb-border tw-border-solid tw-m-0"
+                className="tw:absolute tw:left-0 tw:top-full tw:mt-1 tw:z-10 tw:p-2 tw:rounded-sm tw:shadow-lg tw:bg-cb-surface tw:border tw:border-cb-border tw:border-solid tw:m-0"
                 aria-label="Tag color"
               >
-                <div className="tw-grid tw-grid-cols-5 tw-gap-1">
+                <div className="tw:grid tw:grid-cols-5 tw:gap-1">
                   {PRESET_COLORS.map((c) => (
                     <button
                       key={c}
                       type="button"
-                      className="tw-w-6 tw-h-6 tw-rounded tw-border-2 tw-border-transparent hover:tw-border-cb-primary focus:tw-outline-none focus:tw-ring-1 focus:tw-ring-cb-primary"
+                      className="tw:w-6 tw:h-6 tw:rounded-sm tw:border-2 tw:border-transparent tw:hover:border-cb-primary tw:focus:outline-hidden tw:focus:ring-1 tw:focus:ring-cb-primary"
                       style={{ backgroundColor: c }}
                       onClick={() => handleColorSelect(name, c)}
                       aria-label={`Color ${c}`}

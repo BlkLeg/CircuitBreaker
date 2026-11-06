@@ -284,7 +284,8 @@ async def test_privacy_score_history_buckets_by_day_and_picks_latest(
 async def test_privacy_score_history_days_param_clamped_to_90(client, auth_headers, db_session):
     _set_windscribe(db_session, True)
     old = datetime(2020, 1, 1, tzinfo=UTC)
-    recent = datetime(2026, 7, 14, tzinfo=UTC)
+    recent_date = (datetime.now(UTC) - timedelta(days=2)).date()
+    recent = datetime(recent_date.year, recent_date.month, recent_date.day, 9, 0, tzinfo=UTC)
     _seed_snapshot(db_session, score=50, grade="F", created_at=old)
     _seed_snapshot(db_session, score=90, grade="A", created_at=recent)
 
@@ -293,9 +294,9 @@ async def test_privacy_score_history_days_param_clamped_to_90(client, auth_heade
     )
     assert resp.status_code == 200
     days = resp.json()["days"]
-    # clamped window (90 days back from the latest snapshot) excludes the 2020 row
+    # clamped window (90 days back from now) excludes the 2020 row
     assert len(days) == 1
-    assert days[0]["date"] == "2026-07-14"
+    assert days[0]["date"] == recent_date.isoformat()
 
 
 # ── /privacy-findings/ignore(s) ──────────────────────────────────────────────

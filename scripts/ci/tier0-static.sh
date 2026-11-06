@@ -54,6 +54,11 @@ print('Alembic head:', heads[0])
 # `pytest tests/` locally, and so files added under tests/build/ later
 # cannot be silently dropped.
 cb::section "Repo policy tests (tests/build)"
+# test_cli_package.py reads the CLI's installed dependency tree to prove no
+# package in it runs install-time scripts (NPM-10). Like ESLint's node_modules
+# below, a missing tree is a setup error, not something to install from here.
+cb::require_file packages/cli/node_modules \
+    "run 'npm ci --ignore-scripts --prefix packages/cli' first"
 .venv/bin/pytest tests/build \
     --junitxml="$EVIDENCE/junit/repo-policy.xml" \
     2>&1 | tee "$EVIDENCE/logs/repo-policy.log"

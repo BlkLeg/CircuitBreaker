@@ -107,6 +107,13 @@ import { isLightTheme, omitKey } from '../../utils/mapHelpers';
  * providers) and lives in `pages/MapPage.jsx`; everything below is the map
  * itself. Splitting them is what makes the route shell readable.
  */
+// The topmost map node at a viewport point, through anything drawn over it.
+const nodeIdAtPoint = (x, y) =>
+  document
+    .elementsFromPoint(x, y)
+    .map((el) => el.closest('.react-flow__node'))
+    .find(Boolean)?.dataset.id ?? null;
+
 export default function MapWorkspace({
   mapId,
   maps,
@@ -380,15 +387,39 @@ export default function MapWorkspace({
   // having moved there — which re-armed the hover timer and reopened the card
   // 400 ms after its close button was clicked. Hover-open stays suppressed for
   // this node until the pointer actually leaves it.
+  //
+  // "Leaves it" is decided from where the pointer is, not from mouseleave. With
+  // the card removed from under the pointer, WebKit and React can skip both the
+  // enter and the leave for the uncovered node; waiting for a mouseleave then
+  // left the suppression set for good, and that node's hover card never opened
+  // again. A pointermove that lands anywhere else ends it.
   const hoverSuppressedNodeIdRef = useRef(null);
-  const dismissTelemetrySidebar = useCallback((event) => {
-    const underneath = document
-      .elementsFromPoint(event.clientX, event.clientY)
-      .map((el) => el.closest('.react-flow__node'))
-      .find(Boolean);
-    hoverSuppressedNodeIdRef.current = underneath?.dataset.id ?? null;
-    setTelemetrySidebarNode(null);
+  const stopWatchingSuppressedHoverRef = useRef(null);
+  const clearHoverSuppression = useCallback(() => {
+    hoverSuppressedNodeIdRef.current = null;
+    stopWatchingSuppressedHoverRef.current?.();
+    stopWatchingSuppressedHoverRef.current = null;
   }, []);
+  const dismissTelemetrySidebar = useCallback(
+    (event) => {
+      clearHoverSuppression();
+      // elementsFromPoint, not event.target: the card is still mounted here
+      // and covers the node, and may still be for the first pointermove.
+      const suppressedId = nodeIdAtPoint(event.clientX, event.clientY);
+      hoverSuppressedNodeIdRef.current = suppressedId;
+      if (suppressedId) {
+        const onPointerMove = (move) => {
+          if (nodeIdAtPoint(move.clientX, move.clientY) !== suppressedId) clearHoverSuppression();
+        };
+        document.addEventListener('pointermove', onPointerMove, true);
+        stopWatchingSuppressedHoverRef.current = () =>
+          document.removeEventListener('pointermove', onPointerMove, true);
+      }
+      setTelemetrySidebarNode(null);
+    },
+    [clearHoverSuppression]
+  );
+  useEffect(() => () => stopWatchingSuppressedHoverRef.current?.(), []);
 
   // Sidebar bounding rect — kept in a ref (not state) so updates don't trigger re-renders.
   // The ContextMenu reads this ref on each position recalculation to avoid overlapping the panel.
@@ -714,10 +745,10 @@ export default function MapWorkspace({
 
   const handleNodeMouseLeave = useCallback(
     (event, node) => {
-      if (hoverSuppressedNodeIdRef.current === node?.id) hoverSuppressedNodeIdRef.current = null;
+      if (hoverSuppressedNodeIdRef.current === node?.id) clearHoverSuppression();
       cancelTelemetrySidebar();
     },
-    [cancelTelemetrySidebar]
+    [cancelTelemetrySidebar, clearHoverSuppression]
   );
 
   const handlePaneContextMenu = useCallback(

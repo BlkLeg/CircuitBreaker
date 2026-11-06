@@ -25,10 +25,10 @@ import {
 } from '../lib/alertSeverity';
 
 const PROVIDER_ICONS = {
-  slack: <MessageSquare size={16} className="tw-text-cb-primary" />,
-  discord: <MessageCircle size={16} className="tw-text-cb-primary" />,
-  teams: <MessageSquare size={16} className="tw-text-cb-primary" />,
-  email: <Mail size={16} className="tw-text-cb-primary" />,
+  slack: <MessageSquare size={16} className="tw:text-cb-primary" />,
+  discord: <MessageCircle size={16} className="tw:text-cb-primary" />,
+  teams: <MessageSquare size={16} className="tw:text-cb-primary" />,
+  email: <Mail size={16} className="tw:text-cb-primary" />,
 };
 
 // The route field is a floor, not an exact match — say so where it is set,
@@ -37,10 +37,10 @@ const SEVERITY_HINT =
   'A floor, not an exact match: a route set to Warning also receives Critical alerts.';
 
 const SEVERITY_COLORS = {
-  info: 'tw-text-blue-500',
-  warning: 'tw-text-yellow-500',
-  critical: 'tw-text-red-500',
-  '*': 'tw-text-gray-400',
+  info: 'tw:text-blue-500',
+  warning: 'tw:text-yellow-500',
+  critical: 'tw:text-red-500',
+  '*': 'tw:text-gray-400',
 };
 
 // An email sink carries the recipient and nothing else: the server, credentials,
@@ -146,10 +146,10 @@ function NotificationsPage() {
         key: 'provider_type',
         label: 'Provider',
         render: (v) => (
-          <div className="tw-flex tw-items-center tw-gap-2">
+          <div className="tw:flex tw:items-center tw:gap-2">
             {/* eslint-disable-next-line security/detect-object-injection -- PROVIDER_ICONS is keyed by the sink's own provider_type, with a Bell fallback */}
             {PROVIDER_ICONS[v] || <Bell size={16} />}
-            <span className="tw-capitalize">{v}</span>
+            <span className="tw:capitalize">{v}</span>
           </div>
         ),
       },
@@ -163,7 +163,7 @@ function NotificationsPage() {
               e.stopPropagation();
               handleToggleSink(row.id);
             }}
-            className={`tw-flex tw-items-center tw-gap-1 tw-text-xs tw-font-bold ${v ? 'tw-text-green-500' : 'tw-text-gray-500'}`}
+            className={`tw:flex tw:items-center tw:gap-1 tw:text-xs tw:font-bold ${v ? 'tw:text-green-500' : 'tw:text-gray-500'}`}
           >
             {v ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
             {v ? 'ENABLED' : 'DISABLED'}
@@ -312,7 +312,7 @@ function NotificationsPage() {
         render: (v) => {
           const sink = sinks.find((s) => s.id === v);
           return sink ? (
-            <div className="tw-flex tw-items-center tw-gap-2">
+            <div className="tw:flex tw:items-center tw:gap-2">
               {PROVIDER_ICONS[sink.provider_type]}
               <span>{sink.name}</span>
             </div>
@@ -326,7 +326,7 @@ function NotificationsPage() {
         label: 'Severity Threshold',
         render: (v) => (
           // eslint-disable-next-line security/detect-object-injection -- SEVERITY_COLORS is a lookup table keyed by the row's own severity enum, with a '' fallback
-          <span className={`tw-font-bold tw-text-xs ${SEVERITY_COLORS[v] || ''}`}>
+          <span className={`tw:font-bold tw:text-xs ${SEVERITY_COLORS[v] || ''}`}>
             {alertSeverityLabel(v)}
           </span>
         ),
@@ -424,8 +424,8 @@ function NotificationsPage() {
   return (
     <div className="page">
       <div className="page-header">
-        <div className="tw-flex tw-items-center tw-gap-3">
-          <BellRing className="tw-text-cb-primary" size={24} />
+        <div className="tw:flex tw:items-center tw:gap-3">
+          <BellRing className="tw:text-cb-primary" size={24} />
           <h2>Notifications</h2>
         </div>
         {activeTab === 'sinks' ? (
@@ -436,11 +436,11 @@ function NotificationsPage() {
               setShowSinkForm(true);
             }}
           >
-            <Plus size={16} className="tw-mr-1" /> Add Destination
+            <Plus size={16} className="tw:mr-1" /> Add Destination
           </button>
         ) : (
           <button className="btn btn-primary" onClick={() => setShowRouteForm(true)}>
-            <Plus size={16} className="tw-mr-1" /> Add Routing Rule
+            <Plus size={16} className="tw:mr-1" /> Add Routing Rule
           </button>
         )}
       </div>

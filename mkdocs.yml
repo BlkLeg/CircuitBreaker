@@ -69,6 +69,7 @@ nav:
       - Support Contract: release/1.0.0-support-contract.md
       - Compatibility Policy: release/1.0.0-compatibility-policy.md
       - Service Objectives: release/1.0.0-service-objectives.md
+      - Bundle Signing: release/bundle-signing.md
   - Updates:
       - v0.4.2 Release Notes: updates/v0.4.2_release.md
       - v0.3.3 Release Notes: updates/v0.3.3_release.md

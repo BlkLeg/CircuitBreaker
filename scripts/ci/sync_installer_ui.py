@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""Keep install.sh's inlined renderer byte-identical to deploy/lib/ui.sh.
+"""Keep the inlined copies of deploy/lib/ libraries byte-identical to the source.
 
 install.sh is served raw from `main` — pages.yml does a bare `cp` and the
 documented install command is `curl -fsSL .../main/install.sh | sudo bash` —
 so it cannot `source deploy/lib/ui.sh` at runtime without breaking every
 curl|bash install on a host that never cloned the repo. It carries an inlined
 copy between two marker comments instead, and `deploy/setup.sh`/`uninstall.sh`
-use the real library from the installed bundle. That is a pair pinned in two
-places, and CLAUDE.md's rule for that shape is explicit: the guard belongs in
-the tree, not only the fix.
+use the real library from the installed bundle. cb-proxmox-deploy.sh is run
+the same way (`bash -c "$(curl -fsSL .../main/cb-proxmox-deploy.sh)"`) and
+inlines deploy/lib/bundle-signature.sh so it can verify a release bundle on
+the Proxmox host. install.sh and uninstall.sh, both curl-piped, inline
+deploy/lib/lifecycle.sh so they take the host lifecycle lock before deploy/lib
+exists on the host. Each is a pair pinned in two places, and CLAUDE.md's rule
+for that shape is explicit: the guard belongs in the tree, not only the fix.
 
-This script is that guard's write side: it replaces everything between the
-markers in install.sh with the current contents of deploy/lib/ui.sh.
-`tests/build/test_installer_ui_inline_matches_library.py` is the read side,
-run in CI; `--check` here is the same comparison for local use.
+This script is that guard's write side: for each entry in BLOCKS it replaces
+everything between the markers in the target file with the current contents
+of the library. `tests/build/test_installer_ui_inline_matches_library.py` is
+the read side, run in CI; `--check` here is the same comparison for local use.
 
 Usage:
-    scripts/ci/sync_installer_ui.py            # rewrite install.sh in place
+    scripts/ci/sync_installer_ui.py            # rewrite every target in place
     scripts/ci/sync_installer_ui.py --check    # report drift, exit 1, no write
 """
 
@@ -26,63 +30,160 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = REPO_ROOT / "install.sh"
-UI_SH = REPO_ROOT / "deploy" / "lib" / "ui.sh"
+PROXMOX_SH = REPO_ROOT / "cb-proxmox-deploy.sh"
+UNINSTALL_SH = REPO_ROOT / "uninstall.sh"
 
-BEGIN_MARKER = "# --- BEGIN INLINED deploy/lib/ui.sh — regenerate with scripts/ci/sync_installer_ui.py ---"
-END_MARKER = "# --- END INLINED deploy/lib/ui.sh ---"
 
-_BLOCK_RE = re.compile(
-    re.escape(BEGIN_MARKER) + r"\n(.*)^" + re.escape(END_MARKER),
-    re.DOTALL | re.MULTILINE,
+class Block(NamedTuple):
+    """One library inlined into one target file between two marker lines."""
+
+    target: Path
+    library: Path
+    begin: str
+    end: str
+
+
+_UI_BEGIN = "# --- BEGIN INLINED deploy/lib/ui.sh — regenerate with scripts/ci/sync_installer_ui.py ---"
+_UI_END = "# --- END INLINED deploy/lib/ui.sh ---"
+_SIG_BEGIN = (
+    "# --- BEGIN INLINED deploy/lib/bundle-signature.sh — regenerate with "
+    "scripts/ci/sync_installer_ui.py ---"
 )
+_SIG_END = "# --- END INLINED deploy/lib/bundle-signature.sh ---"
+_LIFECYCLE_BEGIN = (
+    "# --- BEGIN INLINED deploy/lib/lifecycle.sh — regenerate with "
+    "scripts/ci/sync_installer_ui.py ---"
+)
+_LIFECYCLE_END = "# --- END INLINED deploy/lib/lifecycle.sh ---"
+
+BLOCKS: list[Block] = [
+    *[Block(REPO_ROOT / f"packaging/{name}.sh", REPO_ROOT / "deploy/lib/lifecycle.sh", _LIFECYCLE_BEGIN, _LIFECYCLE_END) for name in ("preinstall", "postinstall")],
+    Block(INSTALL_SH, REPO_ROOT / "deploy/lib/release-retention.sh",
+          "# --- BEGIN INLINED deploy/lib/release-retention.sh — regenerate with scripts/ci/sync_installer_ui.py ---",
+          "# --- END INLINED deploy/lib/release-retention.sh ---"),
+    Block(INSTALL_SH, REPO_ROOT / "deploy" / "lib" / "ui.sh", _UI_BEGIN, _UI_END),
+    Block(
+        INSTALL_SH,
+        REPO_ROOT / "deploy" / "lib" / "bundle-signature.sh",
+        _SIG_BEGIN,
+        _SIG_END,
+    ),
+    Block(
+        PROXMOX_SH,
+        REPO_ROOT / "deploy" / "lib" / "bundle-signature.sh",
+        _SIG_BEGIN,
+        _SIG_END,
+    ),
+    # The host-wide lifecycle lock. A downloaded installer or uninstaller has
+    # no deploy/lib/ yet, and must still take the same lock before it installs
+    # anything or touches a service (npm CLI sub-plan 03, Task 5).
+    Block(
+        INSTALL_SH,
+        REPO_ROOT / "deploy" / "lib" / "lifecycle.sh",
+        _LIFECYCLE_BEGIN,
+        _LIFECYCLE_END,
+    ),
+    Block(
+        UNINSTALL_SH,
+        REPO_ROOT / "deploy" / "lib" / "lifecycle.sh",
+        _LIFECYCLE_BEGIN,
+        _LIFECYCLE_END,
+    ),
+]
+
+# Aliases for the first block, kept for anything that still uses the old names.
+UI_SH, BEGIN_MARKER, END_MARKER = BLOCKS[1].library, BLOCKS[0].begin, BLOCKS[0].end
+
+
+def block_regex(begin: str, end: str) -> re.Pattern[str]:
+    """Return the regex that captures the text between one BEGIN/END marker pair."""
+    return re.compile(
+        re.escape(begin) + r"\n(.*)^" + re.escape(end),
+        re.DOTALL | re.MULTILINE,
+    )
 
 
 class MarkersNotFoundError(RuntimeError):
-    """Raised when install.sh does not contain both inlining markers."""
+    """Raised when a target file does not contain both inlining markers."""
 
 
-def read_library() -> str:
-    """Return the current contents of deploy/lib/ui.sh, unmodified."""
-    return UI_SH.read_text(encoding="utf-8")
+def read_library(library: Path = UI_SH) -> str:
+    """Return the current contents of a library file, unmodified."""
+    return library.read_text(encoding="utf-8")
 
 
-def current_inlined_block(installer_text: str) -> str:
-    """Return the text between the BEGIN/END markers in install.sh.
+def current_inlined_block(
+    installer_text: str,
+    begin: str = BEGIN_MARKER,
+    end: str = END_MARKER,
+    target: Path = INSTALL_SH,
+) -> str:
+    """Return the text between a BEGIN/END marker pair in a target file's text.
 
     Raises MarkersNotFoundError if either marker is missing, so a caller can
     never silently treat "no markers" as "empty block, already in sync".
     """
-    match = _BLOCK_RE.search(installer_text)
+    match = block_regex(begin, end).search(installer_text)
     if not match:
         raise MarkersNotFoundError(
-            f"could not find both '{BEGIN_MARKER}' and '{END_MARKER}' in {INSTALL_SH}"
+            f"could not find both '{begin}' and '{end}' in {target}"
         )
     return match.group(1)
 
 
-def render_installer(installer_text: str, library_text: str) -> str:
-    """Return install.sh's text with the inlined block replaced by library_text.
+def render_installer(
+    installer_text: str,
+    library_text: str,
+    begin: str = BEGIN_MARKER,
+    end: str = END_MARKER,
+    target: Path = INSTALL_SH,
+) -> str:
+    """Return a target file's text with one inlined block replaced by library_text.
 
     Splices by index rather than `re.sub(..., replacement)`: re.sub treats
     backslashes in a replacement string as backreferences, and a shell
     library is full of them (`\\n`-in-strings, escaped characters in the
     banner art). Raises MarkersNotFoundError if the markers are missing.
     """
-    match = _BLOCK_RE.search(installer_text)
+    match = block_regex(begin, end).search(installer_text)
     if not match:
         raise MarkersNotFoundError(
-            f"could not find both '{BEGIN_MARKER}' and '{END_MARKER}' in {INSTALL_SH}"
+            f"could not find both '{begin}' and '{end}' in {target}"
         )
-    start, end = match.span(1)
-    return installer_text[:start] + library_text + installer_text[end:]
+    start, stop = match.span(1)
+    return installer_text[:start] + library_text + installer_text[stop:]
 
 
-def check(installer_text: str, library_text: str) -> bool:
-    """Return True when install.sh's inlined block matches the library exactly."""
-    return current_inlined_block(installer_text) == library_text
+def check(
+    installer_text: str,
+    library_text: str,
+    begin: str = BEGIN_MARKER,
+    end: str = END_MARKER,
+    target: Path = INSTALL_SH,
+) -> bool:
+    """Return True when a target's inlined block matches the library exactly."""
+    return current_inlined_block(installer_text, begin, end, target) == library_text
+
+
+def _relative(path: Path) -> Path:
+    """Return path relative to the repo root when it lies inside it."""
+    try:
+        return path.relative_to(REPO_ROOT)
+    except ValueError:
+        return path
+
+
+def _targets() -> list[Path]:
+    """Return each distinct target in BLOCKS, in first-seen order."""
+    seen: list[Path] = []
+    for block in BLOCKS:
+        if block.target not in seen:
+            seen.append(block.target)
+    return seen
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -91,32 +192,56 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="report drift and exit 1 instead of writing install.sh",
+        help="report drift and exit 1 instead of writing any target",
     )
     args = parser.parse_args(argv)
 
-    library_text = read_library()
-    installer_text = INSTALL_SH.read_text(encoding="utf-8")
-
     try:
         if args.check:
-            if check(installer_text, library_text):
-                print(f"{INSTALL_SH.relative_to(REPO_ROOT)} is in sync with {UI_SH.relative_to(REPO_ROOT)}")
-                return 0
-            print(
-                f"{INSTALL_SH.relative_to(REPO_ROOT)} has drifted from "
-                f"{UI_SH.relative_to(REPO_ROOT)} — run "
-                "'scripts/ci/sync_installer_ui.py' to fix.",
-                file=sys.stderr,
-            )
-            return 1
+            drifted = False
+            for block in BLOCKS:
+                text = block.target.read_text(encoding="utf-8")
+                target = _relative(block.target)
+                name = _relative(block.library)
+                if check(
+                    text,
+                    read_library(block.library),
+                    block.begin,
+                    block.end,
+                    block.target,
+                ):
+                    print(f"{target} is in sync with {name}")
+                else:
+                    drifted = True
+                    print(
+                        f"{target} has drifted from {name} — run "
+                        "'scripts/ci/sync_installer_ui.py' to fix.",
+                        file=sys.stderr,
+                    )
+            return 1 if drifted else 0
 
-        updated_text = render_installer(installer_text, library_text)
-        if updated_text != installer_text:
-            INSTALL_SH.write_text(updated_text, encoding="utf-8")
-            print(f"updated {INSTALL_SH.relative_to(REPO_ROOT)}")
-        else:
-            print(f"{INSTALL_SH.relative_to(REPO_ROOT)} already in sync")
+        # Render every target before writing any, so a missing marker in one
+        # leaves all of them untouched.
+        rendered: list[tuple[Path, str, str]] = []
+        for target_path in _targets():
+            original = target_path.read_text(encoding="utf-8")
+            updated = original
+            for block in BLOCKS:
+                if block.target == target_path:
+                    updated = render_installer(
+                        updated,
+                        read_library(block.library),
+                        block.begin,
+                        block.end,
+                        target_path,
+                    )
+            rendered.append((target_path, original, updated))
+        for target_path, original, updated in rendered:
+            if updated != original:
+                target_path.write_text(updated, encoding="utf-8")
+                print(f"updated {_relative(target_path)}")
+            else:
+                print(f"{_relative(target_path)} already in sync")
         return 0
     except MarkersNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)

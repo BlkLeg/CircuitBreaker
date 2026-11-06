@@ -1,7 +1,8 @@
 """The status checks the `Main-Branch` and `Dev-Branch` rulesets require.
 
-The single copy of the list. Both rulesets require the same 21 names (see
-specs/1.0.0/evidence/gov-15-branch-protection-enabled.md, section 4); the
+The single copy of the list. Both rulesets require the same 23 names: the 21
+recorded in specs/1.0.0/evidence/gov-15-branch-protection-enabled.md, section
+4, plus the two npm CLI checks the maintainer made required on 2026-09-30; the
 rulesets themselves live in GitHub settings, not in this repository, so this
 module is the in-repo statement of them that tests check the workflows
 against. Change it in the same commit as the ruleset.
@@ -31,4 +32,6 @@ REQUIRED_CHECKS: tuple[str, ...] = (
     "Go Vulnerability Scan",
     "Analyze (Python)",
     "Analyze (JavaScript / TypeScript)",
+    "npm CLI (Node 22)",
+    "npm CLI (Node 24)",
 )

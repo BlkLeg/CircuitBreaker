@@ -155,8 +155,8 @@ function KbTable({ tab }) {
 
   return (
     <div>
-      <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-mb-3">
-        <label className="tw-text-sm" htmlFor={`kb-source-${tab.key}`}>
+      <div className="tw:flex tw:flex-wrap tw:items-center tw:gap-3 tw:mb-3">
+        <label className="tw:text-sm" htmlFor={`kb-source-${tab.key}`}>
           Source
         </label>
         <select
@@ -170,7 +170,7 @@ function KbTable({ tab }) {
           <option value="manual">Manual</option>
         </select>
 
-        <label className="tw-sr-only" htmlFor={`kb-query-${tab.key}`}>
+        <label className="tw:sr-only" htmlFor={`kb-query-${tab.key}`}>
           Filter loaded entries
         </label>
         <input
@@ -181,7 +181,7 @@ function KbTable({ tab }) {
           className="btn btn-sm"
         />
 
-        <div className="tw-ml-auto tw-flex tw-gap-2">
+        <div className="tw:ml-auto tw:flex tw:gap-2">
           <button type="button" className="btn btn-sm" onClick={handleExport}>
             Export JSON
           </button>
@@ -196,7 +196,7 @@ function KbTable({ tab }) {
       </div>
 
       {error ? (
-        <div role="alert" className="tw-p-4 tw-border tw-rounded">
+        <div role="alert" className="tw:p-4 tw:border tw:rounded-sm">
           <p>{error}</p>
           <button type="button" className="btn btn-sm" onClick={fetchFirstPage}>
             Retry
@@ -214,17 +214,17 @@ function KbTable({ tab }) {
             onDelete={(id) => setConfirmTarget(id)}
             defaultPageSize={PAGE_SIZE}
           />
-          <div className="tw-flex tw-items-center tw-gap-3 tw-mt-3 tw-text-sm">
-            <span className="tw-opacity-70">
+          <div className="tw:flex tw:items-center tw:gap-3 tw:mt-3 tw:text-sm">
+            <span className="tw:opacity-70">
               {filtering
                 ? `${visibleRows.length} of ${rows.length} loaded entries`
                 : `${rows.length} loaded, highest seen-count first`}
             </span>
             {filtering && hasMore && (
-              <span className="tw-opacity-70">Load more to search further.</span>
+              <span className="tw:opacity-70">Load more to search further.</span>
             )}
             {hasMore && (
-              <button type="button" className="btn btn-sm tw-ml-auto" onClick={loadMore}>
+              <button type="button" className="btn btn-sm tw:ml-auto" onClick={loadMore}>
                 Load more
               </button>
             )}

@@ -55,11 +55,12 @@ already documents as unsupported.
 ## Verifying releases
 
 Every release ships SBOMs (CycloneDX and SPDX, generated with syft) and a
-`SHA256SUMS` file, and the container image is signed keylessly with cosign with
-its SBOM attached to the image. GPG detached signatures — over the artifacts and
-over `SHA256SUMS` — are produced only when the release workflow has a signing
-key available; a release published without one carries checksums and cosign
-signatures but no `.asc` files, and its `SHA256SUMS` does not cover the SBOM
-files. Check for the `.asc` files on the release before relying on a GPG
-signature. Verification steps are in the
+`SHA256SUMS` file that covers every other file attached to the release,
+including the SBOMs. From 0.4.7, every release also publishes `SHA256SUMS.sig`,
+an Ed25519 signature over `SHA256SUMS` that `install.sh` verifies before it
+trusts any hash. The container image is signed keylessly with cosign with its
+SBOM attached to the image. GPG detached signatures (`.asc`) are produced only
+when the release workflow has a GPG key available; check for the `.asc` files on
+the release before relying on one. Verification steps, including how to check
+`SHA256SUMS.sig` by hand, are in the
 [security verification checklist](docs/installation/security-verification.md).

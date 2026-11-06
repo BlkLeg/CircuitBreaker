@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "commands": [
+    { "name": "info", "summary": "Show install identity (mode, paths, health URL) [--json]", "lifecycle": false },
+    { "name": "status", "summary": "Show container / service status", "lifecycle": false },
+    { "name": "resources", "summary": "App resource usage [--watch] [--json] [--interval seconds]", "lifecycle": false },
+    { "name": "doctor", "summary": "Run health checks and diagnose issues [--json]", "lifecycle": false },
+    { "name": "diag", "summary": "diag bundle: write one redacted .tar.gz to hand over for an issue", "lifecycle": false },
+    { "name": "setup", "summary": "Report first-run / bootstrap status", "lifecycle": false },
+    { "name": "setup-token", "summary": "Print the one-time setup token (not for logs)", "lifecycle": false },
+    { "name": "logs", "summary": "Show logs (-f to follow in real time)", "lifecycle": false },
+    { "name": "restart", "summary": "Restart Circuit Breaker", "lifecycle": false },
+    { "name": "update", "summary": "Update the server", "lifecycle": true },
+    { "name": "backup", "summary": "Full-state snapshot (database, uploads, config, vault key)", "lifecycle": false },
+    { "name": "restore", "summary": "Restore a snapshot (--identity for .age; destructive)", "lifecycle": false },
+    { "name": "migrate", "summary": "migrate status | migrate upgrade", "lifecycle": false },
+    { "name": "token", "summary": "Scoped API tokens (create, list, rotate, revoke)", "lifecycle": false },
+    { "name": "user", "summary": "Local accounts (list, create, set-role, disable, enable)", "lifecycle": false },
+    { "name": "agent", "summary": "Agent fleet (list, approve, revoke)", "lifecycle": false },
+    { "name": "config", "summary": "config validate: validate the configuration before it is used", "lifecycle": false },
+    { "name": "vault-recover", "summary": "Recover an uninitialized vault (recovery path only)", "lifecycle": false },
+    { "name": "version", "summary": "Show installed version", "lifecycle": false },
+    { "name": "uninstall", "summary": "Remove Circuit Breaker from this system", "lifecycle": true }
+  ]
+}

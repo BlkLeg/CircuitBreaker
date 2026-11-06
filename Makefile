@@ -190,7 +190,7 @@ deps-native-down:  ## Stop native systemd deps
 # ==============================================================================
 DIST_NATIVE ?= dist/native
 
-.PHONY: build build-deps build-in-release-image build-release build-from-source release-candidate release-stage-only release-promote version-sync release-untag agent-signing-key docker-build docker-push sign sbom
+.PHONY: build build-deps build-in-release-image build-release build-from-source release-candidate release-stage-only release-promote version-sync release-untag agent-signing-key release-signing-key docker-build docker-push sign sbom
 
 build: ## Build native app (tarball + deb + rpm + apk + AppImage + .pkg.tar.zst)
 	cd $(FRONTEND_DIR) && npm ci && npm run build
@@ -210,6 +210,11 @@ build-in-release-image: ## Build packages inside the ubuntu-22.04 image the rele
 agent-signing-key: ## Generate an Ed25519 agent-update signing keypair (operators who build their own agents)
 	.venv/bin/python scripts/agent_signing_key.py
 
+release-signing-key: ## Generate the release-bundle Ed25519 key pair (maintainer, once; see docs/release/bundle-signing.md)
+	@[ -n "$(OUT)" ] || (echo "usage: make release-signing-key OUT=/path/outside/the/repo/release-bundle.pem FIRST=0.4.7"; exit 1)
+	@[ -n "$(FIRST)" ] || (echo "usage: make release-signing-key OUT=... FIRST=<first version this key signs>"; exit 1)
+	bash scripts/release_signing_key.sh "$(OUT)" "$(FIRST)" "release bundle key, created $$(date -u +%F)"
+
 build-release: ## Install build deps then build all packages
 	$(MAKE) --no-print-directory build-deps
 	$(MAKE) --no-print-directory build
@@ -219,23 +224,29 @@ build-from-source: ## Full power-user path: deps + venv + build (clean machine �
 	$(MAKE) --no-print-directory install
 	$(MAKE) --no-print-directory build
 
+# PUBLISH_NPM=true also publishes the npm CLI on promote; off until the NPM gates pass.
+PUBLISH_NPM ?= false
+
 release-candidate: ## Build, gate and stage a DRAFT for VERSION from HEAD, then promote it once approved on the `release` environment
+	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || (echo "make release-candidate dispatches only from main: the Stage job signs bundles only from main. Current branch: $$(git rev-parse --abbrev-ref HEAD)"; exit 1)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
-	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=true
+	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=true -f publish_npm="$(PUBLISH_NPM)"
 	@echo "Dispatched. When the draft is staged the run waits for your approval on the 'release' environment (gh run watch, or Review deployments on the run page)."
-	@echo "Soak the draft before approving with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' && install.sh --local-bundle ..."
+	@echo "Soak the draft before approving with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' --pattern 'SHA256SUMS*' && install.sh --local-bundle ..."
 
 release-stage-only: ## Build, gate and stage a DRAFT for VERSION from HEAD without promoting it (promote later with release-promote)
+	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || (echo "make release-stage-only dispatches only from main: the Stage job signs bundles only from main. Current branch: $$(git rev-parse --abbrev-ref HEAD)"; exit 1)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first (CLAUDE.md rule 4)"; exit 1)
 	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=candidate -f promote=false
-	@echo "Dispatched. Soak the draft with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' && install.sh --local-bundle ..., then: make release-promote"
+	@echo "Dispatched. Soak the draft with: gh release download v$$(cat VERSION) --pattern '*linux_amd64.tar.gz' --pattern 'SHA256SUMS*' && install.sh --local-bundle ..., then: make release-promote"
 
 release-promote: ## Promote the staged draft for VERSION to stable once approved on `release` (no rebuild; the promote creates the tag)
+	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || (echo "make release-promote dispatches only from main: the Stage job signs bundles only from main. Current branch: $$(git rev-parse --abbrev-ref HEAD)"; exit 1)
 	@git fetch -q origin
 	@git branch -r --contains HEAD | grep -q 'origin/' || (echo "HEAD is not on origin — push first"; exit 1)
-	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=stable -f version="$$(cat VERSION)"
+	gh workflow run release.yml --ref "$$(git rev-parse --abbrev-ref HEAD)" -f channel=stable -f version="$$(cat VERSION)" -f publish_npm="$(PUBLISH_NPM)"
 
 # GOV-09 says VERSION is the only hand-edited version. apps/backend/pyproject.toml
 # gets that literally — hatch reads the file — but a package.json and a sentence
@@ -294,7 +305,7 @@ security-check: ## Run security scans (gate mode — fails on HIGH/CRIT)
 security-report: ## Run full security scan report (non-blocking)
 	./scripts/security_scan.sh
 
-.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-composed verify-composed-browser verify-composed-agent verify-composed-mono verify-fleet verify-fleet-upgrade loadgen nav-wedge
+.PHONY: lint format test test-db test-backend test-frontend security-check security-report verify-fast verify verify-full verify-composed verify-composed-browser verify-composed-agent verify-composed-mono verify-cli-pack verify-fleet verify-fleet-upgrade loadgen nav-wedge
 
 loadgen: ## Seed and run a non-blocking Phase-2 baseline (TIER=A, CB_LOADGEN_TOKEN required)
 	$(CURDIR)/.venv/bin/python scripts/loadgen/seed.py seed --tier "$(or $(TIER),A)" --db-url "$(CB_TEST_DB_URL)"
@@ -433,6 +444,9 @@ verify-composed-agent: ## Tier 2 — the composed agent journey, or its register
 verify-composed-mono: ## Tier 2 — build the mono image and run the compose smoke CI runs
 	docker build -f Dockerfile.mono -t circuitbreaker:local-smoke .
 	scripts/ci/tier2-mono-smoke.sh circuitbreaker:local-smoke
+
+verify-cli-pack: ## npm CLI — pack the exact tarball, install it by name with its shrinkwrap honoured, check the tree, drive the launcher (Node 22.22.2+/24.15.0+/26+)
+	scripts/ci/cli_packed_smoke.sh
 
 # T3. Not part of `verify` and deliberately not wired into any workflow yet: it
 # boots a VM, downloads a 556MB image on first run, and takes minutes, which is

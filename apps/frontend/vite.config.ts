@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +14,11 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [
       react(),
+      // Tailwind's own Vite plugin, not its PostCSS one: Vite inlines @import
+      // itself before PostCSS plugins run and drops the prefix(tw) and
+      // source(none) options on the imports in src/styles/tailwind.css, which
+      // silently produced a bundle with no tw: utilities at all.
+      tailwindcss(),
       // Bundle analyzer — only active when ANALYZE=true (e.g. `ANALYZE=true npm run build`).
       // Outputs stats.html in the dist directory for visual bundle inspection.
       process.env.ANALYZE === 'true' &&

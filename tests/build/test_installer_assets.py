@@ -25,7 +25,7 @@ def _load() -> ModuleType:
 
 installer_assets = _load()
 
-PARAMETER = 'cb_verify_bundle_checksum() {\n  local tarball_name="$2"\n}\n'
+PARAMETER = 'cb_check_bundle() {\n  local tarball_name="$2"\n}\n'
 TEMPLATE = 'local tarball_name="circuit-breaker_${CB_VERSION}_linux_${ARCH}.tar.gz"\n'
 
 
@@ -37,10 +37,16 @@ def test_the_template_wins_over_an_earlier_parameter_assignment() -> None:
     )
 
 
-def test_the_real_install_sh_has_the_parameter_first() -> None:
-    """The trap this script exists for is still present, so the test above is not hypothetical."""
+def test_the_real_install_sh_yields_exactly_one_template() -> None:
+    """The real installer still resolves to a single template.
+
+    This used to assert the `tarball_name="$2"` parameter trap preceded the
+    template. cb_verify_bundle_checksum, which held it, was replaced by
+    cb_check_bundle, which derives the name with basename, so the trap is gone
+    and the remaining guarantee is that the real file still parses.
+    """
     text = INSTALL_SH.read_text(encoding="utf-8")
-    assert text.index('tarball_name="$2"') < text.index('tarball_name="circuit-breaker_')
+    assert installer_assets.tarball_template(text) == "circuit-breaker_${CB_VERSION}_linux_${ARCH}.tar.gz"
 
 
 def test_no_candidate_raises() -> None:

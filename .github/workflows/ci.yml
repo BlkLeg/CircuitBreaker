@@ -77,6 +77,11 @@ jobs:
       - name: Install frontend deps
         run: cd apps/frontend && npm ci
 
+      # tests/build checks the CLI's installed dependency tree for install-time
+      # scripts (NPM-10), so Tier 0 needs it; --ignore-scripts for the same reason.
+      - name: Install CLI deps
+        run: cd packages/cli && npm ci --ignore-scripts
+
       - name: Tier 0 — static gates
         env:
           CB_DB_URL: postgresql://cb_ci:cb_ci@127.0.0.1:5432/cb_ci
@@ -571,6 +576,33 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: 14
+
+  # Same job as dev-ci.yml's npm-cli: both rulesets require its two check names,
+  # so the main-branch gate has to produce them too.
+  npm-cli:
+    name: npm CLI (Node ${{ matrix.node }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Install CLI dependencies
+        working-directory: packages/cli
+        run: npm ci --ignore-scripts
+
+      - name: Unit tests
+        run: node --test packages/cli/test/*.test.js
+
+      - name: Packed-tarball smoke
+        run: scripts/ci/cli_packed_smoke.sh
 
   # The Playwright suite itself lives in browser-e2e.yml so that this workflow,
   # dev-ci.yml and release.yml share one definition. The aggregate below stays

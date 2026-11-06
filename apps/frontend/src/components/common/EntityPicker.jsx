@@ -79,8 +79,8 @@ export default function EntityPicker({
 
   return (
     <Drawer isOpen={isOpen} onClose={onClose} title={title} width="440px">
-      <div className="tw-flex tw-flex-col tw-gap-3">
-        <label className="tw-text-xs tw-text-cb-muted" htmlFor="entity-picker-search">
+      <div className="tw:flex tw:flex-col tw:gap-3">
+        <label className="tw:text-xs tw:text-cb-muted" htmlFor="entity-picker-search">
           Search every page
         </label>
         <input
@@ -89,44 +89,44 @@ export default function EntityPicker({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Name, address, or label"
-          className="tw-w-full tw-h-9 tw-rounded tw-border tw-border-cb-border tw-bg-cb-bg tw-text-cb-text tw-px-3 tw-text-sm focus:tw-outline-none focus:tw-ring-1 focus:tw-ring-cb-primary"
+          className="tw:w-full tw:h-9 tw:rounded-sm tw:border tw:border-cb-border tw:bg-cb-bg tw:text-cb-text tw:px-3 tw:text-sm tw:focus:outline-hidden tw:focus:ring-1 tw:focus:ring-cb-primary"
           autoFocus
         />
         {selectedLabels.length > 0 && (
-          <div className="tw-text-xs tw-text-cb-muted">
+          <div className="tw:text-xs tw:text-cb-muted">
             Selected:{' '}
             {selectedLabels.map((opt) => (
-              <span key={opt.ref?.key || opt.label} className="tw-mr-2">
+              <span key={opt.ref?.key || opt.label} className="tw:mr-2">
                 {opt.label}
                 {!opt.available ? ` (${opt.unavailable_reason || 'unavailable'})` : ''}
               </span>
             ))}
           </div>
         )}
-        {loading && <p className="tw-text-sm tw-text-cb-muted">Searching…</p>}
+        {loading && <p className="tw:text-sm tw:text-cb-muted">Searching…</p>}
         {error && (
-          <p className="tw-text-sm tw-text-cb-danger" role="alert">
+          <p className="tw:text-sm tw:text-cb-danger" role="alert">
             {error}
           </p>
         )}
         {!loading && !error && items.length === 0 && (
-          <p className="tw-text-sm tw-text-cb-muted">No matching assets.</p>
+          <p className="tw:text-sm tw:text-cb-muted">No matching assets.</p>
         )}
-        <ul className="tw-list-none tw-m-0 tw-p-0 tw-flex tw-flex-col">
+        <ul className="tw:list-none tw:m-0 tw:p-0 tw:flex tw:flex-col">
           {items.map((opt) => (
             <li key={opt.ref?.key || `${opt.ref?.entity_type}:${opt.ref?.entity_id}`}>
               <button
                 type="button"
-                className="tw-w-full tw-text-left tw-border-0 tw-border-b tw-border-cb-border tw-bg-transparent tw-text-cb-text tw-px-0 tw-py-3 hover:tw-bg-cb-surface-raised"
+                className="tw:w-full tw:text-left tw:border-0 tw:border-b tw:border-cb-border tw:bg-transparent tw:text-cb-text tw:px-0 tw:py-3 tw:hover:bg-cb-surface-raised"
                 onClick={() => {
                   onSelect?.(opt);
                   onClose();
                 }}
                 disabled={!opt.available}
               >
-                <strong className="tw-font-medium">{opt.label}</strong>
+                <strong className="tw:font-medium">{opt.label}</strong>
                 {opt.description && (
-                  <span className="tw-block tw-text-xs tw-text-cb-muted tw-mt-1">
+                  <span className="tw:block tw:text-xs tw:text-cb-muted tw:mt-1">
                     {opt.description}
                   </span>
                 )}
@@ -135,11 +135,11 @@ export default function EntityPicker({
           ))}
         </ul>
         {hasMore && (
-          <p className="tw-text-xs tw-text-cb-muted">
+          <p className="tw:text-xs tw:text-cb-muted">
             More matches exist — refine the search to narrow results.
           </p>
         )}
-        <p className="tw-text-xs tw-text-cb-muted">
+        <p className="tw:text-xs tw:text-cb-muted">
           Results are independent of the current table page and filters.
         </p>
       </div>

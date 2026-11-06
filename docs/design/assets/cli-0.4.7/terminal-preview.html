@@ -1,0 +1,120 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Circuit Breaker Terminal Update</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          'canvas': '#111114',
+          'terminal': '#19191d',
+          'text-base': '#e4e4e7',
+          'muted': '#98989f',
+          'cb-orange': '#ff875f',
+          'cb-purple': '#af87ff',
+          'cb-violet': '#875fff',
+          'cb-shade': '#444444',
+          'cb-success': '#b8bb26',
+          'cb-danger': '#fb4934'
+        },
+        fontFamily: {
+          mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace']
+        }
+      }
+    }
+  }
+</script>
+<style>
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none !important;
+    }
+  }
+  .spinner {
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body class="bg-canvas m-0 p-0 font-mono text-text-base antialiased flex items-center justify-center min-h-screen">
+  <div class="w-full max-w-4xl p-4 sm:p-8" data-sd-id="1">
+    <div class="bg-terminal rounded-lg shadow-2xl overflow-hidden border border-cb-shade/30" data-sd-id="2">
+      <div class="flex items-center px-4 py-3 border-b border-cb-shade/30 bg-terminal/80" data-sd-id="3">
+        <div class="flex space-x-2" data-sd-id="4">
+          <div class="w-3 h-3 rounded-full bg-cb-shade" data-sd-id="5"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade" data-sd-id="6"></div>
+          <div class="w-3 h-3 rounded-full bg-cb-shade" data-sd-id="7"></div>
+        </div>
+        <div class="mx-auto text-xs text-muted" data-sd-id="8">circuitbreaker update</div>
+      </div>
+      <div class="p-6 sm:p-10 overflow-x-auto" data-sd-id="9">
+<pre class="text-[10px] sm:text-xs leading-tight mb-8 whitespace-pre" data-sd-id="10">          <span class="text-cb-purple" data-sd-id="11">.--------------------------------------------.</span>
+          <span class="text-cb-purple" data-sd-id="12">| <span class="opacity-60" data-sd-id="13">&gt; topology --live          24 up  31 links</span> |</span>
+          <span class="text-cb-purple" data-sd-id="14">|                                            |</span>
+          <span class="text-cb-purple" data-sd-id="15">|    <span class="text-cb-orange" data-sd-id="16">o---o---o</span>                  <span class="text-cb-orange" data-sd-id="17">o---o---o</span>    |</span>
+          <span class="text-cb-purple" data-sd-id="18">|     <span class="text-cb-orange" data-sd-id="19">\  |  /</span>                    <span class="text-cb-orange" data-sd-id="20">\  |  /</span>     |</span>
+          <span class="text-cb-purple" data-sd-id="21">|        <span class="text-cb-orange" data-sd-id="22">o--------</span><span class="text-cb-violet" data-sd-id="23">##########</span><span class="text-cb-orange" data-sd-id="24">--------o</span>        |</span>
+          <span class="text-cb-purple" data-sd-id="25">|       <span class="text-cb-orange" data-sd-id="26">/      </span><span class="text-cb-violet" data-sd-id="27">#</span><span class="text-cb-shade" data-sd-id="28">##############</span><span class="text-cb-violet" data-sd-id="29">#</span><span class="text-cb-orange" data-sd-id="30">      \</span>       |</span>
+          <span class="text-cb-purple" data-sd-id="31">|      <span class="text-cb-orange" data-sd-id="32">o     </span><span class="text-cb-violet" data-sd-id="33">#</span><span class="text-cb-shade" data-sd-id="34">##################</span><span class="text-cb-violet" data-sd-id="35">#</span><span class="text-cb-orange" data-sd-id="36">     o</span>      |</span>
+          <span class="text-cb-purple" data-sd-id="37">|     <span class="text-cb-orange" data-sd-id="38">/     </span><span class="text-cb-violet" data-sd-id="39">#</span><span class="text-cb-shade" data-sd-id="40">####################</span><span class="text-cb-violet" data-sd-id="41">#</span><span class="text-cb-orange" data-sd-id="42">     \</span>     |</span>
+          <span class="text-cb-purple" data-sd-id="43">|    <span class="text-cb-orange" data-sd-id="44">o    </span><span class="text-cb-violet" data-sd-id="45">(#</span><span class="text-cb-shade" data-sd-id="46">######################</span><span class="text-cb-violet" data-sd-id="47">#)</span><span class="text-cb-orange" data-sd-id="48">    o</span>    |</span>
+          <span class="text-cb-purple" data-sd-id="49">|         <span class="text-cb-violet" data-sd-id="50">(#</span><span class="text-cb-shade" data-sd-id="51">######################</span><span class="text-cb-violet" data-sd-id="52">#)</span>         |   <span class="opacity-60" data-sd-id="53">~</span></span>
+          <span class="text-cb-purple" data-sd-id="54">'----------<span class="text-cb-violet" data-sd-id="55">#</span><span class="text-cb-shade" data-sd-id="56">######################</span><span class="text-cb-violet" data-sd-id="57">#</span>----------'  <span class="opacity-60" data-sd-id="58">(_)</span></span>
+  <span class="opacity-60" data-sd-id="59">------------------</span><span class="text-cb-violet" data-sd-id="60">#</span><span class="text-cb-shade" data-sd-id="61">########################</span><span class="text-cb-violet" data-sd-id="62">#</span><span class="opacity-60" data-sd-id="63">------------------</span>
+                   <span class="text-cb-violet" data-sd-id="64">============================</span>
+              <span class="text-cb-violet" data-sd-id="65">#</span><span class="text-cb-shade" data-sd-id="66">####################################</span><span class="text-cb-violet" data-sd-id="67">#</span>
+          <span class="text-cb-violet" data-sd-id="68">#</span><span class="text-cb-shade" data-sd-id="69">############################################</span><span class="text-cb-violet" data-sd-id="70">#</span>
+        <span class="text-cb-violet" data-sd-id="71">#</span><span class="text-cb-shade" data-sd-id="72">################################################</span><span class="text-cb-violet" data-sd-id="73">#</span>
+       <span class="text-cb-violet" data-sd-id="74">#</span><span class="text-cb-shade" data-sd-id="75">##################################################</span><span class="text-cb-violet" data-sd-id="76">#</span>
+
+<span class="font-bold text-cb-orange" data-sd-id="77">                  C I R C U I T _ B R E A K E R</span>
+<span class="opacity-60" data-sd-id="78">                         Installer  v0.4.6</span>
+</pre>
+
+        <div class="mb-6 text-sm" data-sd-id="79">
+          <div class="flex justify-between items-baseline mb-1" data-sd-id="80">
+            <span class="font-bold text-text-base" data-sd-id="81">Circuit Breaker <span class="text-cb-purple ml-2" data-sd-id="82">UPDATE</span></span>
+            <span class="text-muted" data-sd-id="83">native / linux-amd64</span>
+          </div>
+          <div class="flex justify-between items-baseline text-muted" data-sd-id="84">
+            <span data-sd-id="85">0.4.6 → 0.4.7</span>
+            <span class="text-cb-success" data-sd-id="86">Signed release verified</span>
+          </div>
+        </div>
+
+        <div class="space-y-1 mb-6 text-sm" data-sd-id="87">
+          <div class="flex justify-between" data-sd-id="88">
+            <span class="text-cb-success" data-sd-id="89">✓ Preflight and compatibility</span>
+            <span class="text-muted" data-sd-id="90">0.8s</span>
+          </div>
+          <div class="flex justify-between" data-sd-id="91">
+            <span class="text-cb-success" data-sd-id="92">✓ Download and verify</span>
+            <span class="text-muted" data-sd-id="93"><span class="mr-4" data-sd-id="94">84 / 84 MiB</span>7.2s</span>
+          </div>
+          <div class="flex justify-between" data-sd-id="95">
+            <span class="text-cb-success" data-sd-id="96">✓ Recovery point saved</span>
+            <span class="text-muted" data-sd-id="97">4.1s</span>
+          </div>
+          <div class="flex justify-between text-text-base" data-sd-id="98">
+            <span data-sd-id="99"><span class="text-cb-orange inline-block w-4 text-center mr-1" data-sd-id="100">◌</span> Apply release</span>
+            <span class="text-muted" data-sd-id="101"><span class="mr-4" data-sd-id="102">4 / 6</span>12.3s</span>
+          </div>
+          <div class="pl-5 text-muted" data-sd-id="103">
+            Preparing database migrations · services paused
+          </div>
+        </div>
+
+        <div class="mt-8 text-xs text-muted space-y-1" data-sd-id="104">
+          <div data-sd-id="105">Recovery: op-20260930-001</div>
+          <div data-sd-id="106">Log: /var/log/circuitbreaker/install.log</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body></html>

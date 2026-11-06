@@ -78,6 +78,22 @@ echo "REFUSED: $0 $*" >> "$DOCKER_LOG"
 exit 1
 """
 
+# uninstall.sh re-runs itself through sudo to take the root-only host lifecycle
+# lock (cb_lifecycle_elevate). This sudo lets exactly that through, as this same
+# unprivileged user over a disposable lock root (CB_LIFECYCLE_ROOT), and refuses
+# everything else like REFUSE_STUB.
+SUDO_STUB = """#!/usr/bin/env bash
+[ "$1" = "-v" ] && exit 0
+while [ $# -gt 0 ]; do
+  case "$1" in --) shift; break ;; -*) shift ;; *) break ;; esac
+done
+case "$*" in
+  "env CB_LIFECYCLE_ELEVATED=1 "*) exec "$@" ;;
+esac
+echo "REFUSED: sudo $*" >> "$DOCKER_LOG"
+exit 1
+"""
+
 
 @pytest.fixture()
 def sandbox(tmp_path):
@@ -86,9 +102,11 @@ def sandbox(tmp_path):
     bin_dir.mkdir()
     (bin_dir / "docker").write_text(DOCKER_STUB, encoding="utf-8")
     (bin_dir / "docker").chmod(0o755)
-    for name in ("sudo", "systemctl", "certutil", "launchctl"):
+    for name in ("systemctl", "certutil", "launchctl"):
         (bin_dir / name).write_text(REFUSE_STUB, encoding="utf-8")
         (bin_dir / name).chmod(0o755)
+    (bin_dir / "sudo").write_text(SUDO_STUB, encoding="utf-8")
+    (bin_dir / "sudo").chmod(0o755)
 
     home = tmp_path / "home"
     home.mkdir()
@@ -99,6 +117,7 @@ def sandbox(tmp_path):
         "HOME": str(home),
         "DOCKER_LOG": str(log),
         "CB_CONFIG_DIR": str(home / ".circuit-breaker"),
+        **({} if os.geteuid() == 0 else {"CB_LIFECYCLE_ROOT": str(tmp_path / "lifecycle")}),
     }
     return {"env": env, "log": log, "home": home}
 

@@ -11,17 +11,17 @@ export default function InventorySelectionToolbar({
 }) {
   if (selectedCount <= 0) return null;
   return (
-    <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-mb-2 tw-px-3 tw-py-2 tw-rounded tw-border tw-border-cb-border tw-bg-cb-surface-raised/40">
-      <span className="tw-text-sm tw-text-cb-text">
+    <div className="tw:flex tw:items-center tw:justify-between tw:gap-3 tw:mb-2 tw:px-3 tw:py-2 tw:rounded-sm tw:border tw:border-cb-border tw:bg-cb-surface-raised/40">
+      <span className="tw:text-sm tw:text-cb-text">
         <strong>{selectedCount}</strong> {scopeLabel}
       </span>
-      <div className="tw-flex tw-items-center tw-gap-3">
+      <div className="tw:flex tw:items-center tw:gap-3">
         {showSelectAllMatching && (
           <button type="button" className="text-btn" onClick={onSelectAllMatching}>
             Select all {listTotal} matching
           </button>
         )}
-        <button type="button" className="text-btn tw-text-cb-muted" onClick={onClear}>
+        <button type="button" className="text-btn tw:text-cb-muted" onClick={onClear}>
           Clear
         </button>
       </div>

@@ -97,6 +97,58 @@ case "$SNAPSHOT" in
     *)              RESTORE_KIND="snapshot" ;;
 esac
 
+# ── 1c. Take the host lifecycle lock ──────────────────────────────────────
+
+# A restore stops the service and replaces the database, the uploads and the vault
+# key, so it conflicts with every other lifecycle operation: an install or upgrade,
+# an uninstall, a `cb` mutation, the npm coordinator's native helper. It takes the
+# one host-wide lock (deploy/lib/lifecycle.sh) before anything below, and stops with
+# 10 while anything else holds it. Without root it first re-runs itself through sudo,
+# and stops with 6 when it cannot. `cb restore` holds the lock already and hands it
+# down (CB_LIFECYCLE_LOCK_FD), so this joins it rather than waiting on its own
+# parent. The library is the one shipped beside this script (the bundle's
+# deploy/lib), else the control plane setup.sh installs in /usr/local/lib/circuitbreaker.
+# Without either, nothing is restored: an unlocked restore could interleave with an
+# upgrade. Contract: specs/install/lifecycle-contract.md §11.
+_CB_LIFECYCLE_LIB=""
+for _cb_candidate in "$(dirname -- "${BASH_SOURCE[0]}")/../lib/lifecycle.sh" \
+    /usr/local/lib/circuitbreaker/lifecycle.sh; do
+    if [[ -f "$_cb_candidate" ]]; then
+        _CB_LIFECYCLE_LIB="$_cb_candidate"
+        break
+    fi
+done
+if [[ -z "$_CB_LIFECYCLE_LIB" ]]; then
+    echo "ERROR: the lifecycle library (lifecycle.sh) is not installed beside this script" >&2
+    echo "       or in /usr/local/lib/circuitbreaker, so the host lifecycle lock cannot" >&2
+    echo "       be taken. Re-run the installer, or run restore.sh from a release bundle." >&2
+    echo "       Nothing has been changed." >&2
+    exit 7
+fi
+# shellcheck source=../lib/lifecycle.sh
+source "$_CB_LIFECYCLE_LIB"
+# Root first: the lock is root-only, so run without it this re-runs itself
+# through sudo (and stops with 6 when it cannot) before anything else.
+_cb_lock_rc=0
+cb_lifecycle_elevate "${BASH_SOURCE[0]}" "$@" || _cb_lock_rc=$?
+if [[ "$_cb_lock_rc" -ne 0 ]]; then
+    _cb_quoted_args=""
+    if [[ $# -gt 0 ]]; then
+        printf -v _cb_quoted_args ' %q' "$@"
+    fi
+    echo "       restore.sh needs root for the host lifecycle lock. Run: sudo $(printf '%q' "$0")${_cb_quoted_args}" >&2
+    echo "       Nothing has been changed." >&2
+    exit "$_cb_lock_rc"
+fi
+cb_lifecycle_lock_acquire "restore.sh" || _cb_lock_rc=$?
+if [[ "$_cb_lock_rc" -ne 0 ]]; then
+    echo "       Nothing has been changed." >&2
+    exit "$_cb_lock_rc"
+fi
+# INT/TERM before step 8 changes nothing: the EXIT trap below removes the scratch
+# directory. From step 8 on the host is changing, and the trap says so.
+cb_lifecycle_arm_interrupt
+
 # ── 2. Validate required tools ─────────────────────────────────────────────
 
 # jq, rsync and sha256sum read the manifest, sync uploads and check the recorded
@@ -559,6 +611,7 @@ fi
 # is the database being dropped out from under a service that never stopped, and the
 # only clue is a line of output nobody is reading. Nothing has been destroyed yet, so a
 # stop that did not happen is a refusal.
+cb_lifecycle_mark_mutation
 echo "==> Stopping ${CB_SERVICE_UNIT}..."
 if ! systemctl cat "$CB_SERVICE_UNIT" >/dev/null 2>&1; then
     echo "ERROR: systemd unit '${CB_SERVICE_UNIT}' does not exist on this host." >&2
@@ -612,6 +665,10 @@ _as_superuser() {
     # authentication error rather than a confusing `su: Authentication failure`.
     if [[ "$(id -un)" == "$CB_DB_SUPERUSER" || "$(id -u)" -ne 0 ]]; then
         sh -c "$1"
+    elif command -v runuser >/dev/null 2>&1; then
+        # runuser, not su: su's PAM account check refuses the expired system
+        # accounts systemd 262's sysusers creates (see cb_run_as in setup.sh).
+        runuser -s /bin/sh "$CB_DB_SUPERUSER" -c "$1"
     else
         su -s /bin/sh "$CB_DB_SUPERUSER" -c "$1"
     fi

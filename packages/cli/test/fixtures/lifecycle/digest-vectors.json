@@ -1,0 +1,458 @@
+{
+ "canonical": [
+  {
+   "name": "nested keys sort by code point",
+   "value": {
+    "zeta": {
+     "b": 1,
+     "a": [
+      3,
+      2,
+      {
+       "y": null,
+       "x": true
+      }
+     ]
+    },
+    "alpha": false,
+    "a_1": "",
+    "a": []
+   },
+   "canonical": "{\"a\":[],\"a_1\":\"\",\"alpha\":false,\"zeta\":{\"a\":[3,2,{\"x\":true,\"y\":null}],\"b\":1}}"
+  },
+  {
+   "name": "string escapes",
+   "value": {
+    "s": "quote\" backslash\\ slash/ nl\n tab\t cr\r bs\b ff\f nul\u0000 us\u001f del"
+   },
+   "canonical": "{\"s\":\"quote\\\" backslash\\\\ slash/ nl\\n tab\\t cr\\r bs\\b ff\\f nul\\u0000 us\\u001f del\"}"
+  },
+  {
+   "name": "non-ASCII stays literal",
+   "value": {
+    "s": "données ✓   😀"
+   },
+   "canonical": "{\"s\":\"données ✓   😀\"}"
+  },
+  {
+   "name": "integers",
+   "value": {
+    "max": 9007199254740991,
+    "min": -9007199254740991,
+    "zero": 0,
+    "neg": -42
+   },
+   "canonical": "{\"max\":9007199254740991,\"min\":-9007199254740991,\"neg\":-42,\"zero\":0}"
+  },
+  {
+   "name": "empty containers",
+   "value": {
+    "o": {},
+    "l": []
+   },
+   "canonical": "{\"l\":[],\"o\":{}}"
+  },
+  {
+   "name": "top-level array",
+   "value": [
+    1,
+    "two",
+    null,
+    true,
+    false
+   ],
+   "canonical": "[1,\"two\",null,true,false]"
+  }
+ ],
+ "rejected": [
+  {
+   "name": "fraction",
+   "text": "{\"n\":1.5}"
+  },
+  {
+   "name": "integral fraction",
+   "text": "{\"n\":1.0}"
+  },
+  {
+   "name": "exponent",
+   "text": "{\"n\":1e3}"
+  },
+  {
+   "name": "negative zero",
+   "text": "{\"n\":-0}"
+  },
+  {
+   "name": "beyond safe integers",
+   "text": "{\"n\":9007199254740992}"
+  },
+  {
+   "name": "below safe integers",
+   "text": "{\"n\":-9007199254740992}"
+  },
+  {
+   "name": "lone high surrogate",
+   "text": "{\"s\":\"\\ud800\"}"
+  },
+  {
+   "name": "lone low surrogate",
+   "text": "{\"s\":\"a\\udc00b\"}"
+  },
+  {
+   "name": "uppercase key",
+   "text": "{\"Bad\":1}"
+  },
+  {
+   "name": "hyphenated key",
+   "text": "{\"a-b\":1}"
+  },
+  {
+   "name": "non-ASCII key",
+   "text": "{\"é\":1}"
+  },
+  {
+   "name": "empty key",
+   "text": "{\"\":1}"
+  },
+  {
+   "name": "key starting with a digit",
+   "text": "{\"1a\":1}"
+  },
+  {
+   "name": "duplicate key",
+   "text": "{\"a\":1,\"a\":2}"
+  }
+ ],
+ "plans": [
+  {
+   "name": "update with a new recovery point",
+   "plan": {
+    "schema_version": 1,
+    "action": "update",
+    "adapter": "native",
+    "source": {
+     "version": "0.4.6",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "schema_revision": "0040_rls_policies"
+    },
+    "target": {
+     "version": "0.4.7",
+     "arch": "amd64",
+     "channel": "stable",
+     "artifact": {
+      "name": "circuit-breaker_0.4.7_linux_amd64.tar.gz",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+     },
+     "schema_revision": "a1b2c3d4e5f6"
+    },
+    "compatibility": {
+     "management": "certified",
+     "schema": "forward",
+     "transition_digest": null
+    },
+    "options": {
+     "port": 8443,
+     "fqdn": "cb.home.arpa",
+     "cert_type": "self-signed",
+     "email": null,
+     "data_dir": "/var/lib/circuitbreaker",
+     "tls": true,
+     "docker": false,
+     "airgap": false
+    },
+    "downtime": "outage",
+    "recovery": {
+     "mode": "new_point",
+     "ref": null
+    },
+    "data": {
+     "effect": "migrated",
+     "restore_point_at": null,
+     "scope_digest": null
+    },
+    "trust": {
+     "signature": {
+      "key_id": "0123456789abcdef"
+     },
+     "provenance": "verified"
+    },
+    "acknowledgments": [
+     "confirm"
+    ]
+   },
+   "canonical": "{\"acknowledgments\":[\"confirm\"],\"action\":\"update\",\"adapter\":\"native\",\"compatibility\":{\"management\":\"certified\",\"schema\":\"forward\",\"transition_digest\":null},\"data\":{\"effect\":\"migrated\",\"restore_point_at\":null,\"scope_digest\":null},\"downtime\":\"outage\",\"options\":{\"airgap\":false,\"cert_type\":\"self-signed\",\"data_dir\":\"/var/lib/circuitbreaker\",\"docker\":false,\"email\":null,\"fqdn\":\"cb.home.arpa\",\"port\":8443,\"tls\":true},\"recovery\":{\"mode\":\"new_point\",\"ref\":null},\"schema_version\":1,\"source\":{\"artifact_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"identity_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema_revision\":\"0040_rls_policies\",\"version\":\"0.4.6\"},\"target\":{\"arch\":\"amd64\",\"artifact\":{\"digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"name\":\"circuit-breaker_0.4.7_linux_amd64.tar.gz\"},\"channel\":\"stable\",\"schema_revision\":\"a1b2c3d4e5f6\",\"version\":\"0.4.7\"},\"trust\":{\"provenance\":\"verified\",\"signature\":{\"key_id\":\"0123456789abcdef\"}}}",
+   "digest": "sha256:b3fd50ee1190021a608522b4cc8e388d5bf529887727be452e62f85dec49fe21"
+  },
+  {
+   "name": "fresh air-gapped install with presentation",
+   "plan": {
+    "schema_version": 1,
+    "action": "install",
+    "adapter": "native",
+    "source": null,
+    "target": {
+     "version": "0.4.7",
+     "arch": "arm64",
+     "channel": null,
+     "artifact": {
+      "name": "circuit-breaker_0.4.7_linux_arm64.tar.gz",
+      "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+     },
+     "schema_revision": null
+    },
+    "compatibility": {
+     "management": "not_applicable",
+     "schema": "none",
+     "transition_digest": null
+    },
+    "options": {
+     "port": null,
+     "fqdn": null,
+     "cert_type": "letsencrypt",
+     "email": "ops@example.org",
+     "data_dir": "/srv/données/cb \"quoted\" \\ dir",
+     "tls": true,
+     "docker": false,
+     "airgap": true
+    },
+    "downtime": "none",
+    "recovery": {
+     "mode": "none",
+     "ref": null
+    },
+    "data": {
+     "effect": "none",
+     "restore_point_at": null,
+     "scope_digest": null
+    },
+    "trust": {
+     "signature": {
+      "unsigned": "pinned"
+     },
+     "provenance": "skipped-airgap"
+    },
+    "acknowledgments": [
+     "confirm"
+    ],
+    "presentation": {
+     "summary": "Fresh install of 0.4.7 ✓",
+     "lines": [
+      "Target  v0.4.7 (linux arm64)",
+      "Data    none yet"
+     ]
+    }
+   },
+   "canonical": "{\"acknowledgments\":[\"confirm\"],\"action\":\"install\",\"adapter\":\"native\",\"compatibility\":{\"management\":\"not_applicable\",\"schema\":\"none\",\"transition_digest\":null},\"data\":{\"effect\":\"none\",\"restore_point_at\":null,\"scope_digest\":null},\"downtime\":\"none\",\"options\":{\"airgap\":true,\"cert_type\":\"letsencrypt\",\"data_dir\":\"/srv/données/cb \\\"quoted\\\" \\\\ dir\",\"docker\":false,\"email\":\"ops@example.org\",\"fqdn\":null,\"port\":null,\"tls\":true},\"recovery\":{\"mode\":\"none\",\"ref\":null},\"schema_version\":1,\"source\":null,\"target\":{\"arch\":\"arm64\",\"artifact\":{\"digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"name\":\"circuit-breaker_0.4.7_linux_arm64.tar.gz\"},\"channel\":null,\"schema_revision\":null,\"version\":\"0.4.7\"},\"trust\":{\"provenance\":\"skipped-airgap\",\"signature\":{\"unsigned\":\"pinned\"}}}",
+   "digest": "sha256:99ee4406a88a2c4f3a92c33bc2bcf0890e1832e76f8a68577eacfa6e70b22bd1"
+  },
+  {
+   "name": "incompatible downgrade restoring a point",
+   "plan": {
+    "schema_version": 1,
+    "action": "downgrade",
+    "adapter": "native",
+    "source": {
+     "version": "0.4.8",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": null,
+     "schema_revision": "0041_example"
+    },
+    "target": {
+     "version": "0.4.7",
+     "arch": "amd64",
+     "channel": null,
+     "artifact": {
+      "name": "circuit-breaker_0.4.7_linux_amd64.tar.gz",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+     },
+     "schema_revision": "0040_rls_policies"
+    },
+    "compatibility": {
+     "management": "certified",
+     "schema": "incompatible",
+     "transition_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "options": null,
+    "downtime": "outage",
+    "recovery": {
+     "mode": "existing_point",
+     "ref": {
+      "operation_id": "op-20260930-001",
+      "manifest_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+     }
+    },
+    "data": {
+     "effect": "restored",
+     "restore_point_at": "2026-09-30T12:00:00Z",
+     "scope_digest": null
+    },
+    "trust": {
+     "signature": {
+      "unsigned": "explicit-older"
+     },
+     "provenance": "not-applicable"
+    },
+    "acknowledgments": [
+     "confirm",
+     "restore_data"
+    ]
+   },
+   "canonical": "{\"acknowledgments\":[\"confirm\",\"restore_data\"],\"action\":\"downgrade\",\"adapter\":\"native\",\"compatibility\":{\"management\":\"certified\",\"schema\":\"incompatible\",\"transition_digest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"},\"data\":{\"effect\":\"restored\",\"restore_point_at\":\"2026-09-30T12:00:00Z\",\"scope_digest\":null},\"downtime\":\"outage\",\"options\":null,\"recovery\":{\"mode\":\"existing_point\",\"ref\":{\"manifest_digest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operation_id\":\"op-20260930-001\"}},\"schema_version\":1,\"source\":{\"artifact_digest\":null,\"identity_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema_revision\":\"0041_example\",\"version\":\"0.4.8\"},\"target\":{\"arch\":\"amd64\",\"artifact\":{\"digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"name\":\"circuit-breaker_0.4.7_linux_amd64.tar.gz\"},\"channel\":null,\"schema_revision\":\"0040_rls_policies\",\"version\":\"0.4.7\"},\"trust\":{\"provenance\":\"not-applicable\",\"signature\":{\"unsigned\":\"explicit-older\"}}}",
+   "digest": "sha256:f34a9fe74798180b133c1d3ae9e4603ee81ede558e7b5d0158cae2e459162501"
+  },
+  {
+   "name": "uninstall with purge",
+   "plan": {
+    "schema_version": 1,
+    "action": "uninstall",
+    "adapter": "native",
+    "source": {
+     "version": "0.4.7",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+     "schema_revision": null
+    },
+    "target": null,
+    "compatibility": {
+     "management": "certified",
+     "schema": "none",
+     "transition_digest": null
+    },
+    "options": null,
+    "downtime": "outage",
+    "recovery": {
+     "mode": "new_point",
+     "ref": null
+    },
+    "data": {
+     "effect": "removed",
+     "restore_point_at": null,
+     "scope_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "trust": null,
+    "acknowledgments": [
+     "confirm",
+     "purge"
+    ]
+   },
+   "canonical": "{\"acknowledgments\":[\"confirm\",\"purge\"],\"action\":\"uninstall\",\"adapter\":\"native\",\"compatibility\":{\"management\":\"certified\",\"schema\":\"none\",\"transition_digest\":null},\"data\":{\"effect\":\"removed\",\"restore_point_at\":null,\"scope_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"},\"downtime\":\"outage\",\"options\":null,\"recovery\":{\"mode\":\"new_point\",\"ref\":null},\"schema_version\":1,\"source\":{\"artifact_digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"identity_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema_revision\":null,\"version\":\"0.4.7\"},\"target\":null,\"trust\":null}",
+   "digest": "sha256:f7f01c8fde04e3bc68a259dae867994c62c8c7c7f45ad0ae06fe20b0e04f0b81"
+  },
+  {
+   "name": "mono rollback",
+   "plan": {
+    "schema_version": 1,
+    "action": "rollback",
+    "adapter": "mono",
+    "source": {
+     "version": "0.4.8",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": null,
+     "schema_revision": null
+    },
+    "target": {
+     "version": "0.4.7",
+     "arch": "amd64",
+     "channel": null,
+     "artifact": {
+      "name": "ghcr.io/blkleg/circuitbreaker:v0.4.7",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+     },
+     "schema_revision": null
+    },
+    "compatibility": {
+     "management": "certified",
+     "schema": "compatible",
+     "transition_digest": null
+    },
+    "options": null,
+    "downtime": "restart",
+    "recovery": {
+     "mode": "existing_point",
+     "ref": {
+      "operation_id": "op-20261001-1234",
+      "manifest_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+     }
+    },
+    "data": {
+     "effect": "retained",
+     "restore_point_at": null,
+     "scope_digest": null
+    },
+    "trust": null,
+    "acknowledgments": [
+     "confirm"
+    ]
+   },
+   "canonical": "{\"acknowledgments\":[\"confirm\"],\"action\":\"rollback\",\"adapter\":\"mono\",\"compatibility\":{\"management\":\"certified\",\"schema\":\"compatible\",\"transition_digest\":null},\"data\":{\"effect\":\"retained\",\"restore_point_at\":null,\"scope_digest\":null},\"downtime\":\"restart\",\"options\":null,\"recovery\":{\"mode\":\"existing_point\",\"ref\":{\"manifest_digest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"operation_id\":\"op-20261001-1234\"}},\"schema_version\":1,\"source\":{\"artifact_digest\":null,\"identity_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema_revision\":null,\"version\":\"0.4.8\"},\"target\":{\"arch\":\"amd64\",\"artifact\":{\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"name\":\"ghcr.io/blkleg/circuitbreaker:v0.4.7\"},\"channel\":null,\"schema_revision\":null,\"version\":\"0.4.7\"},\"trust\":null}",
+   "digest": "sha256:6d39700b034a23126222b74aef35ceabb1d3bad6392aa80deed5db0ef778766f"
+  },
+  {
+   "name": "update carrying its own digest and presentation",
+   "plan": {
+    "schema_version": 1,
+    "action": "update",
+    "adapter": "native",
+    "source": {
+     "version": "0.4.6",
+     "identity_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+     "schema_revision": "0040_rls_policies"
+    },
+    "target": {
+     "version": "0.4.7",
+     "arch": "amd64",
+     "channel": "stable",
+     "artifact": {
+      "name": "circuit-breaker_0.4.7_linux_amd64.tar.gz",
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+     },
+     "schema_revision": "a1b2c3d4e5f6"
+    },
+    "compatibility": {
+     "management": "certified",
+     "schema": "forward",
+     "transition_digest": null
+    },
+    "options": {
+     "port": 8443,
+     "fqdn": "cb.home.arpa",
+     "cert_type": "self-signed",
+     "email": null,
+     "data_dir": "/var/lib/circuitbreaker",
+     "tls": true,
+     "docker": false,
+     "airgap": false
+    },
+    "downtime": "outage",
+    "recovery": {
+     "mode": "new_point",
+     "ref": null
+    },
+    "data": {
+     "effect": "migrated",
+     "restore_point_at": null,
+     "scope_digest": null
+    },
+    "trust": {
+     "signature": {
+      "key_id": "0123456789abcdef"
+     },
+     "provenance": "verified"
+    },
+    "acknowledgments": [
+     "confirm"
+    ],
+    "presentation": {
+     "summary": "0.4.6 → 0.4.7",
+     "lines": [
+      "anything here is excluded"
+     ]
+    },
+    "plan_digest": "sha256:b3fd50ee1190021a608522b4cc8e388d5bf529887727be452e62f85dec49fe21"
+   },
+   "canonical": "{\"acknowledgments\":[\"confirm\"],\"action\":\"update\",\"adapter\":\"native\",\"compatibility\":{\"management\":\"certified\",\"schema\":\"forward\",\"transition_digest\":null},\"data\":{\"effect\":\"migrated\",\"restore_point_at\":null,\"scope_digest\":null},\"downtime\":\"outage\",\"options\":{\"airgap\":false,\"cert_type\":\"self-signed\",\"data_dir\":\"/var/lib/circuitbreaker\",\"docker\":false,\"email\":null,\"fqdn\":\"cb.home.arpa\",\"port\":8443,\"tls\":true},\"recovery\":{\"mode\":\"new_point\",\"ref\":null},\"schema_version\":1,\"source\":{\"artifact_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"identity_digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema_revision\":\"0040_rls_policies\",\"version\":\"0.4.6\"},\"target\":{\"arch\":\"amd64\",\"artifact\":{\"digest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"name\":\"circuit-breaker_0.4.7_linux_amd64.tar.gz\"},\"channel\":\"stable\",\"schema_revision\":\"a1b2c3d4e5f6\",\"version\":\"0.4.7\"},\"trust\":{\"provenance\":\"verified\",\"signature\":{\"key_id\":\"0123456789abcdef\"}}}",
+   "digest": "sha256:b3fd50ee1190021a608522b4cc8e388d5bf529887727be452e62f85dec49fe21"
+  }
+ ]
+}

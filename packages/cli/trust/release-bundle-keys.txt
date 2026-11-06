@@ -1,0 +1,8 @@
+# Trusted Ed25519 keys for Circuit Breaker release bundles (SHA256SUMS.sig).
+# Format: <key-id> <base64 raw 32-byte public key> <first-version> <comment>
+# key-id: first 16 hex characters of sha256(raw public key).
+# install.sh and deploy/lib/bundle-signature.sh embed this file verbatim.
+# Rotation adds a line; a line is removed only on compromise.
+# See docs/release/bundle-signing.md.
+
+5f2aa2afdb764f86 5HA4V+WdSQtRz1ePEjE4t//FSX/5svuPkga9O0pQd40= 0.4.7 release bundle key, created 2026-10-01

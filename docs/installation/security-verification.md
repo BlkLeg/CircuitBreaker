@@ -242,6 +242,38 @@ docker compose exec circuitbreaker ps aux
 
 All application processes should run as `breaker` (uid 1000). `supervisord` itself stays root so it can launch the discovery workers through `setpriv` with ambient `CAP_NET_RAW`; those workers drop to `breaker` themselves.
 
+## Release bundle signature
+
+From 0.4.7, every release publishes `SHA256SUMS.sig`, an Ed25519 signature over
+`SHA256SUMS`. `install.sh` checks it automatically, including with `--local-bundle`
+when `SHA256SUMS` and `SHA256SUMS.sig` sit next to the tarball. Verification needs
+OpenSSL 3.
+
+Without `--version`, the installer accepts an unsigned release only if its tarball
+is byte-for-byte the published 0.4.6 bundle, the last unsigned release: `install.sh`
+pins the SHA-256 of the 0.4.6 amd64 and arm64 tarballs. A forged release tagged
+`v0.4.6` does not match the pin and is refused. Any other release below 0.4.7 needs an
+explicit `--version X.Y.Z`. A non-canonical version always needs a signature.
+`--skip-signature` skips the signature check but still checks the SHA-256; use it only
+for a bundle you already trust.
+The build-provenance attestation is checked only when `gh` is installed and logged
+in, never when air-gapped, and a failed check never blocks the install.
+
+To check a download by hand with OpenSSL 3, take the public key (the second field) from
+[`deploy/keys/release-bundle-keys.txt`](https://github.com/BlkLeg/CircuitBreaker/blob/main/deploy/keys/release-bundle-keys.txt):
+
+```bash
+PUB='<public key from the key file>'
+{ printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; printf '%s' "$PUB" | base64 -d; } > release-key.der
+base64 -d SHA256SUMS.sig > SHA256SUMS.sig.bin
+openssl pkeyutl -verify -pubin -inkey release-key.der -keyform DER -rawin \
+  -in SHA256SUMS -sigfile SHA256SUMS.sig.bin
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+`Signature Verified Successfully` followed by `OK` for your tarball means the files
+are the ones the release pipeline signed. Releases before 0.4.7 have no signature.
+
 ## Related Documentation
 
 - [Configuration Guide](configuration.md) - Environment variables and settings

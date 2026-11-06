@@ -63,6 +63,13 @@ Circuit Breaker is actively evolving. This page shows what is already available 
 - Better migration helpers for existing inventories.
 - Expanded integration options for common infrastructure ecosystems.
 
+### Agents on more platforms
+
+- Run `cb-agent` on Windows machines for host telemetry, monitor probes and discovery, starting
+  after v0.5.0.
+- Run `cb-agent` on Macs with Apple silicon, with its performance measured against the Linux agent.
+- Both arrive as previews. The Circuit Breaker server itself stays Linux-only.
+
 ---
 
 ## Release Notes

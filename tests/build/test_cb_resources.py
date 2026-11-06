@@ -458,6 +458,29 @@ def test_human_output_is_grouped_into_sections():
     assert all(line == line.rstrip() for line in text.splitlines())
 
 
+def test_gallery_workers_sort_as_a_group_and_shared_usage_stays_separate():
+    import copy
+
+    data = _sample_report()
+    for name in resources.WORKERS:
+        row = copy.deepcopy(data['components'][0])
+        row['id'] = f'circuitbreaker-worker@{name}.service'
+        row['metrics']['cpu_cores']['value'] = 0.1
+        data['components'].append(row)
+    shared = copy.deepcopy(data['components'][0])
+    shared.update(id='nginx.service', owned=False, included_in_totals=False)
+    data['components'].append(shared)
+    before = copy.deepcopy(data)
+    collapsed = resources.render(data, expanded=False, width=120)
+    assert collapsed.index('workers (7)') < collapsed.index('  api ')
+    assert 'nginx' not in collapsed.split('COMPONENTS', 1)[1].split('SHARED USAGE', 1)[0]
+    assert 'excluded from app totals' in collapsed
+    expanded = resources.render(data, expanded=True, width=40)
+    assert all(f'worker: {name}' in expanded.replace('\n  ', '') for name in resources.WORKERS)
+    assert max(map(len, expanded.splitlines())) <= 39
+    assert data == before
+
+
 API = "circuitbreaker-api.service"
 POSTGRES = "circuitbreaker-postgres.service"
 
@@ -558,8 +581,8 @@ def test_theme_colours_without_changing_the_text():
         themed = resources.colorize(plain, mode)
         assert "\033[" in themed
         assert re.sub(r"\033\[[\d;]*m", "", themed) == plain
-    # The app's primary colour (#fe8019) marks the section headings.
-    assert "\033[1;38;2;254;128;25mUSAGE" in resources.colorize(plain, "truecolor")
+    # The approved CLI orange (#ff875f) marks the section headings.
+    assert "\033[1;38;2;255;135;95mUSAGE" in resources.colorize(plain, "truecolor")
     assert resources.colorize(plain, None) == plain
 
 
@@ -669,14 +692,19 @@ def test_watch_json_lines_and_sigterm(tmp_path):
         text=True,
     )
     try:
-        import select
-
+        # Read the raw descriptor: select() on the text wrapper misses a second sample that the first
+        # readline() already buffered, and would then wait for nothing.
+        fd = process.stdout.fileno()
+        pending = b""
         lines = []
-        for _ in range(2):
-            assert select.select([process.stdout], [], [], 8)[0], (
-                "watch did not emit a sample"
-            )
-            lines.append(json.loads(process.stdout.readline()))
+        while len(lines) < 2:
+            while b"\n" not in pending:
+                assert select.select([fd], [], [], 8)[0], "watch did not emit a sample"
+                chunk = os.read(fd, 65536)
+                assert chunk, "watch exited before emitting two samples"
+                pending += chunk
+            sample, pending = pending.split(b"\n", 1)
+            lines.append(json.loads(sample))
         assert lines[1]["sampled_at"] > lines[0]["sampled_at"]
         assert lines[1]["totals"]["cpu_cores"]["value"] == pytest.approx(1, abs=0.05)
         process.terminate()

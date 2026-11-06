@@ -19,6 +19,10 @@
       "type": "string",
       "minLength": 1
     },
+    "runtime": {
+      "type": "string",
+      "enum": ["pyinstaller", "pbs"]
+    },
     "config_path": {
       "type": "string"
     },

@@ -3,7 +3,7 @@
 #
 # Usage: dispatch_required_checks.sh <branch> [dev|main]
 #
-#   <branch>   the branch whose head SHA must end up carrying all 21 required
+#   <branch>   the branch whose head SHA must end up carrying all 23 required
 #              checks (the PR head branch, not the base).
 #   [base]     the branch the PR merges into; selects which gate workflow
 #              supplies Lint / Security Gate / Backend tests / Test. Defaults
@@ -17,7 +17,7 @@
 # of the ref it was dispatched on — which is the SHA the rulesets look at.
 #
 # Which workflow yields which required check (both rulesets require the same
-# 21 names; tests/build/test_dispatch_required_checks.py proves every one of
+# 23 names; tests/build/test_dispatch_required_checks.py proves every one of
 # them is produced by a job in a workflow dispatched here):
 #
 #   dev-ci.yml (base dev) / ci.yml (base main)

@@ -33,7 +33,7 @@ OUTBOUND = re.compile(
         curl\s+-|wget\s+-|wget\s+http|docker\s+pull|dig\s+\+|
         apt-get\s+(?:install|update)|\$\{?PKG_MGR\}?\s+(?:install|update)|
         dnf\s+(?:install|config-manager)|pacman\s+-S|apk\s+add|
-        add-apt-repository|rpm\s+--import
+        add-apt-repository|rpm\s+--import|gh\s+(?:auth|attestation|api)
     )"""
 )
 DOUBLE_QUOTED = re.compile(r'"[^"]*"')
@@ -50,13 +50,17 @@ UNREACHABLE_IN_AIRGAP = {
         "stage_docker_deploy": (
             "--docker deployment; rejected in combination with --airgap"
         ),
-        "cb_verify_bundle_checksum": (
+        "cb_fetch_release_asset": (
             "only called on the download branch of stage0_download_bundle, and "
             "--airgap requires --local-bundle, which takes the other branch"
         ),
         "stage0_download_bundle": (
             "every fetch here is inside the `else` of the --local-bundle check, "
             "and --airgap requires --local-bundle"
+        ),
+        "cb_release_health": (
+            "both curls poll http://127.0.0.1:8000 (readyz, health) — loopback "
+            "never leaves the host"
         ),
     },
     "deploy/setup.sh": {

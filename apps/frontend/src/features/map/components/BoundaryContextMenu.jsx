@@ -38,11 +38,11 @@ function BoundaryContextMenu({
   if (!boundary) return null;
 
   const rowBase =
-    'tw-group tw-relative tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-text tw-bg-cb-surface tw-flex tw-items-center tw-gap-3 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary hover:tw-translate-x-0.5';
+    'tw:group tw:relative tw:w-full tw:px-4 tw:py-2 tw:text-left tw:text-sm tw:text-cb-text tw:bg-cb-surface tw:flex tw:items-center tw:gap-3 tw:transition-all tw:duration-150 tw:ease-out tw:hover:bg-cb-secondary tw:hover:translate-x-0.5';
   const rowDanger =
-    'tw-group tw-relative tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-danger tw-bg-cb-surface tw-flex tw-items-center tw-gap-3 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary hover:tw-translate-x-0.5';
+    'tw:group tw:relative tw:w-full tw:px-4 tw:py-2 tw:text-left tw:text-sm tw:text-cb-danger tw:bg-cb-surface tw:flex tw:items-center tw:gap-3 tw:transition-all tw:duration-150 tw:ease-out tw:hover:bg-cb-secondary tw:hover:translate-x-0.5';
   const iconCls =
-    'tw-w-4 tw-h-4 tw-text-cb-text tw-transition-colors tw-duration-150 group-hover:tw-text-cb-primary';
+    'tw:w-4 tw:h-4 tw:text-cb-text tw:transition-colors tw:duration-150 tw:group-hover:text-cb-primary';
 
   return (
     <div
@@ -50,19 +50,19 @@ function BoundaryContextMenu({
       role="menu"
       tabIndex={-1}
       style={{ top: menuPos.y, left: menuPos.x }}
-      className="tw-fixed tw-z-50 tw-w-56 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-hidden"
+      className="tw:fixed tw:z-50 tw:w-56 tw:bg-cb-surface tw:border tw:border-cb-border tw:rounded-lg tw:shadow-2xl tw:overflow-hidden"
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <div className="tw-px-4 tw-py-2 tw-border-b tw-border-cb-border tw-bg-cb-secondary">
-        <div className="tw-font-mono tw-font-bold tw-text-cb-text tw-text-sm tw-truncate">
+      <div className="tw:px-4 tw:py-2 tw:border-b tw:border-cb-border tw:bg-cb-secondary">
+        <div className="tw:font-mono tw:font-bold tw:text-cb-text tw:text-sm tw:truncate">
           {boundary.name}
         </div>
-        <div className="tw-text-xs tw-text-cb-text tw-mt-0.5 tw-uppercase tw-tracking-wider">
+        <div className="tw:text-xs tw:text-cb-text tw:mt-0.5 tw:uppercase tw:tracking-wider">
           Boundary
         </div>
       </div>
 
-      <div className="tw-py-1">
+      <div className="tw:py-1">
         <button
           onClick={() => {
             onRename(boundary.id, boundary.name);
@@ -103,11 +103,11 @@ function BoundaryContextMenu({
           </>
         )}
 
-        <div className="tw-px-4 tw-py-2">
-          <div className="tw-text-xs tw-text-cb-text tw-mb-2 tw-uppercase tw-tracking-wider">
+        <div className="tw:px-4 tw:py-2">
+          <div className="tw:text-xs tw:text-cb-text tw:mb-2 tw:uppercase tw:tracking-wider">
             Color
           </div>
-          <div className="tw-flex tw-gap-2 tw-flex-wrap">
+          <div className="tw:flex tw:gap-2 tw:flex-wrap">
             {presets.map((preset) => (
               <button
                 key={preset.key}
@@ -139,7 +139,7 @@ function BoundaryContextMenu({
           </div>
         </div>
 
-        <div className="tw-my-1 tw-border-t tw-border-cb-border" />
+        <div className="tw:my-1 tw:border-t tw:border-cb-border" />
 
         <button
           onClick={() => {
@@ -148,7 +148,7 @@ function BoundaryContextMenu({
           }}
           className={rowDanger}
         >
-          <Trash2 className="tw-w-4 tw-h-4 tw-text-cb-danger tw-transition-transform tw-duration-150 group-hover:tw-scale-110" />
+          <Trash2 className="tw:w-4 tw:h-4 tw:text-cb-danger tw:transition-transform tw:duration-150 tw:group-hover:scale-110" />
           Delete Boundary
         </button>
       </div>

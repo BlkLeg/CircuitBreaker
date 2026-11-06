@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import PropTypes from 'prop-types';
 
 const inputClass =
-  'tw-w-full tw-min-w-0 tw-bg-cb-bg tw-border tw-border-cb-border tw-text-cb-text tw-rounded tw-px-2 tw-py-1 tw-text-sm focus:tw-outline-none focus:tw-ring-1 focus:tw-ring-cb-primary';
+  'tw:w-full tw:min-w-0 tw:bg-cb-bg tw:border tw:border-cb-border tw:text-cb-text tw:rounded-sm tw:px-2 tw:py-1 tw:text-sm tw:focus:outline-hidden tw:focus:ring-1 tw:focus:ring-cb-primary';
 
 function EditableCell({ row, column, isEditing, onStartEdit, onSave, displayValue }) {
   const inputRef = useRef(null);
@@ -27,7 +27,7 @@ function EditableCell({ row, column, isEditing, onStartEdit, onSave, displayValu
       <td
         key={column.key}
         data-label={column.label}
-        className="tw-p-0"
+        className="tw:p-0"
         onDoubleClick={(e) => e.stopPropagation()}
       >
         <input
@@ -68,7 +68,7 @@ function EditableCell({ row, column, isEditing, onStartEdit, onSave, displayValu
         e.stopPropagation();
         if (onStartEdit) onStartEdit({ rowId: row.id, columnKey: column.key });
       }}
-      className={column.editable ? 'tw-cursor-text' : ''}
+      className={column.editable ? 'tw:cursor-text' : ''}
       title={column.editable ? 'Double-click to edit' : undefined}
     >
       {displayValue}
@@ -190,9 +190,9 @@ function EntityTable({
   const showBulkBar = selectable && selectedCount > 0 && bulkActions?.length > 0;
 
   const limitSelectClass =
-    'tw-rounded tw-border tw-border-cb-border tw-bg-cb-bg tw-text-cb-text tw-px-2 tw-py-1 tw-text-sm focus:tw-outline-none focus:tw-ring-1 focus:tw-ring-cb-primary tw-cursor-pointer';
+    'tw:rounded-sm tw:border tw:border-cb-border tw:bg-cb-bg tw:text-cb-text tw:px-2 tw:py-1 tw:text-sm tw:focus:outline-hidden tw:focus:ring-1 tw:focus:ring-cb-primary tw:cursor-pointer';
   const paginationBtnClass =
-    'tw-rounded-md tw-border tw-border-cb-border tw-bg-cb-secondary tw-text-cb-text tw-px-3 tw-py-1.5 tw-text-sm tw-font-medium tw-shadow-sm hover:tw-bg-cb-secondary/90 hover:tw-border-cb-border/80 focus:tw-outline-none focus:tw-ring-2 focus:tw-ring-cb-primary disabled:tw-opacity-50 disabled:tw-cursor-not-allowed disabled:hover:tw-bg-cb-secondary';
+    'tw:rounded-md tw:border tw:border-cb-border tw:bg-cb-secondary tw:text-cb-text tw:px-3 tw:py-1.5 tw:text-sm tw:font-medium tw:shadow-xs tw:hover:bg-cb-secondary/90 tw:hover:border-cb-border/80 tw:focus:outline-hidden tw:focus:ring-2 tw:focus:ring-cb-primary tw:disabled:opacity-50 tw:disabled:cursor-not-allowed tw:disabled:hover:bg-cb-secondary';
 
   const handlePageSizeChange = (e) => {
     const next = Number(e.target.value);
@@ -223,10 +223,10 @@ function EntityTable({
   const pageSelected = displayData.length > 0 && displayData.every((row) => checkSelected(row.id));
 
   const renderPager = (limitId) => (
-    <div className="tw-flex tw-flex-wrap tw-items-center tw-gap-3 tw-py-1.5 tw-px-0 tw-text-sm tw-text-cb-muted">
+    <div className="tw:flex tw:flex-wrap tw:items-center tw:gap-3 tw:py-1.5 tw:px-0 tw:text-sm tw:text-cb-muted">
       {!serverMode && (
-        <div className="tw-flex tw-items-center tw-gap-2">
-          <label htmlFor={limitId} className="tw-sr-only">
+        <div className="tw:flex tw:items-center tw:gap-2">
+          <label htmlFor={limitId} className="tw:sr-only">
             Rows per page
           </label>
           <span>Show</span>
@@ -250,8 +250,8 @@ function EntityTable({
         </div>
       )}
       {serverMode && serverPaging.onLimitChange && (
-        <div className="tw-flex tw-items-center tw-gap-2">
-          <label htmlFor={limitId} className="tw-sr-only">
+        <div className="tw:flex tw:items-center tw:gap-2">
+          <label htmlFor={limitId} className="tw:sr-only">
             Rows per page
           </label>
           <span>Show</span>
@@ -273,11 +273,11 @@ function EntityTable({
           <span>per page</span>
         </div>
       )}
-      <span className="tw-ml-auto tw-text-cb-text">
+      <span className="tw:ml-auto tw:text-cb-text">
         Showing {from}–{to} of {total}
       </span>
       {showPagination && (
-        <div className="tw-flex tw-items-center tw-gap-2 tw-ml-2">
+        <div className="tw:flex tw:items-center tw:gap-2 tw:ml-2">
           <button
             type="button"
             className={paginationBtnClass}
@@ -287,7 +287,7 @@ function EntityTable({
           >
             Previous
           </button>
-          <span className="tw-text-cb-muted">
+          <span className="tw:text-cb-muted">
             Page {page} of {totalPages}
           </span>
           <button
@@ -308,8 +308,8 @@ function EntityTable({
     <div className="table-wrapper">
       {selectionToolbar}
       {showBulkBar && (
-        <div className="tw-flex tw-items-center tw-gap-3 tw-mb-2 tw-p-2 tw-rounded tw-bg-cb-secondary tw-border tw-border-cb-border">
-          <span className="tw-text-sm tw-text-cb-text">{selectedCount} selected</span>
+        <div className="tw:flex tw:items-center tw:gap-3 tw:mb-2 tw:p-2 tw:rounded-sm tw:bg-cb-secondary tw:border tw:border-cb-border">
+          <span className="tw:text-sm tw:text-cb-text">{selectedCount} selected</span>
           {bulkActions.map((action, idx) => (
             <button
               key={idx}
@@ -322,15 +322,15 @@ function EntityTable({
           ))}
         </div>
       )}
-      {showLimitBar && <div className="tw-mb-2">{renderPager('entity-table-limit-top')}</div>}
+      {showLimitBar && <div className="tw:mb-2">{renderPager('entity-table-limit-top')}</div>}
       <table className="entity-table">
         <thead>
           <tr>
             {selectable && (
-              <th className="tw-w-10 tw-pr-1">
+              <th className="tw:w-10 tw:pr-1">
                 <input
                   type="checkbox"
-                  className="tw-rounded tw-border-cb-border tw-bg-cb-bg tw-text-cb-primary focus:tw-ring-cb-primary"
+                  className="tw:rounded-sm tw:border-cb-border tw:bg-cb-bg tw:text-cb-primary tw:focus:ring-cb-primary"
                   checked={pageSelected}
                   onChange={toggleSelectAll}
                   onClick={(e) => e.stopPropagation()}
@@ -359,10 +359,10 @@ function EntityTable({
                 className={onRowClick && !editingCell ? 'clickable-row' : ''}
               >
                 {selectable && (
-                  <td className="tw-w-10 tw-p-1" onClick={(e) => e.stopPropagation()}>
+                  <td className="tw:w-10 tw:p-1" onClick={(e) => e.stopPropagation()}>
                     <input
                       type="checkbox"
-                      className="tw-rounded tw-border-cb-border tw-bg-cb-bg tw-text-cb-primary focus:tw-ring-cb-primary"
+                      className="tw:rounded-sm tw:border-cb-border tw:bg-cb-bg tw:text-cb-primary tw:focus:ring-cb-primary"
                       checked={selected}
                       onChange={(e) => toggleSelect(e, row.id)}
                       onClick={(e) => e.stopPropagation()}
@@ -421,7 +421,7 @@ function EntityTable({
         </tbody>
       </table>
       {showLimitBar && total > 0 && (
-        <div className="tw-mt-2 tw-border-t tw-border-cb-border/50">
+        <div className="tw:mt-2 tw:border-t tw:border-cb-border/50">
           {renderPager('entity-table-limit-bottom')}
         </div>
       )}
