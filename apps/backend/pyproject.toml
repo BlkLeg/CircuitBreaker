@@ -153,7 +153,7 @@ dev = [
     "msgpack>=1.2.3",
     "pip>=26.1.2",
     "pymdown-extensions>=11.0.1",
-    "setuptools>=83.0.0",
+    "setuptools>=84.1.0",
 ]
 security = [
     "bandit>=1.7.0",
