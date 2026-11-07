@@ -15,7 +15,9 @@ cut and is *not yet* released — when it actually ships, that heading takes
 the release date and a fresh `[Unreleased]` section opens above it for the
 next round.
 
-## [0.4.7] — unreleased
+## [0.4.8] — unreleased
+
+## [0.4.7] — 2026-11-07
 
 The first signed release, and safer native upgrades. Every release from this
 one on publishes a signed `SHA256SUMS` and build-provenance attestations, and
