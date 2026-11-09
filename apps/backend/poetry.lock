@@ -884,7 +884,7 @@ description = "Cross-platform colored terminal text."
 optional = false
 python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,!=3.4.*,!=3.5.*,!=3.6.*,>=2.7"
 groups = ["main"]
-markers = "(platform_system == \"Windows\" or extra == \"dev\" or extra == \"security\" or extra == \"docs\") and (platform_system == \"Windows\" or sys_platform == \"win32\" or extra == \"security\" or extra == \"docs\")"
+markers = "(platform_system == \"Windows\" or extra == \"dev\" or extra == \"docs\" or extra == \"security\") and (platform_system == \"Windows\" or sys_platform == \"win32\" or extra == \"docs\" or extra == \"security\")"
 files = [
     {file = "colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"},
     {file = "colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44"},
@@ -4667,15 +4667,15 @@ wcmatch = ">=8.3,<9.0"
 
 [[package]]
 name = "setuptools"
-version = "84.0.0"
+version = "84.1.0"
 description = "Most extensible Python build backend with support for C/C++ extension modules"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
 markers = "extra == \"dev\""
 files = [
-    {file = "setuptools-84.0.0-py3-none-any.whl", hash = "sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670"},
-    {file = "setuptools-84.0.0.tar.gz", hash = "sha256:f4695c21257f0d9b537ec2692c941d02ee143b7cc1276941349a546573b2ef73"},
+    {file = "setuptools-84.1.0-py3-none-any.whl", hash = "sha256:5231689c6ac8156cd155cfb98c3fd6fb252c3e7e9bd3d78b64d3c55f132624c9"},
+    {file = "setuptools-84.1.0.tar.gz", hash = "sha256:23657205b63d4d31395ab917815247f694aafad28cd21316bf5fd45a51048ea0"},
 ]
 
 [package.extras]
@@ -5812,4 +5812,4 @@ security = ["bandit", "pip-audit", "semgrep"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4"
-content-hash = "dc75a4912611a65d4070cec4826befb4b0c2801bbb32bab6b44d0cd230731f5e"
+content-hash = "e5495890ac41eb89f62022d8ea0f07983fcfa8256edf9a75e8bebd20ea3835d2"
