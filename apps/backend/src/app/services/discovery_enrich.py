@@ -130,8 +130,7 @@ def _extract_mac(ctx: _Ctx) -> str | None:
     ).first()
     if clash is not None:
         logger.debug(
-            "discovery_enrich: not filling MAC %s on hardware %s — hardware %s already holds it",
-            mac,
+            "discovery_enrich: not filling MAC on hardware %s — hardware %s already holds it",
             ctx.hardware.id,
             clash[0],
         )
