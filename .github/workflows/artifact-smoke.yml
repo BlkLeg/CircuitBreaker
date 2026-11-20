@@ -47,7 +47,7 @@ jobs:
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
     steps:
     - name: Download candidate packages
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v8
       with:
         name: ${{ inputs.artifact_prefix }}-${{ matrix.arch }}
         path: dist/
@@ -141,7 +141,7 @@ jobs:
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
     steps:
       - name: Download candidate packages
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.artifact_prefix }}-${{ matrix.arch }}
           path: dist/
@@ -313,7 +313,7 @@ jobs:
           exit 1
 
       - name: Download candidate packages
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.artifact_prefix }}-${{ matrix.arch }}
           path: dist/
