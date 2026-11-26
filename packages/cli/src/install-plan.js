@@ -161,7 +161,7 @@ async function planDownload(options, deps, fetchImpl, phases) {
   // downloadAsset checks each file holds exactly the size the release
   // declares, so these are measured bytes on disk.
   for (const asset of assets) {
-    paths.set(asset, await downloadAsset(asset, dir, io));
+    paths.set(asset, await downloadAsset(asset, dir, { ...io, onProgress: deps.events?.machine === false ? bytes => phases.progress(done + bytes, total) : undefined }));
     done += asset.size;
     phases.progress(done, total);
   }

@@ -13,10 +13,10 @@ import AcmeDnsPanel from '../components/certificates/AcmeDnsPanel';
 import { CERTIFICATE_TYPE_OPTIONS, certificateTypeLabel } from '../utils/certificateTypes';
 
 const STATUS_COLORS = {
-  healthy: 'tw-text-green-500',
-  warning: 'tw-text-yellow-500',
-  expired: 'tw-text-red-500',
-  unknown: 'tw-text-gray-500',
+  healthy: 'tw:text-green-500',
+  warning: 'tw:text-yellow-500',
+  expired: 'tw:text-red-500',
+  unknown: 'tw:text-gray-500',
 };
 
 const StatusBadge = ({ expiryDate }) => {
@@ -144,7 +144,7 @@ function CertificatesPage() {
         key: 'auto_renew',
         label: 'Auto Renew',
         render: (v) =>
-          v ? <span className="tw-text-cb-primary tw-text-xs tw-font-bold">YES</span> : 'No',
+          v ? <span className="tw:text-cb-primary tw:text-xs tw:font-bold">YES</span> : 'No',
       },
       {
         // Which certificate this install actually serves. At most one row shows it —
@@ -153,12 +153,12 @@ function CertificatesPage() {
         label: 'Active',
         render: (v) =>
           v ? (
-            <span className="tw-inline-flex tw-items-center tw-gap-1 tw-text-green-500 tw-text-xs tw-font-bold">
+            <span className="tw:inline-flex tw:items-center tw:gap-1 tw:text-green-500 tw:text-xs tw:font-bold">
               <CheckCircle2 size={14} aria-hidden="true" />
               SERVED
             </span>
           ) : (
-            <span className="tw-text-cb-muted">—</span>
+            <span className="tw:text-cb-muted">—</span>
           ),
       },
     ],
@@ -253,8 +253,8 @@ function CertificatesPage() {
   return (
     <div className="page">
       <div className="page-header">
-        <div className="tw-flex tw-items-center tw-gap-3">
-          <Shield className="tw-text-cb-primary" size={24} />
+        <div className="tw:flex tw:items-center tw:gap-3">
+          <Shield className="tw:text-cb-primary" size={24} />
           <h2>Certificates</h2>
         </div>
         <button

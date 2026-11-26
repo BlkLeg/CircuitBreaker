@@ -75,15 +75,20 @@ cb_release_restore_identity() {
   fi
 }
 
+# Ready on /readyz and running the expected release. The API reports its
+# version only to authenticated callers, so the version is the installed
+# tree's: the services were just restarted from /opt/circuitbreaker.
 cb_release_health() {
-  local expected="$1" attempt body
+  local expected="$1" attempt installed
   [[ "$expected" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 7
+  installed="$(cat /opt/circuitbreaker/share/VERSION 2>/dev/null)" || installed=""
+  if [[ "$installed" != "$expected" ]]; then
+    echo "Installed release is ${installed:-unknown}, expected $expected." >&2
+    return 7
+  fi
   for ((attempt=0; attempt<60; attempt++)); do
     if curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8000/api/v1/readyz >/dev/null; then
-      body="$(curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:8000/api/v1/health)" || body=""
-      if printf '%s' "$body" | /usr/bin/python3 -I -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("version") == sys.argv[1] else 1)' "$expected"; then
-        return 0
-      fi
+      return 0
     fi
     sleep 2
   done

@@ -1,7 +1,10 @@
 # CLI visual previews for 0.4.7
 
 Illustrative data, not live resource readings. These browser mockups represent
-terminal output; the npm runtime and terminal renderer are not implemented yet.
+terminal output. The reviewed terminal hierarchy is implemented in the CLI;
+see [implementation evidence](../../../../plans/2026-09-30-v0.4.7-npm-cli-08-terminal-surfaces.md).
+Preview numbers remain illustrative. Backup subrows are combined where the native
+builder exposes only one measured operation; deferred commands are omitted from help.
 
 - [Download progress](https://p.superdesign.dev/draft/acd390bf-7c54-49e5-9ff1-a8d10e71de81): character-cell progress, transferred bytes, rate and elapsed time. This bar measures only the download phase. Verification, backup, activation and health remain separate phases. The existing artwork is retained.
 - [Uninstall process](https://p.superdesign.dev/draft/42176764-36a8-4043-96be-76d32ac72f8e): software removal with configuration, vault key, database, uploads and backups retained. Shows the plan and data choice before confirmation, completed phase ledger and final result. Purge remains a separate explicit choice.

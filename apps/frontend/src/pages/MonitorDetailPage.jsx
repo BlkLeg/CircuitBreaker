@@ -106,14 +106,14 @@ export default function MonitorDetailPage() {
   return (
     <div className="page">
       <div className="page-header">
-        <div className="tw-flex tw-items-center tw-gap-3">
+        <div className="tw:flex tw:items-center tw:gap-3">
           <button className="btn" onClick={() => navigate('/monitors')}>
             ← Back
           </button>
           <h2>{monitor.name}</h2>
           <StatusPill status={status} enabled={monitor.enabled} />
         </div>
-        <div className="tw-flex tw-gap-2">
+        <div className="tw:flex tw:gap-2">
           <button className="btn" onClick={handleCheck}>
             Check now
           </button>
@@ -123,7 +123,7 @@ export default function MonitorDetailPage() {
         </div>
       </div>
 
-      <dl className="tw-grid tw-grid-cols-2 tw-gap-x-6 tw-gap-y-1" style={{ maxWidth: 520 }}>
+      <dl className="tw:grid tw:grid-cols-2 tw:gap-x-6 tw:gap-y-1" style={{ maxWidth: 520 }}>
         <dt className="text-muted">Type</dt>
         <dd>{monitor.check_type.toUpperCase()}</dd>
         <dt className="text-muted">Target</dt>

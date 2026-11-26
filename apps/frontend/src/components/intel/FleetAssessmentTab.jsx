@@ -109,7 +109,7 @@ function FleetAssessmentTab() {
             {filter.label}
           </button>
         ))}
-        <label htmlFor="fleet-search" className="tw-sr-only">
+        <label htmlFor="fleet-search" className="tw:sr-only">
           Search assets and products
         </label>
         <input
@@ -119,7 +119,7 @@ function FleetAssessmentTab() {
           value={filters.query}
           onChange={(event) => setFilters({ query: event.target.value })}
         />
-        <label htmlFor="fleet-severity-floor" className="tw-sr-only">
+        <label htmlFor="fleet-severity-floor" className="tw:sr-only">
           Minimum severity
         </label>
         {/* A floor over findings. filterRows deliberately keeps unassessable

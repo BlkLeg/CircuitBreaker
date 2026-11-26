@@ -48,6 +48,8 @@ port="$(cat "$work/registry.port")"
 npm install --global --prefix "$work/prefix" --prefer-offline --no-audit --no-fund \
     "--@blkleg:registry=http://127.0.0.1:${port}/" "@blkleg/circuitbreaker@${VERSION}" >/dev/null
 installed="$work/prefix/lib/node_modules/@blkleg/circuitbreaker"
+python3 "$ROOT/scripts/ci/cli_terminal_smoke.py" --package "$installed" \
+    || fail "the packed terminal renderer failed PTY acceptance"
 [ -d "$installed/node_modules/sigstore" ] || fail "sigstore was not installed with the package"
 node "$ROOT/scripts/ci/cli_installed_tree_check.mjs" "$installed" \
     || fail "the installed dependency tree is not the shipped npm-shrinkwrap.json, or runs install scripts"

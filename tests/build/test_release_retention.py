@@ -5,7 +5,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def run(tmp_path, commands, *, backup_fails=False, health_version="0.4.7", bundle=None):
+def run(tmp_path, commands, *, backup_fails=False, ready=True, bundle=None):
     current = tmp_path / "current"
     (current / "share").mkdir(parents=True)
     (current / "share/VERSION").write_text("0.4.7")
@@ -23,7 +23,7 @@ def run(tmp_path, commands, *, backup_fails=False, health_version="0.4.7", bundl
 _cb_lifecycle_trusted_program() {{ [[ -f "$1" && ! -L "$1" ]]; }}
 systemctl() {{ printf '%s\\n' "$*" >> '{tmp_path}/units'; }}
 sleep() {{ :; }}
-curl() {{ if [[ "${{@: -1}}" == */health ]]; then printf '%s' '{{"version":"{health_version}"}}'; fi; }}
+curl() {{ printf '%s\\n' "${{@: -1}}" >> '{tmp_path}/curl-calls'; {'return 0' if ready else 'return 22'}; }}
 fake_backup() {{ printf '%s|%s\\n' "$1" "$CB_BACKUP_DIR" >> '{tmp_path}/backup-calls'; {'return 1' if backup_fails else f"printf snapshot > '{backup}'; printf '%s\\n' '{backup}' >&4"}; }}
 UPGRADE_MODE=true
 CB_EXPECTED_VERSION=0.4.8
@@ -67,8 +67,8 @@ cb_release_revert_failed
     assert list(tmp_path.glob("failed.*"))
 
 
-def test_restored_release_with_unhealthy_version_requires_manual_recovery(tmp_path):
-    result = run(tmp_path, "cb_release_prepare\ncb_release_revert_failed", health_version="0.4.8")
+def test_restored_release_that_never_becomes_ready_requires_manual_recovery(tmp_path):
+    result = run(tmp_path, "cb_release_prepare\ncb_release_revert_failed", ready=False)
     assert result.returncode == 9
     assert (tmp_path / "current/old-marker").exists()
 
@@ -124,3 +124,15 @@ cb_release_revert_failed
     assert result.returncode == 8, result.stderr
     failed = list(tmp_path.glob("failed.*"))
     assert len(failed) == 1 and failed[0].name != "failed.OLDTREE1"
+
+
+def test_health_needs_readyz_and_the_installed_release_version(tmp_path):
+    # The API reports its version only to authenticated callers; the installed tree is the source.
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "wrong").mkdir()
+    ok = run(tmp_path / "ok", "cb_release_health 0.4.7")
+    assert ok.returncode == 0, ok.stderr
+    assert (tmp_path / "ok/curl-calls").read_text().split() == ["http://127.0.0.1:8000/api/v1/readyz"]
+    wrong = run(tmp_path / "wrong", "cb_release_health 0.4.8")
+    assert wrong.returncode == 7
+    assert "Installed release is 0.4.7, expected 0.4.8" in wrong.stderr

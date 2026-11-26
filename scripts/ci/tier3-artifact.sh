@@ -180,7 +180,9 @@ t3::tarball_installer_install() {
     # and pkg::downgrade_to's "downgrade" -- reinstalling the older bundle's
     # binary and assets over the newer one, exactly what apt/dnf's downgrade does
     # for the other two formats.
-    bash "$stage/install.sh" --local-bundle "$tarball" --unattended --no-tls
+    # --skip-checksum: dispatch.sh pushes the tarball alone, with no SHA256SUMS
+    # beside it, and an unverified local bundle is refused unless asked for by name.
+    bash "$stage/install.sh" --local-bundle "$tarball" --unattended --no-tls --skip-checksum
     rm -rf -- "$stage"
 }
 

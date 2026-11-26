@@ -35,7 +35,7 @@ https://download.docker.com/linux/debian bookworm stable" \
 
 # `_build_test_agent_binary` shells out to `go build`, so the toolchain has to
 # be here too. Pinned to the agent's go.mod floor; bump both together.
-ARG GO_VERSION=1.26.8
+ARG GO_VERSION=1.26.10
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
     | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:${PATH}"

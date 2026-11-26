@@ -955,6 +955,15 @@ def _start_ticks(pid: str) -> str | None:
     return fields[19] if len(fields) > 19 else None
 
 
+def fd_holds_flock(fd: int) -> bool:
+    """Whether descriptor fd's open file description holds an exclusive flock, per /proc/self/fdinfo."""
+    try:
+        with open(f"/proc/self/fdinfo/{fd}", encoding="ascii", errors="replace") as handle:
+            return any(re.match(r"lock:\s+\d+: FLOCK\s+ADVISORY\s+WRITE ", line) for line in handle)
+    except OSError:
+        return False
+
+
 def require_lock(tree: Tree) -> str:
     """Prove CB_LIFECYCLE_LOCK_FD holds the host lock; returns the operation the lock is bound to ("" when none)."""
     raw = os.environ.get("CB_LIFECYCLE_LOCK_FD", "")
@@ -984,6 +993,11 @@ def require_lock(tree: Tree) -> str:
         os.close(probe)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except PermissionError:
+        # AppArmor can refuse lock calls on a descriptor opened before a policy
+        # reload (seen in a Proxmox LXC); the kernel still reports its locks.
+        if not fd_holds_flock(fd):
+            raise missing from None
     except OSError:
         raise missing from None
     bound = os.environ.get("CB_LIFECYCLE_OPERATION", "")

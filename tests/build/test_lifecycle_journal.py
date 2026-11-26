@@ -27,6 +27,7 @@ uid over a temporary root that uid owns, exactly as test_lifecycle_lock.py does.
 from __future__ import annotations
 
 import ast
+import errno
 import fcntl
 import importlib.util
 import io
@@ -325,6 +326,14 @@ def control_plane() -> Iterator[Path]:
     yield plane
     PLANE.remove(plane)
     shutil.rmtree(plane)
+
+
+def _trusted_dirs(path: Path) -> None:
+    """Create path and its missing parents at 0o755 whatever the umask: the library distrusts a utility below a
+    group-writable directory, and a umask of 002 would otherwise make every fixture directory one."""
+    for directory in reversed([p for p in (path, *path.parents) if not p.exists()]):
+        directory.mkdir()
+        os.chmod(directory, 0o755)
 
 
 def _system_python() -> str:
@@ -937,7 +946,7 @@ def test_after_an_unacknowledged_checkpoint_the_next_is_stale_only_if_the_record
     state = tmp_path / "state"
     marker = tmp_path / "mutated"
     flaky = tmp_path / "bundle" / "python" / "bin" / "python3"
-    flaky.parent.mkdir(parents=True)
+    _trusted_dirs(flaky.parent)
     flaky.write_text(FLAKY_PYTHON.format(python=SYSTEM_PYTHON))
     os.chmod(flaky, 0o755)
     fault = tmp_path / "fault"
@@ -1490,7 +1499,7 @@ def test_the_system_interpreter_is_resolved_once_and_an_exported_one_is_ignored(
 @pytest.mark.parametrize("case", ["older than 3.9", "group-writable", "missing"])
 def test_without_a_trusted_interpreter_the_utility_is_refused_with_7(case: str, tmp_path: Path) -> None:
     fake = tmp_path / "bundle" / "python" / "bin" / "python3"
-    fake.parent.mkdir(parents=True)
+    _trusted_dirs(fake.parent)
     fake.write_text("#!/bin/sh\nexit 1\n" if case == "older than 3.9" else f'#!/bin/sh\nexec {SYSTEM_PYTHON} "$@"\n')
     os.chmod(fake, 0o775 if case == "group-writable" else 0o755)
     candidate = "" if case == "missing" else str(fake)
@@ -1503,7 +1512,7 @@ def test_without_a_trusted_interpreter_the_utility_is_refused_with_7(case: str, 
 
 def test_a_fresh_install_may_use_the_verified_bundle_interpreter(tmp_path: Path) -> None:
     fake = tmp_path / "bundle" / "python" / "bin" / "python3"
-    fake.parent.mkdir(parents=True)
+    _trusted_dirs(fake.parent)
     fake.write_text(f'#!/bin/sh\nexec {SYSTEM_PYTHON} "$@"\n')
     os.chmod(fake, 0o755)
     r = ok(sh(f'CB_LIFECYCLE_SYSTEM_PYTHON="{tmp_path}/no-python3"\ncb_lifecycle_python "{fake}"\n'
@@ -1520,7 +1529,7 @@ def _plant_decoys(work: Path, perm: int) -> None:
     """Decoy utilities at every place a library that took the working directory for its own would look."""
     for rel in ("lifecycle-state.py", "deploy/scripts/lifecycle-state.py", "../scripts/lifecycle-state.py"):
         decoy = work / rel
-        decoy.parent.mkdir(parents=True, exist_ok=True)
+        _trusted_dirs(decoy.parent)
         decoy.write_text(DECOY_UTILITY)
         os.chmod(decoy, perm)
 
@@ -1546,9 +1555,10 @@ def test_a_piped_library_never_runs_a_utility_from_the_working_directory(perm: i
 def _bundle_with(tmp_path: Path, utility_text: str, perm: int) -> Path:
     """A bundle's deploy tree: the library and, next to it in scripts/, the given utility."""
     deploy = tmp_path / "bundle" / "deploy"
-    (deploy / "lib").mkdir(parents=True)
-    (deploy / "scripts").mkdir()
+    _trusted_dirs(deploy / "lib")
+    _trusted_dirs(deploy / "scripts")
     shutil.copyfile(LIB, deploy / "lib" / "lifecycle.sh")
+    os.chmod(deploy / "lib" / "lifecycle.sh", 0o644)
     (deploy / "scripts" / "lifecycle-state.py").write_text(utility_text)
     os.chmod(deploy / "scripts" / "lifecycle-state.py", perm)
     return deploy
@@ -1746,3 +1756,79 @@ echo "op=$CB_LIFECYCLE_OPERATION"
     assert document["outcome"] == expected
     journal = journal_of(tmp_path / "state", op_from(result))
     assert journal["checkpoints"][-1]["state"] == expected
+
+
+# AppArmor in a Proxmox LXC refused flock(2) with EACCES on the installer's
+# inherited lock descriptor after a policy reload during the upgrade, while the
+# kernel still recorded the lock on it. Ownership then comes from fdinfo.
+def _held_lock(state: Path, monkeypatch: pytest.MonkeyPatch) -> int:
+    prepared = sh("cb_lifecycle_lock_acquire 'test prepare' || exit $?", state)
+    assert prepared.returncode == 0, prepared.stderr
+    monkeypatch.setenv("CB_LIFECYCLE_ROOT", str(state))
+    monkeypatch.delenv("CB_LIFECYCLE_OPERATION", raising=False)
+    fd = os.open(state / "private" / "lock", os.O_RDONLY)
+    monkeypatch.setenv("CB_LIFECYCLE_LOCK_FD", str(fd))
+    return fd
+
+
+def _refuse_lock_calls_on(fd: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = LS.fcntl.flock
+
+    def flock(target: int, op: int) -> None:
+        if target == fd:
+            raise PermissionError(errno.EACCES, "Permission denied")
+        real(target, op)
+
+    monkeypatch.setattr(LS.fcntl, "flock", flock)
+
+
+@seam
+def test_a_refused_lock_call_on_the_held_descriptor_falls_back_to_fdinfo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fd = _held_lock(tmp_path, monkeypatch)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _refuse_lock_calls_on(fd, monkeypatch)
+        tree = LS.open_tree()
+        assert tree is not None
+        assert LS.require_lock(tree) == ""
+    finally:
+        os.close(fd)
+
+
+@seam
+def test_a_refused_lock_call_on_a_descriptor_without_the_lock_is_still_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fd = _held_lock(tmp_path, monkeypatch)
+    holder = os.open(tmp_path / "private" / "lock", os.O_RDONLY)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _refuse_lock_calls_on(fd, monkeypatch)
+        tree = LS.open_tree()
+        assert tree is not None
+        with pytest.raises(LS.StateError, match="held through CB_LIFECYCLE_LOCK_FD"):
+            LS.require_lock(tree)
+    finally:
+        os.close(holder)
+        os.close(fd)
+
+
+@seam
+def test_the_shell_proves_a_held_descriptor_through_fdinfo_when_flock_is_refused(tmp_path: Path) -> None:
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    real_flock = shutil.which("flock")
+    assert real_flock
+    # Refuse only a lock call on an inherited descriptor number, as AppArmor did; probes on fresh files pass.
+    (fake / "flock").write_text(
+        f'#!/bin/bash\n[[ "${{@: -1}}" == "$CB_TEST_REFUSE_FD" ]] && {{ echo "flock: $CB_TEST_REFUSE_FD: Permission denied" >&2; exit 1; }}\nexec {real_flock} "$@"\n'
+    )
+    (fake / "flock").chmod(0o755)
+    result = sh(
+        "cb_lifecycle_lock_acquire 'install.sh upgrade' || exit $?\n"
+        "fd=$CB_LIFECYCLE_LOCK_FD\n"
+        "_cb_lifecycle_lstat \"$CB_LIFECYCLE_ROOT/private/lock\"\n"
+        "export CB_TEST_REFUSE_FD=$fd PATH=" + str(fake) + ":$PATH\n"
+        "_cb_lifecycle_fd_holds \"$fd\" \"$CB_LIFECYCLE_ROOT/private/lock\" \"$_CB_LC_ID\" && echo HELD\n",
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("HELD"), result.stdout + result.stderr

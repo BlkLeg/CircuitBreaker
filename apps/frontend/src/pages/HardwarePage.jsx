@@ -791,11 +791,11 @@ function HardwarePage() {
               }}
               selectionToolbar={
                 selectedCount > 0 ? (
-                  <div className="tw-flex tw-items-center tw-justify-between tw-gap-3 tw-mb-2 tw-px-3 tw-py-2 tw-rounded tw-border tw-border-cb-border tw-bg-cb-surface-raised/40">
-                    <span className="tw-text-sm tw-text-cb-text">
+                  <div className="tw:flex tw:items-center tw:justify-between tw:gap-3 tw:mb-2 tw:px-3 tw:py-2 tw:rounded-sm tw:border tw:border-cb-border tw:bg-cb-surface-raised/40">
+                    <span className="tw:text-sm tw:text-cb-text">
                       <strong>{selectedCount}</strong> {selectionScopeLabel(selection)}
                     </span>
-                    <div className="tw-flex tw-items-center tw-gap-3">
+                    <div className="tw:flex tw:items-center tw:gap-3">
                       {selection.mode !== SELECTION_MODE_ALL_MATCHING &&
                         listTotal > items.length && (
                           <button
@@ -812,7 +812,7 @@ function HardwarePage() {
                         )}
                       <button
                         type="button"
-                        className="text-btn tw-text-cb-muted"
+                        className="text-btn tw:text-cb-muted"
                         onClick={() => setSelection(clearSelection(selection))}
                       >
                         Clear

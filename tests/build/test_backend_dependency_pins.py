@@ -107,3 +107,44 @@ def test_every_pinned_version_satisfies_its_declared_constraint() -> None:
         "constraint CI installs against and the pin the images install are the "
         "same decision:\n  " + "\n  ".join(violations)
     )
+
+
+# pytest 9.2 deprecated `_pytest.python.CallSpec2`; anyio's pytest plugin
+# imports it unconditionally until 4.15.1, which tries `CallSpec` first.
+_FIRST_PYTEST_WITHOUT_CALLSPEC2 = "9.2.0"
+_FIRST_ANYIO_WITH_CALLSPEC = "4.15.1"
+
+
+def _declared_specifier(group: list[str], name: str) -> Requirement:
+    """Return the single requirement for ``name`` declared in ``group``."""
+    matches = [Requirement(spec) for spec in group if canonicalize_name(Requirement(spec).name) == name]
+    assert len(matches) == 1, f"expected exactly one {name} requirement, found {len(matches)}"
+    return matches[0]
+
+
+def test_pytest_ceiling_tracks_the_anyio_ceiling() -> None:
+    """pytest may only reach 9.2 once anyio may reach 4.15.1.
+
+    CI installs `apps/backend/[dev]` from pyproject.toml without the lock, so
+    the newest pytest the range allows is what CI runs. When pytest 9.2.0 was
+    published, every backend shard, Lint and the fresh-install migration job
+    went red at once: anyio 4.14.x's pytest plugin imports `CallSpec2`, the
+    rename warning is an error under filterwarnings, and pytest exits 3
+    before collecting a single test. anyio is held below 4.15 for starlette, so
+    the two ceilings are one decision. This fails if pytest's range admits 9.2
+    while anyio's range still excludes the release that copes with it.
+    """
+    project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]
+    anyio = _declared_specifier(project["dependencies"], "anyio")
+    pytest_req = _declared_specifier(project["optional-dependencies"]["dev"], "pytest")
+
+    anyio_can_cope = anyio.specifier.contains(_FIRST_ANYIO_WITH_CALLSPEC, prereleases=True)
+    pytest_reaches_rename = pytest_req.specifier.contains(_FIRST_PYTEST_WITHOUT_CALLSPEC2, prereleases=True)
+
+    assert anyio_can_cope or not pytest_reaches_rename, (
+        f"pyproject.toml allows pytest '{pytest_req.specifier}' but anyio "
+        f"'{anyio.specifier}'. anyio below {_FIRST_ANYIO_WITH_CALLSPEC} cannot "
+        f"load its pytest plugin on pytest >= {_FIRST_PYTEST_WITHOUT_CALLSPEC2}. "
+        "Cap pytest below 9.2, or lift the anyio ceiling (and check starlette's "
+        "TestClient) first."
+    )

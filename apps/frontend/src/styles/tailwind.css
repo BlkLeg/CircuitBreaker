@@ -1,15 +1,51 @@
-/* Tailwind utilities — scoped to discovery bulk-actions only.
-   Preflight is disabled to avoid global reset conflicts. */
+/* Tailwind utilities, prefixed `tw:` and used by a small set of components.
 
-/* The one part of preflight the tw-border* utilities depend on. They set only a
-   width and a colour, so without it a <div> with `tw-border` drew no border at
-   all (border-style: none), and a <button> or <input> fell back to the
-   browser's outset/inset bevel. Scoped to elements that use a tw-border class,
-   and declared before the utilities so `tw-border`, `tw-border-b` etc. still
-   set the width. */
-[class*='tw-border'] {
+   Only the theme and the utilities are imported. Preflight (Tailwind's base
+   reset) is left out on purpose: the app has its own base styles in main.css.
+
+   Neither import is put in a cascade layer. Layered rules always lose to
+   unlayered ones, and the rest of the app's CSS is unlayered, so a layered
+   `tw:bg-…` would lose to any element rule in main.css. Unlayered, utilities
+   compete by specificity and order, as they did under Tailwind 3. */
+@import 'tailwindcss/theme.css' prefix(tw);
+
+/* The one part of preflight the tw:border* utilities depend on. Without it a
+   <button> or <input> with `tw:border-b` keeps the browser's outset/inset
+   bevel on its other sides. Scoped to elements that use a tw:border class, and
+   declared before the utilities so `tw:border`, `tw:border-b` etc. still set
+   the width. */
+[class*='tw:border'] {
   border-width: 0;
   border-style: solid;
 }
 
-@tailwind utilities;
+@import 'tailwindcss/utilities.css' prefix(tw) source(none);
+
+/* All of src/: a directory-by-directory list silently dropped every class in
+   src/features/ when the map moved there, which unstyled its context menus. */
+@source '../**/*.{js,jsx}';
+@source not '../__tests__';
+
+/* Colours, font and radius map to the CSS custom properties in main.css.
+   `inline` makes each utility read the app's variable where it is used, so it
+   follows the active theme; opacity modifiers (`tw:bg-cb-border/30`) work on
+   them directly. */
+@theme inline {
+  --color-cb-bg: var(--color-bg);
+  --color-cb-surface: var(--color-surface);
+  --color-cb-surface-raised: var(--color-surface-raised);
+  --color-cb-secondary: var(--color-secondary);
+  --color-cb-border: var(--color-border);
+  --color-cb-primary: var(--color-primary);
+  --color-cb-primary-h: var(--color-primary-hover);
+  --color-cb-danger: var(--color-danger);
+  --color-cb-text: var(--color-text);
+  --color-cb-muted: var(--color-text-muted);
+  --color-cb-online: var(--color-online);
+  --font-cb: var(--font);
+  --radius-cb: var(--radius);
+}
+
+@theme {
+  --backdrop-blur-md: 12px;
+}

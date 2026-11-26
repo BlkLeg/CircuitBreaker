@@ -542,7 +542,7 @@ test('an installed version the result cannot carry as is is reported escaped', a
 test('help lists install --plan under this CLI and says host-changing installs come later', async () => {
   const h = await host();
   assert.equal(await run(['help'], h.deps), EXIT.OK);
-  assert.match(h.output.out, /This CLI:\n {2}install --plan +Resolve, download and verify a release; changes nothing \[--json\]\n/);
+  assert.match(h.output.out, /LIFECYCLE\n {2}install --plan +Resolve, download and verify a release; changes nothing \[--json\]\n/);
   assert.match(h.output.out, /Review install\/update --plan before --yes/);
 });
 

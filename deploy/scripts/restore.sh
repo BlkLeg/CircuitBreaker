@@ -665,6 +665,10 @@ _as_superuser() {
     # authentication error rather than a confusing `su: Authentication failure`.
     if [[ "$(id -un)" == "$CB_DB_SUPERUSER" || "$(id -u)" -ne 0 ]]; then
         sh -c "$1"
+    elif command -v runuser >/dev/null 2>&1; then
+        # runuser, not su: su's PAM account check refuses the expired system
+        # accounts systemd 262's sysusers creates (see cb_run_as in setup.sh).
+        runuser -s /bin/sh "$CB_DB_SUPERUSER" -c "$1"
     else
         su -s /bin/sh "$CB_DB_SUPERUSER" -c "$1"
     fi

@@ -54,47 +54,47 @@ function CertificateDetail({ certificate, isOpen, onClose, onUpdate }) {
 
   return (
     <Drawer isOpen={isOpen} onClose={onClose} title={`Certificate: ${certificate.domain}`}>
-      <div className="tw-space-y-6">
+      <div className="tw:space-y-6">
         {/* Overview Section */}
-        <div className="tw-bg-cb-secondary/30 tw-p-4 tw-rounded-lg tw-border tw-border-cb-border">
-          <div className="tw-grid tw-grid-cols-2 tw-gap-4">
+        <div className="tw:bg-cb-secondary/30 tw:p-4 tw:rounded-lg tw:border tw:border-cb-border">
+          <div className="tw:grid tw:grid-cols-2 tw:gap-4">
             <div>
-              <label className="tw-text-xs tw-text-cb-muted tw-uppercase tw-font-bold">
+              <label className="tw:text-xs tw:text-cb-muted tw:uppercase tw:font-bold">
                 Domain
               </label>
-              <div className="tw-flex tw-items-center tw-gap-2">
-                <Shield size={14} className="tw-text-cb-primary" />
-                <span className="tw-font-medium">{certificate.domain}</span>
+              <div className="tw:flex tw:items-center tw:gap-2">
+                <Shield size={14} className="tw:text-cb-primary" />
+                <span className="tw:font-medium">{certificate.domain}</span>
               </div>
             </div>
             <div>
-              <label className="tw-text-xs tw-text-cb-muted tw-uppercase tw-font-bold">Type</label>
+              <label className="tw:text-xs tw:text-cb-muted tw:uppercase tw:font-bold">Type</label>
               <div>{certificateTypeLabel(certificate.type)}</div>
             </div>
             <div>
-              <label className="tw-text-xs tw-text-cb-muted tw-uppercase tw-font-bold">
+              <label className="tw:text-xs tw:text-cb-muted tw:uppercase tw:font-bold">
                 Expires
               </label>
-              <div className="tw-flex tw-items-center tw-gap-2">
-                <Clock size={14} className="tw-text-cb-muted" />
+              <div className="tw:flex tw:items-center tw:gap-2">
+                <Clock size={14} className="tw:text-cb-muted" />
                 <span>{new Date(certificate.expires_at).toLocaleString()}</span>
               </div>
             </div>
             <div>
-              <label className="tw-text-xs tw-text-cb-muted tw-uppercase tw-font-bold">
+              <label className="tw:text-xs tw:text-cb-muted tw:uppercase tw:font-bold">
                 Auto Renew
               </label>
               <div>{certificate.auto_renew ? 'Enabled' : 'Disabled'}</div>
             </div>
           </div>
 
-          <div className="tw-mt-4 tw-pt-4 tw-border-t tw-border-cb-border/50">
+          <div className="tw:mt-4 tw:pt-4 tw:border-t tw:border-cb-border/50">
             <button
-              className="btn btn-sm tw-flex tw-items-center tw-gap-2"
+              className="btn btn-sm tw:flex tw:items-center tw:gap-2"
               onClick={handleRenew}
               disabled={loading}
             >
-              <RefreshCw size={14} className={loading ? 'tw-animate-spin' : ''} />
+              <RefreshCw size={14} className={loading ? 'tw:animate-spin' : ''} />
               Renew Now
             </button>
           </div>
@@ -102,13 +102,13 @@ function CertificateDetail({ certificate, isOpen, onClose, onUpdate }) {
 
         {/* Certificate PEM Section */}
         <div>
-          <div className="tw-flex tw-items-center tw-justify-between tw-mb-2">
-            <h4 className="tw-text-sm tw-font-bold tw-flex tw-items-center tw-gap-2">
+          <div className="tw:flex tw:items-center tw:justify-between tw:mb-2">
+            <h4 className="tw:text-sm tw:font-bold tw:flex tw:items-center tw:gap-2">
               <FileText size={16} /> Certificate (PEM)
             </h4>
             {fullCert?.cert_pem && (
               <button
-                className="tw-text-cb-muted hover:tw-text-cb-primary tw-transition-colors"
+                className="tw:text-cb-muted tw:hover:text-cb-primary tw:transition-colors"
                 onClick={() => copyToClipboard(fullCert.cert_pem)}
                 title="Copy PEM"
               >
@@ -116,8 +116,8 @@ function CertificateDetail({ certificate, isOpen, onClose, onUpdate }) {
               </button>
             )}
           </div>
-          <div className="tw-relative">
-            <pre className="tw-bg-black/20 tw-p-3 tw-rounded tw-text-[11px] tw-font-mono tw-overflow-x-auto tw-max-h-60 tw-border tw-border-cb-border">
+          <div className="tw:relative">
+            <pre className="tw:bg-black/20 tw:p-3 tw:rounded-sm tw:text-[11px] tw:font-mono tw:overflow-x-auto tw:max-h-60 tw:border tw:border-cb-border">
               {loading
                 ? 'Loading PEM content...'
                 : fullCert?.cert_pem || 'No PEM content available.'}
@@ -126,8 +126,8 @@ function CertificateDetail({ certificate, isOpen, onClose, onUpdate }) {
         </div>
 
         {/* Info Box */}
-        <div className="tw-p-3 tw-rounded tw-bg-cb-primary/10 tw-border tw-border-cb-primary/20 tw-text-sm">
-          <p className="tw-m-0 tw-text-cb-muted">
+        <div className="tw:p-3 tw:rounded-sm tw:bg-cb-primary/10 tw:border tw:border-cb-primary/20 tw:text-sm">
+          <p className="tw:m-0 tw:text-cb-muted">
             <strong>Note:</strong> Private keys are stored securely in the vault and are never
             displayed in the UI for security reasons.
           </p>

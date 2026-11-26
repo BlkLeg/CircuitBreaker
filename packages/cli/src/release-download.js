@@ -22,7 +22,7 @@ async function identityMatches(sidecar, asset) {
   } catch { return false; }
 }
 
-async function attempt(asset, part, start, { fetchImpl, timeoutMs }) {
+async function attempt(asset, part, start, { fetchImpl, timeoutMs, onProgress }) {
   const headers = start > 0 ? { range: `bytes=${start}-` } : {};
   const controller = new AbortController();
   const response = await request(asset.url, { fetchImpl, timeoutMs, headers, signal: controller.signal });
@@ -37,6 +37,7 @@ async function attempt(asset, part, start, { fetchImpl, timeoutMs }) {
   }
   const handle = await open(part, appending ? 'a' : 'w', 0o600);
   let written = appending ? start : 0;
+  onProgress?.(written, asset.size);
   // request() bounds connect + headers only, so the body gets a stall timeout:
   // timeoutMs without a chunk aborts the read (retryable; the .part is kept).
   let stall;
@@ -52,6 +53,7 @@ async function attempt(asset, part, start, { fetchImpl, timeoutMs }) {
       written += chunk.length;
       if (written > asset.size) throw new DownloadError(`${asset.name} is larger than the ${asset.size} bytes the release declares`);
       await handle.write(chunk).catch((error) => { writeError = error; throw error; });
+      onProgress?.(written, asset.size);
     }
   } catch (error) {
     if (error instanceof DownloadError || error === writeError) throw error;
@@ -85,11 +87,11 @@ export async function downloadAsset(asset, dir, options = {}) {
   }
 }
 
-async function stageAsset(asset, dir, { fetchImpl = fetch, statfs = fsStatfs, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), timeoutMs = 60000, retries = 3 }) {
+async function stageAsset(asset, dir, { fetchImpl = fetch, statfs = fsStatfs, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), timeoutMs = 60000, retries = 3, onProgress }) {
   if (!Number.isSafeInteger(asset.size) || asset.size <= 0) throw new DownloadError(`${asset.name} declares an invalid size: ${asset.size}`);
   const { final, part, sidecar } = stagedPaths(asset, dir);
   const same = await identityMatches(sidecar, asset);
-  if (same && await sizeOf(final) === asset.size) return final;
+  if (same && await sizeOf(final) === asset.size) { onProgress?.(asset.size, asset.size); return final; }
   if (!same) await rm(part, { force: true });
   await rm(final, { force: true });
 
@@ -106,7 +108,7 @@ async function stageAsset(asset, dir, { fetchImpl = fetch, statfs = fsStatfs, sl
     let start = await sizeOf(part);
     if (start < 0 || start >= asset.size) { await rm(part, { force: true }); start = 0; }
     try {
-      await attempt(asset, part, start, { fetchImpl, timeoutMs });
+      await attempt(asset, part, start, { fetchImpl, timeoutMs, onProgress });
       await rename(part, final);
       return final;
     } catch (error) {

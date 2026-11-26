@@ -595,6 +595,31 @@ def test_a_piped_uninstall_sh_refuses_with_10_and_removes_nothing(tmp_path: Path
     assert (Path(env["CB_CONFIG_DIR"]) / "keep").exists()
 
 
+# uninstall.sh finds a native or package install by fixed host paths, which a
+# test cannot point elsewhere. On a host that really has one, these cases would
+# stop being about a clean host and start describing (and, before uninstall.sh
+# kept its direct-run sudo to root, acting on) the developer's own install.
+_HOST_INSTALL_PROBES = (
+    "/etc/systemd/system/circuitbreaker-backend.service", "/etc/circuitbreaker/.env", "/opt/circuitbreaker",
+    "/lib/systemd/system/circuit-breaker.service", "/etc/systemd/system/circuit-breaker.service",
+    "/etc/circuit-breaker/circuit-breaker.env",
+)
+HOST_HAS_INSTALL = any(os.path.lexists(p) for p in _HOST_INSTALL_PROBES)
+clean_host = pytest.mark.skipif(HOST_HAS_INSTALL, reason="this host has a real Circuit Breaker install; these cases need a host without one")
+
+
+def test_uninstall_sh_runs_privileged_steps_directly_only_as_root(tmp_path: Path) -> None:
+    text = UNINSTALL_SH.read_text()
+    start = text.index("  # Every privileged step below was written as `sudo ...`")
+    block = text[start:text.index("\n  fi\n", start) + len("\n  fi\n")]
+    for uid, expected in (("0", "function"), ("1000", "file")):
+        script = f"id() {{ echo {uid}; }}\n{block}\ntype -t sudo\n"
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False,
+                           env={"PATH": f"{_stubs(tmp_path)}:/usr/bin:/bin"})
+        assert r.stdout.strip() == expected, (uid, r.stdout, r.stderr)
+
+
+@clean_host
 @seam
 def test_a_piped_uninstall_sh_takes_the_lock_when_it_is_free(tmp_path: Path, state: Path) -> None:
     env = _installer_env(tmp_path, state)
@@ -802,6 +827,7 @@ def test_a_piped_install_sh_refusal_echoes_the_real_arguments_and_no_rerun_foote
     assert _calls(Path(env["CB_TEST_LOG"])) == []
 
 
+@clean_host
 @seam
 def test_a_docker_only_uninstall_sh_never_calls_sudo(tmp_path: Path, state: Path) -> None:
     env = _installer_env(tmp_path, state, piped_sudo=False)
@@ -815,6 +841,7 @@ def test_a_docker_only_uninstall_sh_never_calls_sudo(tmp_path: Path, state: Path
     assert "without the host lifecycle lock" not in r.stdout + r.stderr
 
 
+@clean_host
 @seam
 def test_a_non_root_docker_only_uninstall_sh_runs_without_the_lock_or_a_warning(tmp_path: Path, state: Path, held: Holder) -> None:
     env = _installer_env(tmp_path, None, piped_sudo=False)

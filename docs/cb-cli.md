@@ -51,6 +51,24 @@ Schema: [`specs/install/identity.schema.json`](../specs/install/identity.schema.
 
 ---
 
+## Terminal presentation
+
+Help groups commands by operator task. Status separates application units from
+shared nginx and shows process state and active-since timestamps; `cb doctor`
+checks readiness. Doctor displays passed, failed, warning and skipped counts,
+including skipped authenticated checks, without changing its JSON verdict.
+
+Resources uses the approved CLI palette, keeps shared usage outside application
+totals, and wraps narrow output. Interactive logs align recognized entries;
+redirected logs retain their original stream. Backup shows measured phase times,
+actual size and permissions, online consistency and whether the archive was
+verified. Verification is separate from a restore rehearsal.
+
+The npm lifecycle renderer supports `--no-animation`, `CB_REDUCED_MOTION=1`,
+`NO_COLOR`, ASCII fallback and narrow/short terminals. Its download bar measures
+bytes only; completion follows the authoritative native result. Purge confirmation
+requires the exact phrase `DELETE circuitbreaker` or explicit `--yes`.
+
 ## Command availability by install mode
 
 | Command | Native | Mono (Docker/Compose) | Package (advanced) |

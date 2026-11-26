@@ -40,9 +40,9 @@ dependencies = [
     "alembic>=1.20.0",
     "python-multipart>=0.0.31",
     "PyJWT>=2.15.0,<3.0.0",
-    "pyasn1>=0.6.4",
+    "pyasn1>=0.6.5",
     "bcrypt>=4.0",
-    "Pillow>=12.3.0",
+    "Pillow>=13.0.0",
     "slowapi>=0.1.9; python_version < \"4.0\"",
     "markdown-it-py[plugins]>=4.2.0",
     "bleach>=6.4.0",
@@ -55,7 +55,7 @@ dependencies = [
     "scapy>=2.5; python_version < \"4.0\"",
     "netaddr>=0.10",
     "apscheduler>=3.11.3",
-    "dnspython>=2.6",
+    "dnspython>=2.9.0",
     "httpx>=0.27",
     # Floor: 4.14.2 is the fixed release for CVE-2026-63374 (IDNA 2003 host
     # encoding in TLSStream), CVE-2026-64847 and CVE-2026-63349. CI installs
@@ -76,6 +76,8 @@ dependencies = [
     "aiosmtplib>=5.1.3",
     "proxmoxer>=2.0.0",
     "urllib3>=2.8.0",
+    # Transitive via httpx and requests; floor drops the emSign roots (GHSA-6q48-6c7w-9gw2).
+    "certifi>=2026.10.18",
     "psutil>=5.9.0",
     "pyotp>=2.10.0",
     "cachetools>=7.2.0",
@@ -104,7 +106,14 @@ dev = [
     # the marker so `poetry lock` can resolve without pretending pyinstaller installs on 3.15+.
     "pyinstaller>=6.0.0; python_version < \"3.15\"",
     "moto[s3]>=5.2.3",
-    "pytest>=9.0.3",
+    # Ceiling: pytest 9.2 deprecates `_pytest.python.CallSpec2`, and anyio
+    # below 4.15.1 imports it unconditionally from its pytest plugin. With
+    # filterwarnings=error that PytestRemovedIn10Warning stops the plugin
+    # loading, so pytest cannot start at all. The anyio ceiling above keeps us
+    # on 4.14.x, so pytest has to stay below 9.2 with it. Remove this bound
+    # together with anyio's: test_pytest_ceiling_tracks_the_anyio_ceiling
+    # fails if one moves without the other.
+    "pytest>=9.0.3,<9.2",
     "pytest-cov>=7.1.0",
     "pytest-asyncio>=1.4.0",
     "pytest-xdist>=3.6",
@@ -140,7 +149,8 @@ dev = [
     "bandit>=1.7.0",
     "pip-audit>=2.7.0",
     # Security floors for transitive packages retained in the all-groups lock.
-    "msgpack>=1.2.2",
+    "filelock>=4.2.1",
+    "msgpack>=1.2.3",
     "pip>=26.1.2",
     "pymdown-extensions>=11.0.1",
     "setuptools>=83.0.0",

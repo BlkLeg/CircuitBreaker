@@ -231,10 +231,11 @@ def test_local_bundle_with_only_sums_warns_and_checks_the_hash(s: Setup) -> None
     assert "SHA256 checksum verified" in r.stdout
 
 
-def test_local_bundle_with_neither_file_warns_and_continues(s: Setup) -> None:
+def test_local_bundle_with_neither_file_is_refused_until_the_operator_opts_out(s: Setup) -> None:
     r = s.check("", "", "local", "")
-    assert r.returncode == 0
-    assert "UNVERIFIED" in r.stdout
+    assert r.returncode != 0
+    assert "the bundle cannot be verified" in r.stdout + r.stderr
+    assert "--skip-checksum" in r.stdout + r.stderr
 
 
 def test_local_bundle_with_a_signature_but_no_sums_fails(s: Setup) -> None:
@@ -558,7 +559,11 @@ def test_no_fixed_tmp_bundle_paths_remain_and_install_removes_the_private_dir() 
         assert "/tmp/cb-bundle" not in body
         assert "/tmp/${tarball_name}" not in body
     install = _function("stage0_install_bundle")
-    assert 'rm -rf -- "$CB_PRIVATE_TMP"' in install
+    # Removed through the helper, behind the guard that keeps it while the
+    # lifecycle journal runs the bundle's interpreter from inside it
+    # (tests/build/test_installer_bundle_interpreter.py); _cb_on_exit removes it then.
+    assert "_cb_remove_private_tmp" in install
+    assert 'rm -rf -- "$CB_PRIVATE_TMP"' in _function("_cb_remove_private_tmp")
     assert 'rm -f "$CB_BUNDLE_TARBALL"' not in install, "a --local-bundle tarball is the operator's file"
     # The check must not drop the directory the tarball and tree live in.
     download = _function("stage0_download_bundle")

@@ -102,7 +102,7 @@ trusted only once its signature verifies.
 | Download, release < 0.4.7 (for example `--version` for a rollback) | No signature exists. Verify the hash as today and warn that the release predates signing |
 | `--local-bundle`, `SHA256SUMS` and `.sig` next to the tarball | Must verify, as for a download. Closes the gap where a local bundle was not checked at all |
 | `--local-bundle`, only `SHA256SUMS` next to it | Verify the hash, warn that the signature is missing |
-| `--local-bundle`, neither file | Warn that the bundle is unverified and continue, as today, so local development builds keep working |
+| `--local-bundle`, neither file | Refuse: the bundle cannot be verified. `--skip-checksum` installs it anyway, so an unverified install (a local development build) is always an explicit choice. Amended 2026-10-03; the original rule was to warn and continue |
 | `--skip-signature` | Skip the signature check with a warning; the hash is still checked. Sits beside `--skip-checksum` |
 | Attestation | If `gh` or `cosign` is present and the host is online, verify it and report the result; otherwise say it was not checked. Never required, since air-gapped hosts cannot reach Sigstore |
 
@@ -148,7 +148,7 @@ removed key then fails verification, by design.
   `gh release create`; `promote-verify` verifies signature and attestations; post-publish verifies;
   only `promote` declares `release`.
 - **End to end:** the 0.4.7 release candidate is the first live proof. The installer journey runs
-  before staging, so it installs from unsigned build output and exercises the "neither file" row;
+  before staging, so it installs from unsigned build output with `--skip-checksum` (the "neither file" row refuses without it);
   the signed path is proven by `promote-verify` before approval and by post-publish after it, both
   against the real key and real assets.
 

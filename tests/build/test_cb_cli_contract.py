@@ -160,7 +160,7 @@ def test_operator_supplied_paths_are_documented_as_such():
 _STUBBED = ("nc", "psql", "curl", "systemctl", "journalctl", "docker")
 _REAL_TOOLS = (
     "bash", "grep", "sed", "tail", "head", "cat", "date", "xargs", "id",
-    "stat", "dirname", "basename", "tr", "awk", "cut", "df", "ls", "sleep",
+    "stat", "dirname", "basename", "tr", "awk", "cut", "ls", "sleep",
     "mkdir", "rm", "python3", "mktemp", "chmod", "mv",
 )
 
@@ -185,6 +185,14 @@ def _harness(tmp_path: Path, *, healthy: bool) -> tuple[Path, dict[str, str]]:
         "#!/bin/sh\necho 'selftest OK'\nexit 0\n"
         if healthy
         else "#!/bin/sh\necho 'selftest FAILED'\nexit 1\n"
+    )
+    # The data directory lives under pytest's tmp dir, so a real df would make
+    # the verdict depend on the host's free space (a tmpfs /tmp under 1 GiB).
+    free_kb = 104857600 if healthy else 524288
+    (stubs / "df").write_text(
+        "#!/bin/sh\n"
+        'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"\n'
+        f'echo "stub 209715200 1048576 {free_kb} 1% /"\n'
     )
     (stubs / "getenforce").write_text("#!/bin/sh\necho Disabled\n")
     if healthy:
@@ -248,7 +256,8 @@ def test_native_doctor_exit_status_follows_the_verdict(tmp_path: Path, healthy: 
     result = _run(NATIVE_CLI, env)
     if healthy:
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "All checks passed." in result.stdout
+        assert "0 failed" in result.stdout and "1 skipped" in result.stdout
+        assert "All checks passed." not in result.stdout
     else:
         assert result.returncode != 0, result.stdout
         assert "FAILED" in result.stdout
@@ -283,7 +292,8 @@ def test_root_doctor_exit_status_follows_the_verdict(tmp_path: Path, healthy: bo
     result = _run(ROOT_CLI, env)
     if healthy:
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "All checks passed." in result.stdout
+        assert "0 failed" in result.stdout and "1 skipped" in result.stdout
+        assert "All checks passed." not in result.stdout
     else:
         assert result.returncode != 0, result.stdout
         assert "FAILED" in result.stdout
@@ -293,7 +303,7 @@ def test_both_doctors_end_on_the_verdict_not_on_an_echo():
     root = ROOT_CLI.read_text()
     assert root.count("[[ $failed -eq 0 ]]") >= 1
     native = NATIVE_CLI.read_text()
-    body = native.split("cmd_doctor()", 1)[1].split("\ncmd_logs()", 1)[0]
+    body = native.split("_cmd_doctor_collect()", 1)[1].split("\ncmd_doctor()", 1)[0]
     assert "[[ $failed -eq 0 ]]" in body
 
 

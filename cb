@@ -37,6 +37,14 @@
 
 set -eo pipefail
 
+# `bash -x` would write every secret these scripts handle into the trace: the
+# vault key, JWT secret and database, Redis and NATS credentials from
+# /etc/circuitbreaker/.env. Tracing is switched off unless it is asked for by name.
+if [[ $- == *x* && "${CB_ALLOW_XTRACE:-}" != 1 ]]; then
+  { set +x; } 2>/dev/null
+  echo "Shell tracing (bash -x) is off: it would print the vault key and every service password. Set CB_ALLOW_XTRACE=1 to trace anyway and treat the output as secret." >&2
+fi
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _CB_HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 # This script and its arguments, for a native or binary mutating command that
@@ -104,17 +112,50 @@ fi
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 R='\e[0m'
-G='\e[38;5;154m'
+G='\e[38;5;142m'
 B='\e[1m'
 GR='\e[90m'
 Y='\e[33m'
 RED='\e[91m'
-LINE=" ${G}─────────────────────────────────────────${R}"
+P='\e[38;5;209m'
+V='\e[38;5;141m'
+if [[ ! -t 1 || "${NO_COLOR+x}" == x || "${TERM:-dumb}" == dumb ]]; then
+  R=""; G=""; B=""; GR=""; Y=""; RED=""; P=""; V=""
+fi
+LINE=" ${P}─────────────────────────────────────────${R}"
+
+_cb_heading() {
+  printf '\n%b%s%b  %s\n\n' "$P" "$1" "$R" "${CB_MODE:-unknown}"
+}
+
+_cb_terminal() {
+  local candidate
+  for candidate in "${_CB_HERE}/deploy/cli/cb_terminal.py" "${_CB_HERE}/cb_terminal.py" /usr/local/lib/circuitbreaker/cb_terminal.py /opt/circuitbreaker/deploy/cli/cb_terminal.py; do
+    if [[ -f "$candidate" ]]; then python3 -I "$candidate" "$@"; return $?; fi
+  done
+  # Older installs remain usable without the presentation helper.
+  if [[ "$1" == logs || "$1" == status ]]; then cat; else python3 -m json.tool; fi
+}
 
 _ok()   { echo -e "${GR}[${R}${G} OK ${R}${GR}]${R} $*"; }
 _info() { echo -e "${GR}[${R}${G} INFO ${R}${GR}]${R} $*" >&2; }
 _warn() { echo -e "${GR}[${R}${Y}NOTICE${R}${GR}]${R} $*" >&2; }
-_fail() { echo -e "${GR}[${R}${RED}ERROR${R}${GR}]${R} $*" >&2; exit 1; }
+_fail() {
+  if [[ -n "${_CB_PRESENT_PHASE:-}" ]]; then
+    printf '  %b✗%b %s (%ss)\n' "$RED" "$R" "$_CB_PRESENT_PHASE" "$(( SECONDS - _CB_PRESENT_START ))" >&2
+  fi
+  echo -e "${GR}[${R}${RED}ERROR${R}${GR}]${R} $*" >&2
+  exit 1
+}
+
+_cb_present_begin() {
+  _CB_PRESENT_PHASE="$1"; _CB_PRESENT_START="$SECONDS"
+  printf '  %b▸%b %s\n' "$V" "$R" "$1"
+}
+_cb_present_end() {
+  printf '  %b✓%b %-38s %ss\n' "$G" "$R" "$_CB_PRESENT_PHASE" "$(( SECONDS - _CB_PRESENT_START ))"
+  _CB_PRESENT_PHASE=""
+}
 
 # Single source of truth for the substitution patterns _redact_stream and
 # _redact_evidence both apply. Emits Python source that operates on a
@@ -342,7 +383,9 @@ _load_install_identity() {
       CB_MODE="native"
       CB_DATA_DIR="${CB_DATA_DIR:-/var/lib/circuitbreaker}"
       CB_PORT="${CB_PORT:-8000}"
-      [[ -f /etc/circuitbreaker/.env ]] && {
+      # Root-only (it holds the vault key). Without root, read-only commands
+      # run without it; ones that need it re-run through sudo.
+      [[ -r /etc/circuitbreaker/.env ]] && {
         # shellcheck source=/dev/null
         set -a; source /etc/circuitbreaker/.env; set +a
       }
@@ -817,12 +860,7 @@ cmd_setup_token() {
 
 cmd_status() {
   _require_identity_or_fail status
-  echo ""
-  echo -e "$LINE"
-  echo -e " ${B}Circuit Breaker — Status${R}"
-  echo -e "$LINE"
-  echo ""
-
+  _cb_heading STATUS
   case "$CB_MODE" in
     docker)
       _require_docker
@@ -852,35 +890,34 @@ cmd_status() {
           | column -t || true
       fi
       ;;
-    binary)
+    binary|native)
+      local -a units=()
+      if [[ "$CB_MODE" == native ]]; then units=("${CB_NATIVE_SERVICES[@]}"); else units=("${CB_PACKAGE_UNITS[@]}"); fi
       if command -v systemctl >/dev/null 2>&1; then
-        systemctl status "${CB_PACKAGE_UNITS[@]}" --no-pager -l || true
+        local svc active since
+        {
+          for svc in "${units[@]}"; do
+            active=$(systemctl is-active "$svc" 2>/dev/null) || true
+            since=$(systemctl show "$svc" --property=ActiveEnterTimestamp --value 2>/dev/null) || true
+            printf '%s\t%s\t%s\n' "$svc" "${active:-unknown}" "${since:-unavailable}"
+          done
+        } | _cb_terminal status
       else
         _warn "systemctl not found — cannot query service status."
       fi
-      ;;
-    native)
-      printf "  %-36s %-12s %s\n" "SERVICE" "STATUS" "UPTIME"
-      printf "  %-36s %-12s %s\n" "────────────────────────────────────" "──────────" "──────"
-      local svc active uptime color
-      for svc in "${CB_NATIVE_SERVICES[@]}"; do
-        active=$(systemctl is-active "$svc" 2>/dev/null || echo unknown)
-        uptime=$(systemctl show "$svc" --property=ActiveEnterTimestamp \
-          --value 2>/dev/null | xargs -I{} date -d{} "+%H:%M %b %d" 2>/dev/null || echo "—")
-        color="\033[0;32m"; [[ "$active" != "active" ]] && color="\033[0;31m"
-        printf "  %-36s ${color}%-12s\033[0m %s\n" "$svc" "$active" "$uptime"
-      done
       ;;
     *)
       _fail "Unknown mode '${CB_MODE}'"
       ;;
   esac
-  echo ""
+  printf '\n%bINSTALL%b\n' "$P" "$R"
+  printf '  Identity: %s\n  Endpoint (configured): %s\n' "${CB_IDENTITY_FILE:-legacy}" "${CB_HEALTH_URL:-unavailable}"
+  printf '\nNext: cb doctor · cb logs -f · cb resources --watch\n\n'
 }
 
 # ── doctor ────────────────────────────────────────────────────────────────────
 # Top-down health checks. Prefer install identity; never guess container/port.
-cmd_doctor() {
+_cmd_doctor_collect() {
   local as_json=0
   [[ "${1:-}" == "--json" || "${1:-}" == "-j" ]] && as_json=1
 
@@ -1291,9 +1328,24 @@ for item in payload.get("checks") or []:
   [[ $failed -eq 0 ]]
 }
 
-cmd_logs() {
+cmd_doctor() {
+  if [[ "${1:-}" == --json || "${1:-}" == -j ]]; then
+    _cmd_doctor_collect "$@"
+    return $?
+  fi
+  local result code=0
+  result="$(_cmd_doctor_collect --json)" || code=$?
+  _cb_heading DOCTOR
+  printf '%s\n' "$result" | _cb_terminal doctor
+  return "$code"
+}
+
+
+_cmd_logs_raw() {
   _require_identity_or_fail logs
   local follow=""
+  local -a presentation=()
+  [[ "${_CB_LOG_PRESENTATION:-}" != 1 ]] || presentation=(--output=json)
   [[ "${1:-}" == "-f" || "${1:-}" == "--follow" ]] && follow="-f"
 
   case "$CB_MODE" in
@@ -1316,18 +1368,31 @@ cmd_logs() {
       local -a unit_args=()
       local unit
       for unit in "${CB_PACKAGE_UNITS[@]}"; do unit_args+=(-u "$unit"); done
-      journalctl "${unit_args[@]}" --no-pager $follow -n 100
+      journalctl "${unit_args[@]}" "${presentation[@]}" --no-pager $follow -n 100
       ;;
     native)
       command -v journalctl >/dev/null 2>&1 || _fail "journalctl not found."
       # shellcheck disable=SC2086
-      journalctl -u 'circuitbreaker-*' --no-pager $follow -n 100
+      journalctl -u 'circuitbreaker-*' "${presentation[@]}" --no-pager $follow -n 100
       ;;
     *)
       _fail "Unknown mode '${CB_MODE}'"
       ;;
   esac
 }
+
+cmd_logs() {
+  if [[ ! -t 1 || "${TERM:-dumb}" == dumb ]]; then
+    _cmd_logs_raw "$@"
+    return $?
+  fi
+  _cb_heading LOGS
+  printf 'Last 100 lines · %s · Ctrl-C stops following\n\n' "${CB_MODE}"
+  # pipefail preserves the producer's status. Journal JSON is used only here;
+  # redirected output continues to execute the original native command.
+  _CB_LOG_PRESENTATION=1 _cmd_logs_raw "$@" | _cb_terminal logs
+}
+
 
 cmd_restart() {
   _require_identity_or_fail restart
@@ -1561,7 +1626,7 @@ _cb_snapshot_runtime() {
 }
 
 cmd_backup() {
-  local backup_dir out recipient="" encrypted="" created
+  local backup_dir out recipient="" encrypted="" created backup_started="$SECONDS"
   _cb_snapshot_runtime
   local -a created_dirs=()
   while [[ $# -gt 0 ]]; do
@@ -1575,6 +1640,9 @@ cmd_backup() {
   # Under cb restore this nests on the lock the restore already holds.
   _cb_lock "cb backup"
   cb_lifecycle_mark_mutation
+  _cb_heading BACKUP
+  printf 'Full-state snapshot · online database dump and file capture\nIncludes database, uploads, config and vault key\n\n'
+  _cb_present_begin "Prepare protected snapshot directory"
   backup_dir="${CB_BACKUP_DIR:-$CB_CONFIG_DIR/backups}"
   # Only directories this run creates are handed back; an existing one, a
   # system directory above all, keeps its owner.
@@ -1583,12 +1651,15 @@ cmd_backup() {
   done < <(_cb_missing_dirs "$backup_dir")
   mkdir -p "$backup_dir" || _fail "Cannot create backup directory $backup_dir."
 
+  _cb_present_end
+
   case "$CB_MODE" in
     docker|compose)
       _require_docker
       _container_running "$CB_BACKEND_CONTAINER" \
         || _fail "Container '${CB_BACKEND_CONTAINER}' must be running to take a snapshot. Start it first."
 
+      _cb_present_begin "Build full-state snapshot"
       _info "Building a full-state snapshot inside '${CB_BACKEND_CONTAINER}'…"
       # The snapshot is written inside the container, where the database, the
       # uploads directory and the vault key all are; only the finished archive
@@ -1599,12 +1670,14 @@ cmd_backup() {
       # The path is the last line: anything the builder logs comes before it.
       out=$(printf '%s\n' "$out" | tail -n1)
       [[ -n "$out" ]] || _fail "Snapshot reported success but printed no path."
+      _cb_present_end
 
       # Encrypted inside the container, before anything is copied out. `age` ships
       # in the image and need not exist on the host, and the derivative is built
       # from the archive where it already lives rather than from a copy — so the
       # plaintext crosses the container boundary exactly once either way.
       if [[ -n "$recipient" ]]; then
+        _cb_present_begin "Encrypt off-host copy"
         _info "Encrypting the off-host copy to ${recipient}…"
         encrypted=$(docker exec -e "CB_INSTALL_MODE=${CB_MODE}" -e "CB_DATA_DIR=${CB_DATA_DIR}" \
                       "$CB_BACKEND_CONTAINER" \
@@ -1616,12 +1689,15 @@ cmd_backup() {
           || _fail "The encrypted copy was created at ${encrypted} but could not be copied to ${backup_dir}."
         docker exec "$CB_BACKEND_CONTAINER" rm -f "$encrypted" 2>/dev/null || true
         encrypted="$backup_dir/$(basename "$encrypted")"
+        _cb_present_end
       fi
 
+      _cb_present_begin "Publish local snapshot"
       docker cp "${CB_BACKEND_CONTAINER}:${out}" "$backup_dir/" \
         || _fail "Snapshot was created in the container at ${out} but could not be copied to ${backup_dir}."
       docker exec "$CB_BACKEND_CONTAINER" rm -f "$out" 2>/dev/null || true
       out="$backup_dir/$(basename "$out")"
+      _cb_present_end
       ;;
 
     binary|native)
@@ -1633,6 +1709,7 @@ cmd_backup() {
       _require_binary "$CB_BINARY" \
         "the snapshot builder ships with the Circuit Breaker binary. Install the package, or set CB_MODE in ${_CONF} to the mode this host actually runs."
 
+      _cb_present_begin "Build full-state snapshot"
       _info "Building a full-state snapshot…"
       # The unit's environment is loaded in a subshell, so CB_VAULT_KEY and the
       # database credentials reach the builder without leaking into the rest of
@@ -1643,6 +1720,7 @@ cmd_backup() {
         || _fail "Snapshot failed — see the output above."
       out=$(printf '%s\n' "$out" | tail -n1)
       [[ -n "$out" ]] || _fail "Snapshot reported success but printed no path."
+      _cb_present_end
 
       if [[ -n "$recipient" ]]; then
         # `age` is a hard dependency of the deb and the rpm, so a packaged host
@@ -1650,11 +1728,13 @@ cmd_backup() {
         # rather than a subprocess error from inside the binary.
         command -v age >/dev/null 2>&1 \
           || _fail "age is required for --encrypt-to and is not on PATH. Reinstall the package, which depends on it."
+        _cb_present_begin "Encrypt off-host copy"
         _info "Encrypting the off-host copy to ${recipient}…"
         encrypted=$("$CB_BINARY" --snapshot-encrypt "$out" --recipient "$recipient") \
           || _fail "Encryption failed — see the output above."
         encrypted=$(printf '%s\n' "$encrypted" | tail -n1)
         [[ -n "$encrypted" ]] || _fail "Encryption reported success but printed no path."
+        _cb_present_end
       fi
       ;;
 
@@ -1666,16 +1746,30 @@ cmd_backup() {
   _cb_hand_back ${created_dirs[@]+"${created_dirs[@]}"} "$out" ${encrypted:+"$encrypted"}
 
   if [[ "$CB_MODE" == native ]]; then
+    _cb_present_begin "Verify archive structure and checksums"
     "$CB_BINARY" --snapshot-verify "$out" >/dev/null \
       || _fail "Snapshot verification failed — refusing to use this backup."
+    _cb_present_end
   fi
   # Private result descriptor used by the installer under the inherited lock.
   if [[ -e /proc/self/fd/4 ]]; then printf '%s\n' "$out" >&4; fi
+  printf '\n%bBACKUP SAVED%b\n' "$G" "$R"
   _ok "Backup written to ${out}"
+  printf '  Size: %s bytes · Duration: %ss · Mode: %s\n' "$(stat -c %s "$out" 2>/dev/null || printf unavailable)" "$(( SECONDS - backup_started ))" "$(stat -c %a "$out" 2>/dev/null || printf unavailable)"
+  printf '  Consistency: online; database dump and files captured separately.\n'
+  if [[ "$CB_MODE" == native ]]; then
+    printf '  Snapshot verified; restore rehearsal has not been performed.\n'
+  else
+    printf '  Snapshot created; post-build verification has not been performed.\n'
+  fi
+  printf '\n%bLOCAL COPY%b\n' "$P" "$R"
   echo -e "  ${GR}Contains the database, uploads, config and the vault key.${R}"
   echo -e "  ${Y}The vault key is stored in plaintext — this file is mode 0600, treat it as a secret.${R}"
   echo -e "  ${GR}Restore with: cb restore ${out}${R}"
 
+  if [[ -z "$encrypted" ]]; then
+    printf '  Off-host copy: cb backup --encrypt-to <age-recipient>\n'
+  fi
   if [[ -n "$encrypted" ]]; then
     [[ -s "$encrypted" ]] || _fail "Expected an encrypted copy at ${encrypted}, but nothing usable is there."
     chmod 600 "$encrypted" 2>/dev/null || true
@@ -2501,30 +2595,37 @@ usage() {
   echo ""
   echo -e "  ${GR}Usage:${R}  cb <command> [options]"
   echo ""
-  echo -e "  ${G}Commands:${R}"
-  echo -e "    info [--json]       Show install identity (mode, paths, health URL)"
-  echo -e "    status              Show container / service status"
-  echo -e "    resources           App resource usage [--watch] [--json] [--interval seconds]"
-  echo -e "    doctor [--json]     Run health checks and diagnose issues"
-  echo -e "    diag bundle         Write one redacted .tar.gz to hand over for an issue"
-  echo -e "    setup               Report first-run / bootstrap status"
-  echo -e "    setup-token         Print the one-time setup token (not for logs)"
-  echo -e "    logs [-f]           Show logs  (${GR}-f${R} to follow in real-time)"
-  echo -e "    restart             Restart Circuit Breaker"
-  echo -e "    update              Pull latest image and restart  ${GR}(docker/mono)${R}"
-  echo -e "    backup              Full-state snapshot (database, uploads, config, vault key)"
-  echo -e "                        ${GR}--encrypt-to age1…  also write a copy safe to store off this host${R}"
-  echo -e "    restore <archive>   Restore a snapshot  ${GR}(--identity for .age; destructive)${R}"
-  echo -e "    migrate status      Report the schema revision  ${GR}(exit 3 when behind)${R}"
-  echo -e "    migrate upgrade     Apply pending database migrations"
-  echo -e "    token ...           Scoped API tokens  ${GR}(create, list, rotate, revoke)${R}"
-  echo -e "    user ...            Local accounts  ${GR}(list, create, set-role, disable, enable)${R}"
-  echo -e "    agent ...           Agent fleet  ${GR}(list, approve, revoke)${R}"
-  echo -e "    config validate     Validate the configuration before it is used"
-  echo -e "    vault-recover       Recover an uninitialized vault  ${GR}(recovery path only)${R}"
-  echo -e "    version             Show installed version"
-  echo -e "    uninstall           Remove Circuit Breaker from this system"
-  echo -e "    help                Show this help"
+  printf '%bOBSERVE%b\n' "$P" "$R"
+  printf '  %-20s %s\n' 'info [--json]' 'Install identity, paths and endpoint'
+  printf '  %-20s %s\n' 'status' 'Service and container state'
+  printf '  %-20s %s\n' 'resources' 'App usage [--watch] [--json] [--interval seconds]'
+  printf '  %-20s %s\n' 'logs [-f]' 'Application logs; -f to follow'
+  printf '  %-20s %s\n' 'doctor [--json]' 'Read-only health checks and diagnosis'
+  printf '  %-20s %s\n' 'diag bundle' 'Write a redacted support archive'
+  echo ""
+  printf '%bLIFECYCLE%b\n' "$P" "$R"
+  printf '  %-20s %s\n' 'restart' 'Restart Circuit Breaker'
+  printf '  %-20s %s\n' 'update' 'Pull image and restart (docker/mono)'
+  printf '  %-20s %s\n' 'uninstall' 'Remove software; retain data by default'
+  echo ""
+  printf '%bDATA & SETUP%b\n' "$P" "$R"
+  printf '  %-20s %s\n' 'backup' 'Full-state snapshot [--encrypt-to age1…]'
+  printf '  %-20s %s\n' 'restore <archive>' 'Replace data [--identity for .age; destructive]'
+  printf '  %-20s %s\n' 'setup' 'First-run setup status'
+  printf '  %-20s %s\n' 'setup-token' 'Print one-time token; keep out of logs'
+  printf '  %-20s %s\n' 'config validate' 'Validate configuration'
+  printf '  %-20s %s\n' 'migrate status' 'Report schema revision (exit 3 when behind)'
+  printf '  %-20s %s\n' 'migrate upgrade' 'Apply pending database migrations'
+  printf '  %-20s %s\n' 'vault-recover' 'Recover an uninitialized vault'
+  echo ""
+  printf '%bACCESS & FLEET%b\n' "$P" "$R"
+  printf '  %-20s %s\n' 'token ...' 'Scoped tokens: create, list, rotate, revoke'
+  printf '  %-20s %s\n' 'user ...' 'Local accounts and roles'
+  printf '  %-20s %s\n' 'agent ...' 'Fleet: list, approve, revoke'
+  echo ""
+  printf '%bCLI%b\n' "$P" "$R"
+  printf '  %-20s %s\n' 'version' 'Installed server version'
+  printf '  %-20s %s\n' 'help' 'Show command help'
   echo ""
   echo -e "  ${GR}Identity : ${CB_IDENTITY_FILE:-missing}${R}"
   echo -e "  ${GR}Mode     : ${CB_IDENTITY_MODE:-${CB_MODE:-unknown}}${R}"

@@ -29,3 +29,19 @@ def test_cli_tarball_is_signed_and_attested_with_server_assets():
     assert "*.tgz" in gpg
     attestation = next(step for step in steps if step.get("uses", "").startswith("actions/attest-build-provenance@"))
     assert "dist/release/blkleg-circuitbreaker-*.tgz" in attestation["with"]["subject-path"]
+
+
+def test_npm_publish_is_opt_in_per_dispatch():
+    """npm is not a channel until the NPM gates pass, so promote publishes only when asked."""
+    inputs = WORKFLOW[True]["workflow_dispatch"]["inputs"]
+    assert inputs["publish_npm"]["type"] == "boolean"
+    assert inputs["publish_npm"]["default"] is False
+    steps = WORKFLOW["jobs"]["promote"]["steps"]
+    publish = next(step for step in steps if "cli_publish.mjs" in step.get("run", ""))
+    assert publish.get("if") == "inputs.publish_npm == true"
+    assert any(step.get("if") == "inputs.publish_npm != true" for step in steps)
+    makefile = (ROOT / "Makefile").read_text()
+    assert "PUBLISH_NPM ?= false" in makefile
+    for target in ("release-candidate:", "release-promote:"):
+        recipe = makefile.split(target, 1)[1].split("\n\n", 1)[0]
+        assert '-f publish_npm="$(PUBLISH_NPM)"' in recipe, target

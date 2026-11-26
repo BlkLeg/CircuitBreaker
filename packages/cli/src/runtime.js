@@ -25,7 +25,7 @@ export function unsupportedRuntime({ platform = process.platform, nodeVersion = 
     return `Circuit Breaker's CLI supports Linux only; this host reports ${platform}.`;
   }
   if (!supportedNode(nodeVersion)) {
-    return `Node.js 22.22.2+, 24.15.0+ or 26+ is required; this is ${nodeVersion}.`;
+    return `Node.js 22.22.2+, 24.15.0+ or 26+ is required; this is ${nodeVersion}. Install Node 24 from https://nodejs.org or your distribution's NodeSource repository, then reinstall this package. To install without Node: curl -fsSL https://raw.githubusercontent.com/BlkLeg/CircuitBreaker/main/install.sh | sudo bash`;
   }
   return null;
 }

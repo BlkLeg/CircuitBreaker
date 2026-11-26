@@ -29,7 +29,7 @@ function VisualLineContextMenu({ position, lineType, onChangeType, onDelete, onC
   }, [onClose]);
 
   const rowDanger =
-    'tw-group tw-relative tw-w-full tw-px-4 tw-py-2 tw-text-left tw-text-sm tw-text-cb-danger tw-bg-cb-surface tw-flex tw-items-center tw-gap-3 tw-transition-all tw-duration-150 tw-ease-out hover:tw-bg-cb-secondary hover:tw-translate-x-0.5';
+    'tw:group tw:relative tw:w-full tw:px-4 tw:py-2 tw:text-left tw:text-sm tw:text-cb-danger tw:bg-cb-surface tw:flex tw:items-center tw:gap-3 tw:transition-all tw:duration-150 tw:ease-out tw:hover:bg-cb-secondary tw:hover:translate-x-0.5';
 
   return (
     <div
@@ -37,24 +37,24 @@ function VisualLineContextMenu({ position, lineType, onChangeType, onDelete, onC
       role="menu"
       tabIndex={-1}
       style={{ top: menuPos.y, left: menuPos.x }}
-      className="tw-fixed tw-z-50 tw-w-56 tw-bg-cb-surface tw-border tw-border-cb-border tw-rounded-lg tw-shadow-2xl tw-overflow-hidden"
+      className="tw:fixed tw:z-50 tw:w-56 tw:bg-cb-surface tw:border tw:border-cb-border tw:rounded-lg tw:shadow-2xl tw:overflow-hidden"
       onMouseDown={(e) => e.stopPropagation()}
     >
-      <div className="tw-px-4 tw-py-2 tw-border-b tw-border-cb-border tw-bg-cb-secondary">
+      <div className="tw:px-4 tw:py-2 tw:border-b tw:border-cb-border tw:bg-cb-secondary">
         <div
-          className="tw-font-mono tw-font-bold tw-text-cb-text tw-text-sm tw-truncate"
+          className="tw:font-mono tw:font-bold tw:text-cb-text tw:text-sm tw:truncate"
           style={{ textTransform: 'capitalize' }}
         >
           {lineType} Line
         </div>
-        <div className="tw-text-xs tw-text-cb-text tw-mt-0.5 tw-uppercase tw-tracking-wider">
+        <div className="tw:text-xs tw:text-cb-text tw:mt-0.5 tw:uppercase tw:tracking-wider">
           Visual Line
         </div>
       </div>
 
-      <div className="tw-py-1">
-        <div className="tw-px-4 tw-py-2">
-          <div className="tw-text-xs tw-text-cb-text tw-mb-2 tw-uppercase tw-tracking-wider">
+      <div className="tw:py-1">
+        <div className="tw:px-4 tw:py-2">
+          <div className="tw:text-xs tw:text-cb-text tw:mb-2 tw:uppercase tw:tracking-wider">
             Line Type
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 }}>
@@ -91,7 +91,7 @@ function VisualLineContextMenu({ position, lineType, onChangeType, onDelete, onC
           </div>
         </div>
 
-        <div className="tw-my-1 tw-border-t tw-border-cb-border" />
+        <div className="tw:my-1 tw:border-t tw:border-cb-border" />
 
         <button
           onClick={() => {
@@ -100,7 +100,7 @@ function VisualLineContextMenu({ position, lineType, onChangeType, onDelete, onC
           }}
           className={rowDanger}
         >
-          <Trash2 className="tw-w-4 tw-h-4 tw-text-cb-danger tw-transition-transform tw-duration-150 group-hover:tw-scale-110" />
+          <Trash2 className="tw:w-4 tw:h-4 tw:text-cb-danger tw:transition-transform tw:duration-150 tw:group-hover:scale-110" />
           Delete Line
         </button>
       </div>

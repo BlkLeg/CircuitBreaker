@@ -4,7 +4,7 @@ import { runUninstall } from '../src/uninstall.js';
 
 function host(reply = false) {
   const calls = []; let err = ''; let confirmations = 0;
-  return { calls, deps: { out() {}, err(s) { err += s; }, confirm: async (phrase) => { confirmations++; assert.equal(phrase, 'DELETE'); return reply; } }, forward: async (...args) => { calls.push(args); return 17; }, error: () => err, confirmations: () => confirmations };
+  return { calls, deps: { out() {}, err(s) { err += s; }, confirm: async (phrase) => { confirmations++; assert.equal(phrase, 'DELETE circuitbreaker'); return reply; } }, forward: async (...args) => { calls.push(args); return 17; }, error: () => err, confirmations: () => confirmations };
 }
 
 test('default uninstall forwards keep-data and preserves native exit status', async () => {

@@ -112,7 +112,8 @@ sha256sum -c --ignore-missing SHA256SUMS
 
 The installer verifies a bundle it downloads itself. For one you hand it with
 `--local-bundle`, it verifies the signature and hash when `SHA256SUMS` and
-`SHA256SUMS.sig` are both next to the tarball. Releases from 0.4.7 on publish a
+`SHA256SUMS.sig` are both next to the tarball, and refuses a tarball with neither
+beside it unless you pass `--skip-checksum`. Releases from 0.4.7 on publish a
 `SHA256SUMS.sig`; earlier releases have none, so for those the check above is yours.
 Keep the tarball's release file name: the installer finds its line in `SHA256SUMS`
 by that name. Then copy the tarball, `SHA256SUMS`, `SHA256SUMS.sig` when the release

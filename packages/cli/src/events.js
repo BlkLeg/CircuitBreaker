@@ -200,6 +200,9 @@ const RELAYED = ['SIGTERM', 'SIGHUP'];
 // exited is read for up to `drainMs` more (NATIVE_DRAIN_MS); then whatever is
 // still open is read and discarded without holding the coordinator, and
 // nothing more is relayed.
+// A terminal control sequence (CSI ... final byte): colours, cursor moves, erases.
+const CSI_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+
 export function runNativeStep({ cliPath, args, deps, json }) {
   const { events } = deps;
   const spawnImpl = deps.spawnImpl ?? nodeSpawn;
@@ -220,15 +223,17 @@ export function runNativeStep({ cliPath, args, deps, json }) {
     let resultError = null;
     const framings = [];
     for (const [stream, level, write] of [[child.stdout, 'info', json ? deps.err : deps.out], [child.stderr, 'warning', deps.err]]) {
-      if ((events && events.machine !== false) || (deps.captureResult && stream === child.stdout)) {
+      if (events || (deps.captureResult && stream === child.stdout)) {
         const say = (bytes) => {
-          const line = bytes.toString('utf8');
+          // The installer colours some lines even into a pipe; redaction would print
+          // those sequences as visible \u001b text, so they are dropped here.
+          const line = bytes.toString('utf8').replace(CSI_SEQUENCE, '');
           if (deps.captureResult && stream === child.stdout && line.startsWith('CIRCUITBREAKER_RESULT=')) {
             try {
               if (nativeResult) throw new TypeError('duplicate native result');
               nativeResult = parseDocument('result', Buffer.from(line.slice('CIRCUITBREAKER_RESULT='.length)));
             } catch (error) { resultError = error; }
-          } else if (events && events.machine !== false) events.diagnostic(line, { level });
+          } else if (events) events.diagnostic(line, { level });
           else write(`${line}\n`);
         };
         const framing = lineSplitter({ max: OUTPUT_LINE_MAX, onLine: say, onOverflow: say });
